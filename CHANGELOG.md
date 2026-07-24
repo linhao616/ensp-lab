@@ -21,6 +21,19 @@
 ### Fixed
 - 连线清单标题重复显示（`ConnectionList` 内部 header 与 `LeftPanel` subhead 叠加，移除前者）。
 
+## [v0.3.1] - 2026-07-23
+
+### Added
+- **IP 合法性校验**：新增 `internal/topology/validate.go` 的 `ValidateIPConfig`，在创建拓扑/设备时检测非法 IP（格式错误、网络地址、广播地址等），直接返回 HTTP 400，避免此前延迟到运行时才抛 500。配套单测 `internal/topology/validate_test.go`。
+- **低资源稳定性测试报告** `docs/low-resource-test-report.md`：5 个低资源场景（内存 22–50MB、goroutine 无泄漏、无 OOM）全部通过。
+- **最小启动配置文档** `docs/min-startup-config.md`：在 `GIN_MODE=release` / `GOMAXPROCS=2` / `GOGC=200` 组合下，文件句柄占用 ↓40%、峰值 CPU ↓22%。
+
+### Changed
+- **`dbgSim` 调试输出限流**：为调试日志增加 1 秒滑动窗口限流，根治此前日志洪泛刷爆磁盘（单次可达约 1GB）的问题。配套单测 `internal/sim/dbg_test.go`。
+
+### Fixed
+- 创建含非法 IP 的拓扑在运行时报 500 的问题（现已在创建期校验并返回 400）。
+
 ## [v0.2.0] - 2026-07
 
 > 里程碑详情见 `ROADMAP.md`。本节仅作摘要。

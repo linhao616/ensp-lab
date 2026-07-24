@@ -17,6 +17,27 @@ go run cmd/server/main.go
 
 > 项目使用 `go build -a -o ensp-lab.exe ./cmd/server` 构建，前端 `frontend/dist` 通过 `embed.go` 一并嵌入二进制；Windows 下直接运行 `ensp-lab.exe` 即可，无需额外依赖。
 
+### 从源码构建（产出含前端的独立二进制）
+
+仓库默认忽略 `frontend/dist`，因此**从零克隆后须先构建前端、再构建 Go 二进制**，否则嵌入的前端是空的（页面无样式/无交互）：
+
+```bash
+# 1. 构建前端（产物写入 frontend/dist）
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 2. 构建 Go 二进制（将 frontend/dist 通过 embed.go 嵌入）
+go build -a -o ensp-lab.exe ./cmd/server     # Windows
+# go build -a -o ensp-lab      ./cmd/server   # Linux / macOS
+
+# 3. 运行
+./ensp-lab.exe        # 监听 http://localhost:8080
+```
+
+> 本地调试也可直接 `go run cmd/server/main.go`——同样会触发前端嵌入，但每次运行都重新编译，速度较慢。
+
 ### 启动 VXLAN Spine-Leaf 演示拓扑
 
 使用 `-demo-vxlan` 参数一键创建并启动完整的 VXLAN Spine-Leaf 组网拓扑：
