@@ -1,0 +1,4242 @@
+// parser.go 负责命令行解析与分发：
+//   - ParseCommand              把原始字符串拆成 Command 结构
+//   - ExecuteCommand / On       命中能力校验后进入大 switch 分发
+//   - GetPrompt                 根据当前视图生成华为风格提示符
+//   - Serialize/Load            CLIState <-> DeviceConfigData 互转
+//
+// 大 switch（ExecuteCommandOn）目前仍是单函数，按协议家族做了分段注释，
+// 后续可按 case 拆成子分发器。
+package cli
+
+import (
+	"ensp-lab/internal/topology"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+func ParseCommand(input string) *Command {
+	input = sanitizeInput(input)
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return nil
+	}
+	return &Command{Raw: input, Command: parts[0], Args: parts[1:]}
+}
+
+// sanitizeInput 在解析前剥离行首可能夹带的 [设备名] 提示符。
+// 终端回显常会把提示符一起发回来，例如 "[leaf-1] [leaf-1] dis ip int"，
+// 若直接按空格分词，第一个 token 会变成 "[leaf-1]"，被误当成命令而报
+// "unknown command '[leaf-1]'"。这里迭代剥离所有行首的 [xxx] 片段，
+// 再整体 TrimSpace，得到干净的 "dis ip int"。
+func sanitizeInput(input string) string {
+	re := regexp.MustCompile(`^\[[^\]]+\]\s*`)
+	for {
+		loc := re.FindStringIndex(input)
+		if loc == nil {
+			break
+		}
+		input = input[loc[1]:]
+	}
+	return strings.TrimSpace(input)
+}
+
+// ExecuteCommand 在 CLI 状态机上执行一条命令。
+// deviceType 标识目标设备类型，传入空字符串表示未绑定（不校验能力，保持向后兼容）。
+func ExecuteCommand(state *CLIState, cmd *Command) string {
+	return ExecuteCommandOn(state, cmd, state.DeviceType)
+}
+
+func ExecuteCommandWithContext(state *CLIState, cmd *Command, dt topology.DeviceType, t *topology.Topology) string {
+	if cmd == nil {
+		return ""
+	}
+	command := strings.ToLower(cmd.Command)
+
+	if command == "ping" && len(cmd.Args) > 0 {
+		return executePingWithContext(state, cmd.Args[0], t)
+	}
+
+	return ExecuteCommandOn(state, cmd, dt)
+}
+
+func executePingWithContext(state *CLIState, target string, t *topology.Topology) string {
+	ifaces := getHostInterfaces(state)
+	for _, iface := range ifaces {
+		ip := iface["ip"]
+		if idx := strings.Index(ip, "/"); idx > 0 {
+			ip = ip[:idx]
+		}
+		if ip == target {
+			return fmt.Sprintf("Ping %s: success (local interface)", target)
+		}
+	}
+
+	if t != nil {
+		if CheckReachability(state, target, t) {
+			return fmt.Sprintf("Ping %s: success", target)
+		} else {
+			return fmt.Sprintf("Ping %s: unreachable", target)
+		}
+	}
+
+	return fmt.Sprintf("Ping %s: success", target)
+}
+
+func CheckReachability(state *CLIState, targetIP string, t *topology.Topology) bool {
+	if state.DeviceID == "" {
+		return true
+	}
+
+	visited := make(map[string]bool)
+	queue := []string{state.DeviceID}
+	visited[state.DeviceID] = true
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		if device, exists := t.Devices[current]; exists {
+			if isDeviceIPMatch(device, targetIP) {
+				return true
+			}
+		}
+
+		for _, link := range t.Links {
+			var next string
+			if link.SourceDevice == current {
+				next = link.TargetDevice
+			} else if link.TargetDevice == current {
+				next = link.SourceDevice
+			} else {
+				continue
+			}
+
+			if visited[next] {
+				continue
+			}
+			visited[next] = true
+			queue = append(queue, next)
+		}
+	}
+
+	return false
+}
+
+// IsDeviceIPMatch 检查设备是否配置了指定 IP（导出版，供 api 包调用）。
+func IsDeviceIPMatch(device *topology.Device, targetIP string) bool {
+	return isDeviceIPMatch(device, targetIP)
+}
+
+func isDeviceIPMatch(device *topology.Device, targetIP string) bool {
+	if device.Type == topology.DevicePC || device.Type == topology.DeviceClient || device.Type == topology.DeviceServer {
+		if device.Interfaces != nil {
+			for _, iface := range device.Interfaces {
+				if iface.IPAddress == targetIP {
+					return true
+				}
+			}
+		}
+		if device.ConfigData != nil && device.ConfigData.Interfaces != nil {
+			for _, v := range device.ConfigData.Interfaces {
+				if strings.Contains(v, targetIP) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) string {
+	if cmd == nil {
+		return ""
+	}
+
+	// save 的 Y/N 确认阶段：必须在能力校验之前处理，因为确认输入（y/n）本身
+	// 不是受支持命令，否则会被能力校验拦截，无法完成保存确认。
+	if state.PendingSave {
+		answer := strings.ToLower(strings.TrimSpace(cmd.Raw))
+		if answer == "y" || answer == "yes" {
+			state.PendingSave = false
+			state.doSave()
+			return "Now saving the current configuration to the device.\nPlease wait for a while...\nSave the configuration successfully."
+		}
+		if answer == "n" || answer == "no" {
+			state.PendingSave = false
+			return "Info: Configuration saving cancelled."
+		}
+		return "Error: invalid input, please enter Y or N."
+	}
+
+	command := strings.ToLower(cmd.Command)
+
+	// 能力校验：未绑定设备类型时跳过
+	if dt != "" && !isCommandSupported(command, dt) {
+		return fmt.Sprintf("Error: command '%s' is not supported on device type %q", command, dt)
+	}
+
+	switch command {
+	case "system-view", "sys":
+		state.CurrentView = ViewSystem
+		return "Enter system view"
+	case "user-interface":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system-view"
+		}
+		if len(cmd.Args) < 3 {
+			return "Error: usage: user-interface vty <first> <last>"
+		}
+		if strings.ToLower(cmd.Args[0]) != "vty" {
+			return "Error: usage: user-interface vty <first> <last>"
+		}
+		first, err := parseNum(cmd.Args[1])
+		if err != nil {
+			return "Error: invalid VTY first number"
+		}
+		last, err := parseNum(cmd.Args[2])
+		if err != nil {
+			return "Error: invalid VTY last number"
+		}
+		if first < 0 || last < 0 || first > last || last > 15 {
+			return "Error: VTY number must be between 0 and 15"
+		}
+		state.CurrentView = ViewVTY
+		state.CurrentSub = fmt.Sprintf("vty %d %d", first, last)
+		return fmt.Sprintf("Enter VTY view, user interface range %d to %d", first, last)
+	case "quit", "q":
+		if state.CurrentView == ViewVTY {
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
+		} else if state.CurrentView == ViewDHCPPool {
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
+		} else if state.CurrentView == ViewSystem {
+			state.CurrentView = ViewUser
+		} else {
+			state.CurrentView = ViewSystem
+		}
+		state.CurrentSub = ""
+		return "Return"
+	case "return":
+		state.CurrentView = ViewUser
+		state.CurrentSub = ""
+		return "Return to user view"
+	case "save":
+		// 贴近华为 eNSP / VRP：save 先弹出确认，需用户输入 Y/N 才真正落盘。
+		state.PendingSave = true
+		return "The current configuration will be written to the device.\nAre you sure to continue? [Y/N]"
+	case "reboot":
+		return "System is rebooting..."
+	case "reset":
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "saved-configuration" {
+			state.Saved = false
+			state.SavedConfig = ""
+			state.SaveTime = ""
+			return "Saved configuration cleared"
+		}
+		return "Error: usage: reset saved-configuration"
+	case "interface", "int":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system-view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need interface name"
+		}
+		ifName := cmd.Args[0]
+		// 支持华为 VRP 风格：interface Vlanif 10 / interface GigabitEthernet 0/0/1
+		// 某些接口类型（Vlanif/Vlan）名称和编号之间有空格
+		vlanifPrefixes := []string{"Vlanif", "Vlan", "LoopBack", "Loop", "Serial", "Ser", "NULL", "Tunnel", "Tun", "Eth-Trunk", "Eth-trunk", "ET", "Bridge-Aggregation", "BAGG"}
+		for _, prefix := range vlanifPrefixes {
+			if strings.HasPrefix(strings.ToLower(ifName), strings.ToLower(prefix)) && len(cmd.Args) >= 2 {
+				rest := strings.Join(cmd.Args, " ")
+				// 去掉前缀部分，重新拼接
+				rest = strings.TrimPrefix(rest, ifName)
+				rest = strings.TrimPrefix(rest, " ")
+				ifName = ifName + rest
+				break
+			}
+		}
+		// 接口名称大小写不敏感：优先在已存在接口列表中做大小写不敏感匹配，
+		// 并规范化为拓扑里原始的接口名（如用户输入 10Ge5/0/1 → 映射到 10GE5/0/1），
+		// 避免后续 ip address 等配置落到大小写不一致的 key 上。
+		if len(state.Interfaces) > 0 {
+			if canon, err := parseInterface(ifName, interfaceKeys(state.Interfaces)); err == nil {
+				ifName = canon
+			}
+		}
+		// 支持多种接口命名格式（大小写不敏感）：
+		// 百兆: Ethernet/E/eth
+		// 千兆: GigabitEthernet/GE/Gigabit/giga/gibit
+		// 万兆: Ten-GigabitEthernet/XGE/10GE/Ten/10g/10gbit
+		// 40G: FortyGigE/40GE/40g/40gbit
+		// 100G: HundredGigE/100GE/100g/100gbit
+		// 其他: Vlanif/Vlan, LoopBack/Loop, Eth-Trunk/Eth-trunk/ET, NULL, Serial/Ser, Tunnel/Tun, Bridge-Aggregation/BAGG
+		re := regexp.MustCompile(`(?i)^(GE|GigabitEthernet|Gigabit|giga|gibit|Ethernet|E|eth|Ten-GigabitEthernet|XGE|10GE|Ten|10g|10gbit|FortyGigE|40GE|40g|40gbit|HundredGigE|100GE|100g|100gbit|LoopBack|Loop|Vlanif|Vlan|Serial|Ser|NULL|Eth-Trunk|Eth-trunk|ET|Tunnel|Tun|Bridge-Aggregation|BAGG)\d+(/\d+)*$`)
+		if !re.MatchString(ifName) {
+			return fmt.Sprintf("Error: invalid interface '%s'", ifName)
+		}
+		// Vlanif 接口仅在三层交换机、路由器、防火墙、VTEP 上支持
+		if strings.HasPrefix(strings.ToLower(ifName), "vlanif") {
+			isRouter := state.DeviceType == topology.DeviceRouter
+			isL3Switch := state.DeviceType == topology.DeviceL3Switch
+			isFirewall := state.DeviceType == topology.DeviceFirewall
+			isVTEP := state.DeviceType == topology.DeviceVTEP
+			if !isRouter && !isL3Switch && !isFirewall && !isVTEP {
+				return fmt.Sprintf("Error: Vlanif interface is only supported on L3 Switch, Router, Firewall and VTEP")
+			}
+		}
+		state.CurrentView = ViewInterface
+		state.CurrentSub = ifName
+		// 初始化接口配置（如果不存在）
+		if _, ok := state.DeviceConfig[fmt.Sprintf("interface:%s:status", ifName)]; !ok {
+			state.DeviceConfig[fmt.Sprintf("interface:%s:status", ifName)] = "Up"
+		}
+		// 如果 Interfaces 中没有这个接口，添加一个
+		if state.Interfaces == nil {
+			state.Interfaces = make(map[string]*InterfaceConfig)
+		}
+		if _, ok := state.Interfaces[ifName]; !ok {
+			state.Interfaces[ifName] = &InterfaceConfig{Name: ifName, Status: "Up", Protocol: "Up"}
+		}
+		return "Enter interface view"
+	case "ip":
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "a", "addr", "address":
+			arg1 := ""
+			if len(cmd.Args) > 1 {
+				arg1 = strings.ToLower(cmd.Args[1])
+			}
+			isHost := dt == topology.DevicePC ||
+				dt == topology.DeviceClient ||
+				dt == topology.DeviceServer
+
+			if arg1 == "show" || arg1 == "list" || arg1 == "" {
+				return buildHostIPAddr(state)
+			}
+
+			// Linux add/del 格式
+			if arg1 == "add" || arg1 == "del" {
+				if len(cmd.Args) >= 3 {
+					ipWithMask := cmd.Args[2]
+					if strings.Contains(ipWithMask, "/") {
+						dev := "Ethernet0"
+						if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[3]) == "dev" {
+							dev = cmd.Args[4]
+						}
+						key := fmt.Sprintf("interface:%s:ip", dev)
+						if arg1 == "add" {
+							state.DeviceConfig[key] = ipWithMask
+							state.DeviceConfig[fmt.Sprintf("interface:%s:mac", dev)] = "00-0C-29-01-02-03"
+							state.DeviceConfig[fmt.Sprintf("interface:%s:status", dev)] = "Up"
+							return fmt.Sprintf("IP address %s dev %s added", ipWithMask, dev)
+						} else {
+							delete(state.DeviceConfig, key)
+							return fmt.Sprintf("IP address %s dev %s deleted", ipWithMask, dev)
+						}
+					}
+				}
+				return "Error: invalid syntax"
+			}
+
+			// 终端设备：ip address <IP> <MASK> 或 ip address <IP/MASK>
+			if isHost && state.CurrentView == ViewUser {
+				ipWithMask := cmd.Args[1]
+				// 格式1: ip address 192.168.1.100/24 (CIDR)
+				if strings.Contains(ipWithMask, "/") {
+					parts := strings.Split(ipWithMask, "/")
+					state.HostIP = parts[0]
+					if len(parts) > 1 {
+						state.HostSubnet = subnetFromCIDR(parts[1])
+					}
+					return fmt.Sprintf("Set IP address to %s", ipWithMask)
+				}
+				// 格式2: ip address 192.168.1.100 255.255.255.0 (双参数)
+				if len(cmd.Args) >= 3 {
+					state.HostIP = ipWithMask
+					state.HostSubnet = cmd.Args[2]
+					return fmt.Sprintf("Set IP address to %s mask %s", ipWithMask, cmd.Args[2])
+				}
+				return "Error: invalid syntax. Use 'ip address <IP> <MASK>' or 'ip address <IP/MASK>'"
+			}
+
+			// 华为风格：接口视图下 ip address <IP> <MASK>
+			if state.CurrentView != ViewInterface {
+				if isHost {
+					return "Error: invalid syntax. Use 'ip address <IP> <MASK>'"
+				}
+				return "Error: must be in interface view"
+			}
+			if len(cmd.Args) < 3 {
+				return "Error: invalid syntax. Use 'ip address <IP> <MASK>'"
+			}
+			key := fmt.Sprintf("interface:%s:ip", state.CurrentSub)
+			mask := cmd.Args[2]
+			// 同时更新 Interfaces map
+			if state.Interfaces != nil {
+				if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+					iface.IP = cmd.Args[1]
+					iface.Mask = mask
+				}
+			}
+			state.DeviceConfig[key] = fmt.Sprintf("%s %s", cmd.Args[1], mask)
+			return fmt.Sprintf("Set IP %s mask %s on %s", cmd.Args[1], mask, state.CurrentSub)
+		case "default-gateway", "gateway", "gw":
+			isHost := state.DeviceType == topology.DevicePC ||
+				state.DeviceType == topology.DeviceClient ||
+				state.DeviceType == topology.DeviceServer
+			if !isHost {
+				return "Error: gateway is not supported on this device type"
+			}
+			if len(cmd.Args) < 2 {
+				return "Error: need gateway IP"
+			}
+			state.DefaultGateway = cmd.Args[1]
+			return fmt.Sprintf("Default gateway set to %s", cmd.Args[1])
+		case "dns":
+			isHost := state.DeviceType == topology.DevicePC ||
+				state.DeviceType == topology.DeviceClient ||
+				state.DeviceType == topology.DeviceServer
+			if !isHost {
+				return "Error: dns is not supported on this device type"
+			}
+			if len(cmd.Args) < 2 {
+				return "Error: need DNS IP"
+			}
+			state.HostDNS = cmd.Args[1]
+			return fmt.Sprintf("DNS server set to %s", cmd.Args[1])
+		case "link":
+			return buildHostIPLink(state)
+		case "route", "r":
+			return buildHostIPRoute(state)
+		case "route-static":
+			if state.CurrentView != ViewSystem || len(cmd.Args) < 4 {
+				return "Error: invalid"
+			}
+			maskLen := subnetToPrefix(cmd.Args[2])
+			state.Routes = append(state.Routes, &RouteEntry{
+				Destination: cmd.Args[1],
+				Mask:        cmd.Args[2],
+				MaskLength:  maskLen,
+				Protocol:    "static",
+				Pre:         60,
+				Cost:        0,
+				Flags:       "RD",
+				NextHop:     cmd.Args[3],
+				Interface:   "NULL0",
+			})
+			return "Static route added"
+		case "vpn-instance":
+			if state.CurrentView != ViewSystem || len(cmd.Args) < 2 {
+				return "Error: invalid"
+			}
+			vrfName := cmd.Args[1]
+			state.VRF[vrfName] = &VRFConfig{
+				RouteTargets: []string{},
+				Interfaces:   []string{},
+			}
+			if len(cmd.Args) >= 3 {
+				state.VRF[vrfName].RD = cmd.Args[2]
+			}
+			return fmt.Sprintf("VPN instance %s created", vrfName)
+		case "routing":
+			// ip routing - 启用三层路由功能
+			if state.CurrentView != ViewSystem {
+				return "Error: must be in system view"
+			}
+			state.IPRouting = true
+			return "IP routing enabled"
+		}
+	case "port":
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		// 规范化第一个参数（支持缩写）
+		portCmd := strings.ToLower(cmd.Args[0])
+		switch {
+		case portCmd == "link-type" || (strings.HasPrefix("link-type", portCmd) && len(portCmd) >= 3):
+			// port link-type access/trunk/hybrid
+			if len(cmd.Args) < 2 {
+				return "Error: need link type (access/trunk/hybrid)"
+			}
+			linkType := strings.ToLower(cmd.Args[1])
+			if linkType != "access" && linkType != "trunk" && linkType != "hybrid" {
+				return "Error: invalid link type"
+			}
+			state.DeviceConfig[fmt.Sprintf("interface:%s:port-link-type", state.CurrentSub)] = linkType
+			return fmt.Sprintf("Port link-type set to %s", linkType)
+		case portCmd == "default" || (strings.HasPrefix("default", portCmd) && len(portCmd) >= 2):
+			// port default vlan <id>
+			if len(cmd.Args) < 3 || strings.ToLower(cmd.Args[1]) != "vlan" {
+				return "Error: usage: port default vlan <vlan-id>"
+			}
+			vlanID, err := parseNum(cmd.Args[2])
+			if err != nil {
+				return "Error: invalid VLAN ID"
+			}
+			state.DeviceConfig[fmt.Sprintf("interface:%s:port-default-vlan", state.CurrentSub)] = fmt.Sprintf("%d", vlanID)
+			// 同时更新 VLAN 配置
+			if state.VLANs == nil {
+				state.VLANs = make(map[int]*VLANConfig)
+			}
+			if _, ok := state.VLANs[vlanID]; !ok {
+				state.VLANs[vlanID] = &VLANConfig{ID: vlanID, Name: fmt.Sprintf("VLAN%d", vlanID), Status: "Up", Ports: []string{}}
+			}
+			// 添加端口到 VLAN
+			found := false
+			for _, p := range state.VLANs[vlanID].Ports {
+				if p == state.CurrentSub {
+					found = true
+					break
+				}
+			}
+			if !found {
+				state.VLANs[vlanID].Ports = append(state.VLANs[vlanID].Ports, state.CurrentSub)
+			}
+			return fmt.Sprintf("Port default VLAN set to %d", vlanID)
+		case portCmd == "trunk" || (strings.HasPrefix("trunk", portCmd) && len(portCmd) >= 2):
+			// port trunk allow-pass vlan / port trunk pvid vlan
+			if len(cmd.Args) < 2 {
+				return "Error: need trunk subcommand"
+			}
+			trunkCmd := strings.ToLower(cmd.Args[1])
+			switch {
+			case trunkCmd == "allow-pass" || (strings.HasPrefix("allow-pass", trunkCmd) && len(trunkCmd) >= 3):
+				// port trunk allow-pass vlan <id-list>
+				if len(cmd.Args) < 4 || strings.ToLower(cmd.Args[2]) != "vlan" {
+					return "Error: usage: port trunk allow-pass vlan <vlan-list>"
+				}
+				vlanList := cmd.Args[3:]
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-trunk-allow-vlan", state.CurrentSub)] = strings.Join(vlanList, " ")
+				// 更新 VLAN 配置
+				if state.VLANs == nil {
+					state.VLANs = make(map[int]*VLANConfig)
+				}
+				for _, v := range vlanList {
+					vid, err := parseNum(v)
+					if err == nil {
+						if _, ok := state.VLANs[vid]; !ok {
+							state.VLANs[vid] = &VLANConfig{ID: vid, Name: fmt.Sprintf("VLAN%d", vid), Status: "Up", Ports: []string{}}
+						}
+						found := false
+						for _, p := range state.VLANs[vid].Ports {
+							if p == state.CurrentSub {
+								found = true
+								break
+							}
+						}
+						if !found {
+							state.VLANs[vid].Ports = append(state.VLANs[vid].Ports, state.CurrentSub)
+						}
+					}
+				}
+				return fmt.Sprintf("Port trunk allow-pass VLAN: %s", strings.Join(vlanList, " "))
+			case trunkCmd == "pvid":
+				// port trunk pvid vlan <id>
+				if len(cmd.Args) < 4 || strings.ToLower(cmd.Args[2]) != "vlan" {
+					return "Error: usage: port trunk pvid vlan <vlan-id>"
+				}
+				vlanID, err := parseNum(cmd.Args[3])
+				if err != nil {
+					return "Error: invalid VLAN ID"
+				}
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-trunk-pvid", state.CurrentSub)] = fmt.Sprintf("%d", vlanID)
+				return fmt.Sprintf("Port trunk PVID set to %d", vlanID)
+			case trunkCmd == "permit":
+				// H3C: port trunk permit vlan <id-list>
+				if len(cmd.Args) < 4 || strings.ToLower(cmd.Args[2]) != "vlan" {
+					return "Error: usage: port trunk permit vlan <vlan-list>"
+				}
+				vlanList := cmd.Args[3:]
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-trunk-allow-vlan", state.CurrentSub)] = strings.Join(vlanList, " ")
+				return fmt.Sprintf("Port trunk permit VLAN: %s", strings.Join(vlanList, " "))
+			default:
+				return fmt.Sprintf("Error: unknown trunk command '%s'", trunkCmd)
+			}
+		case portCmd == "hybrid":
+			// port hybrid tagged vlan <list> / port hybrid untagged vlan <list>
+			if len(cmd.Args) < 3 {
+				return "Error: usage: port hybrid tagged|untagged vlan <vlan-list>"
+			}
+			hybridType := strings.ToLower(cmd.Args[1])
+			if hybridType != "tagged" && hybridType != "untagged" {
+				return "Error: usage: port hybrid tagged|untagged vlan <vlan-list>"
+			}
+			if strings.ToLower(cmd.Args[2]) != "vlan" {
+				return "Error: usage: port hybrid tagged|untagged vlan <vlan-list>"
+			}
+			vlanList := cmd.Args[3:]
+			if len(vlanList) == 0 {
+				return "Error: usage: port hybrid tagged|untagged vlan <vlan-list>"
+			}
+			key := fmt.Sprintf("interface:%s:port-hybrid-%s-vlan", state.CurrentSub, hybridType)
+			state.DeviceConfig[key] = strings.Join(vlanList, " ")
+			// 更新 VLAN 配置
+			if state.VLANs == nil {
+				state.VLANs = make(map[int]*VLANConfig)
+			}
+			for _, v := range vlanList {
+				vid, err := parseNum(v)
+				if err == nil {
+					if _, ok := state.VLANs[vid]; !ok {
+						state.VLANs[vid] = &VLANConfig{ID: vid, Name: fmt.Sprintf("VLAN%d", vid), Status: "Up", Ports: []string{}}
+					}
+					found := false
+					for _, p := range state.VLANs[vid].Ports {
+						if p == state.CurrentSub {
+							found = true
+							break
+						}
+					}
+					if !found {
+						state.VLANs[vid].Ports = append(state.VLANs[vid].Ports, state.CurrentSub)
+					}
+				}
+			}
+			return fmt.Sprintf("Port hybrid %s VLAN: %s", hybridType, strings.Join(vlanList, " "))
+		case portCmd == "link-aggregation":
+			// H3C: port link-aggregation group <id> / port link-agg group <id>
+			if len(cmd.Args) < 3 {
+				return "Error: usage: port link-aggregation group <id>"
+			}
+			if strings.ToLower(cmd.Args[1]) != "group" {
+				return "Error: usage: port link-aggregation group <id>"
+			}
+			groupID, err := parseNum(cmd.Args[2])
+			if err != nil {
+				return "Error: invalid group ID"
+			}
+			trunkName := fmt.Sprintf("Bridge-Aggregation%d", groupID)
+			state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", state.CurrentSub)] = fmt.Sprintf("%d", groupID)
+			if state.Interfaces == nil {
+				state.Interfaces = make(map[string]*InterfaceConfig)
+			}
+			if _, ok := state.Interfaces[trunkName]; !ok {
+				state.Interfaces[trunkName] = &InterfaceConfig{Name: trunkName, Status: "Up", Protocol: "Up"}
+			}
+			state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)] = "Up"
+			membersKey := fmt.Sprintf("interface:%s:members", trunkName)
+			members := state.DeviceConfig[membersKey]
+			if members == "" {
+				state.DeviceConfig[membersKey] = state.CurrentSub
+			} else {
+				if !strings.Contains(members, state.CurrentSub) {
+					state.DeviceConfig[membersKey] = members + "," + state.CurrentSub
+				}
+			}
+			return fmt.Sprintf("Port added to Bridge-Aggregation %d", groupID)
+		case portCmd == "m-lag":
+			// H3C: port m-lag peer-link <id> / port m-lag group <id>
+			if len(cmd.Args) < 2 {
+				return "Error: usage: port m-lag <peer-link|group> <id>"
+			}
+			subCmd := strings.ToLower(cmd.Args[1])
+			if subCmd == "peer-link" {
+				if len(cmd.Args) >= 3 {
+					peerID, _ := parseNum(cmd.Args[2])
+					state.DeviceConfig[fmt.Sprintf("interface:%s:m-lag-peer-link", state.CurrentSub)] = fmt.Sprintf("%d", peerID)
+					return fmt.Sprintf("M-LAG peer-link %d configured", peerID)
+				}
+				state.DeviceConfig[fmt.Sprintf("interface:%s:m-lag-peer-link", state.CurrentSub)] = "1"
+				return "M-LAG peer-link configured"
+			} else if subCmd == "group" {
+				if len(cmd.Args) >= 3 {
+					groupID, _ := parseNum(cmd.Args[2])
+					state.DeviceConfig[fmt.Sprintf("interface:%s:m-lag-group", state.CurrentSub)] = fmt.Sprintf("%d", groupID)
+					return fmt.Sprintf("M-LAG group %d configured", groupID)
+				}
+				return "Error: need group ID"
+			}
+			return "Error: invalid m-lag subcommand"
+		case portCmd == "link-mode":
+			// H3C: port link-mode route / port link-mode bridge
+			if len(cmd.Args) < 2 {
+				return "Error: usage: port link-mode <route|bridge>"
+			}
+			state.DeviceConfig[fmt.Sprintf("interface:%s:link-mode", state.CurrentSub)] = cmd.Args[1]
+			return fmt.Sprintf("Port link-mode set to %s", cmd.Args[1])
+		case portCmd == "security":
+			// port-security enable / port-security max-mac-num / port-security mac-address sticky
+			if len(cmd.Args) < 2 {
+				return "Error: usage: port-security <enable|disable|max-mac-num|mac-address>"
+			}
+			subCmd := strings.ToLower(cmd.Args[1])
+			switch subCmd {
+			case "enable":
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "enable"
+				return "Port security enabled"
+			case "disable":
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "disable"
+				return "Port security disabled"
+			case "max-mac-num":
+				if len(cmd.Args) >= 3 {
+					maxNum, err := parseNum(cmd.Args[2])
+					if err == nil {
+						state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-max-mac", state.CurrentSub)] = fmt.Sprintf("%d", maxNum)
+						return fmt.Sprintf("Port security max-mac-num set to %d", maxNum)
+					}
+				}
+				return "Error: usage: port-security max-mac-num <number>"
+			case "mac-address":
+				if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "sticky" {
+					state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-sticky", state.CurrentSub)] = "enable"
+					return "Port security sticky MAC enabled"
+				}
+				return "Error: usage: port-security mac-address sticky"
+			}
+			return "Error: invalid port-security subcommand"
+		default:
+			return fmt.Sprintf("Error: unknown port command '%s'", portCmd)
+		}
+	case "eth-trunk":
+		// 在物理接口下加入聚合组
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in physical interface view, usage: eth-trunk <id>"
+		}
+		trunkID, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid Eth-Trunk ID"
+		}
+		trunkName := fmt.Sprintf("Eth-Trunk%d", trunkID)
+		// 保存配置
+		state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", state.CurrentSub)] = fmt.Sprintf("%d", trunkID)
+		// 初始化聚合接口
+		if state.Interfaces == nil {
+			state.Interfaces = make(map[string]*InterfaceConfig)
+		}
+		if _, ok := state.Interfaces[trunkName]; !ok {
+			state.Interfaces[trunkName] = &InterfaceConfig{Name: trunkName, Status: "Up", Protocol: "Up"}
+		}
+		state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)] = "Up"
+		// 记录成员端口
+		membersKey := fmt.Sprintf("interface:%s:members", trunkName)
+		members := state.DeviceConfig[membersKey]
+		if members == "" {
+			state.DeviceConfig[membersKey] = state.CurrentSub
+		} else {
+			memberList := strings.Split(members, ",")
+			found := false
+			for _, m := range memberList {
+				if m == state.CurrentSub {
+					found = true
+					break
+				}
+			}
+			if !found {
+				state.DeviceConfig[membersKey] = members + "," + state.CurrentSub
+			}
+		}
+		return fmt.Sprintf("Port added to Eth-Trunk %d", trunkID)
+	case "mode":
+		// 设置聚合模式：mode lacp-static / mode manual / link-aggregation mode dynamic
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in interface view"
+		}
+		mode := cmd.Args[0]
+		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
+			return "Error: mode command only available in Eth-Trunk/Bridge-Aggregation view"
+		}
+		state.DeviceConfig[fmt.Sprintf("interface:%s:mode", state.CurrentSub)] = mode
+		return fmt.Sprintf("Aggregation mode set to %s", mode)
+	case "trunkport":
+		// 华为: trunkport 10GE 1/0/1 / trunkport 10GE 1/0/1 to 10GE 1/0/2
+		if state.CurrentView != ViewInterface || len(cmd.Args) < 2 {
+			return "Error: must be in interface view, usage: trunkport <interface-type> <interface-number> [to <interface-type> <interface-number>]"
+		}
+		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
+			return "Error: trunkport command only available in Eth-Trunk/Bridge-Aggregation view"
+		}
+		ifaceType := cmd.Args[0]
+		ifaceNum := cmd.Args[1]
+		membersKey := fmt.Sprintf("interface:%s:members", state.CurrentSub)
+		members := state.DeviceConfig[membersKey]
+		newMember := ifaceType + " " + ifaceNum
+		if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[2]) == "to" {
+			endType := cmd.Args[3]
+			endNum := cmd.Args[4]
+			newMember = fmt.Sprintf("%s %s to %s %s", ifaceType, ifaceNum, endType, endNum)
+		}
+		if members == "" {
+			state.DeviceConfig[membersKey] = newMember
+		} else {
+			if !strings.Contains(members, newMember) {
+				state.DeviceConfig[membersKey] = members + "," + newMember
+			}
+		}
+		return fmt.Sprintf("Trunkport %s added", newMember)
+	case "load-balance":
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in interface view, usage: load-balance <mode>"
+		}
+		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
+			return "Error: load-balance command only available in Eth-Trunk/Bridge-Aggregation view"
+		}
+		mode := strings.Join(cmd.Args, " ")
+		state.DeviceConfig[fmt.Sprintf("interface:%s:load-balance", state.CurrentSub)] = mode
+		return fmt.Sprintf("Load balance mode set to %s", mode)
+	case "link-aggregation":
+		// H3C: link-aggregation mode dynamic
+		if state.CurrentView != ViewInterface || len(cmd.Args) < 2 {
+			return "Error: must be in interface view, usage: link-aggregation mode <dynamic|static>"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		if subCmd == "mode" {
+			mode := cmd.Args[1]
+			state.DeviceConfig[fmt.Sprintf("interface:%s:mode", state.CurrentSub)] = mode
+			return fmt.Sprintf("Link aggregation mode set to %s", mode)
+		}
+		return "Error: invalid link-aggregation command"
+	case "description":
+		// 设置接口描述
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		desc := strings.Join(cmd.Args, " ")
+		state.DeviceConfig[fmt.Sprintf("interface:%s:description", state.CurrentSub)] = desc
+		return fmt.Sprintf("Description set to '%s'", desc)
+	case "shutdown":
+		// 关闭接口
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		// 同时写 DeviceConfig（持久化）与 Interfaces map（display 回显），
+		// 否则 display ip interface 的 Interfaces map 合并会覆盖 status。
+		state.DeviceConfig[fmt.Sprintf("interface:%s:status", state.CurrentSub)] = "Down"
+		if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+			iface.Status = "Down"
+		}
+		return "Interface is shutdown"
+	case "undo":
+		// 华为 VRP 风格 undo 命令体系：对已进入的接口执行反向操作。
+		// 支持 undo shutdown / undo ip address / undo description；
+		// 其它子命令按"未支持"处理，避免静默吞掉未知 undo。
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: incomplete command"
+		}
+		sub := strings.ToLower(strings.Join(cmd.Args, " "))
+		switch sub {
+		case "shutdown":
+			// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
+			state.DeviceConfig[fmt.Sprintf("interface:%s:status", state.CurrentSub)] = "Up"
+			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+				iface.Status = "Up"
+			}
+			return "Interface is up"
+		case "ip address":
+			// 删除接口 IP：同时清 DeviceConfig 与 Interfaces map，
+			// 保证 display ip interface 立即回显 unassigned。
+			key := fmt.Sprintf("interface:%s:ip", state.CurrentSub)
+			delete(state.DeviceConfig, key)
+			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+				iface.IP = ""
+				iface.Mask = ""
+			}
+			return fmt.Sprintf("Interface %s IP address deleted", state.CurrentSub)
+		case "description":
+			// 删除接口描述
+			key := fmt.Sprintf("interface:%s:description", state.CurrentSub)
+			delete(state.DeviceConfig, key)
+			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+				iface.Description = ""
+			}
+			return fmt.Sprintf("Description of %s deleted", state.CurrentSub)
+		default:
+			return fmt.Sprintf("Error: undo '%s' is not supported", sub)
+		}
+	case "speed":
+		// 设置接口速率
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in interface view, usage: speed 1000"
+		}
+		speed := cmd.Args[0]
+		state.DeviceConfig[fmt.Sprintf("interface:%s:speed", state.CurrentSub)] = speed
+		return fmt.Sprintf("Speed set to %s", speed)
+	case "duplex":
+		// 设置双工模式
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in interface view, usage: duplex full|half|auto"
+		}
+		duplex := strings.ToLower(cmd.Args[0])
+		state.DeviceConfig[fmt.Sprintf("interface:%s:duplex", state.CurrentSub)] = duplex
+		return fmt.Sprintf("Duplex set to %s", duplex)
+	case "mtu":
+		// 设置 MTU
+		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
+			return "Error: must be in interface view, usage: mtu 1500"
+		}
+		mtu := cmd.Args[0]
+		state.DeviceConfig[fmt.Sprintf("interface:%s:mtu", state.CurrentSub)] = mtu
+		return fmt.Sprintf("MTU set to %s", mtu)
+	case "acl":
+		if state.CurrentView != ViewSystem || len(cmd.Args) == 0 {
+			return "Error: invalid"
+		}
+		// 检查是否是命名 ACL: acl name <name> basic|advanced
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[0]) == "name" {
+			aclName := cmd.Args[1]
+			aclType := strings.ToLower(cmd.Args[2])
+			if aclType != "basic" && aclType != "advanced" {
+				return "Error: ACL type must be basic or advanced"
+			}
+			if _, ok := state.ACLs[aclName]; !ok {
+				state.ACLs[aclName] = []*ACLRule{}
+			}
+			state.CurrentView = ViewACL
+			state.CurrentSub = aclName
+			// 保存 ACL 类型
+			if state.ACLs[aclName] == nil || len(state.ACLs[aclName]) == 0 {
+				state.ACLs[aclName] = []*ACLRule{{Name: aclName, Type: aclType}}
+			}
+			return fmt.Sprintf("Enter ACL view, name %s, type %s", aclName, aclType)
+		}
+		// 数字 ACL: acl <num>
+		aclNum := cmd.Args[0]
+		if _, ok := state.ACLs[aclNum]; !ok {
+			state.ACLs[aclNum] = []*ACLRule{}
+		}
+		state.CurrentView = ViewACL
+		state.CurrentSub = aclNum
+		return "Enter ACL view"
+	case "rule":
+		if state.CurrentView != ViewACL || len(cmd.Args) < 3 {
+			return "Error: invalid"
+		}
+		ruleID := 0
+		idx := 0
+		if n, err := parseNum(cmd.Args[0]); err == nil {
+			ruleID = n
+			idx = 1
+		}
+		action := strings.ToLower(cmd.Args[idx])
+		proto := strings.ToLower(cmd.Args[idx+1])
+		rule := &ACLRule{ID: ruleID, Action: action, Protocol: proto}
+		for i := idx + 2; i < len(cmd.Args); i += 2 {
+			if i+1 >= len(cmd.Args) {
+				break
+			}
+			key := strings.ToLower(cmd.Args[i])
+			val := cmd.Args[i+1]
+			switch key {
+			case "source", "src":
+				rule.SrcIP = val
+				if i+2 < len(cmd.Args) && !isKeyword(cmd.Args[i+2]) {
+					rule.SrcWildcard = cmd.Args[i+2]
+					i++
+				}
+			case "destination", "dest":
+				rule.DstIP = val
+				if i+2 < len(cmd.Args) && !isKeyword(cmd.Args[i+2]) {
+					rule.DstWildcard = cmd.Args[i+2]
+					i++
+				}
+			}
+		}
+		if rule.ID == 0 {
+			rule.ID = len(state.ACLs[state.CurrentSub])*10 + 10
+		}
+		state.ACLs[state.CurrentSub] = append(state.ACLs[state.CurrentSub], rule)
+		return fmt.Sprintf("Rule %d %s %s added", rule.ID, action, proto)
+	case "nat":
+		// NAT 命令处理
+		if state.CurrentView != ViewSystem && state.CurrentView != ViewInterface {
+			return "Error: must be in system view or interface view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need NAT arguments"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "address-group":
+			// nat address-group <id> <start-ip> <end-ip>
+			if len(cmd.Args) < 4 {
+				return "Error: usage: nat address-group <id> <start-ip> <end-ip>"
+			}
+			id, err := parseNum(cmd.Args[1])
+			if err != nil {
+				return "Error: invalid address-group ID"
+			}
+			startIP := cmd.Args[2]
+			endIP := cmd.Args[3]
+			if state.NAT == nil {
+				state.NAT = &NATConfig{}
+			}
+			state.NAT.Enabled = true
+			// 检查是否已存在该地址池
+			found := false
+			for i := range state.NAT.AddressPools {
+				if state.NAT.AddressPools[i].ID == id {
+					state.NAT.AddressPools[i].StartIP = startIP
+					state.NAT.AddressPools[i].EndIP = endIP
+					found = true
+					break
+				}
+			}
+			if !found {
+				state.NAT.AddressPools = append(state.NAT.AddressPools, NATAddressPool{
+					ID:      id,
+					StartIP: startIP,
+					EndIP:   endIP,
+				})
+			}
+			return fmt.Sprintf("NAT address-group %d: %s - %s configured", id, startIP, endIP)
+		case "outbound":
+			// nat outbound <acl-num> [address-group <id>] 或 nat outbound <acl-num> (Easy IP)
+			if len(cmd.Args) < 2 {
+				return "Error: usage: nat outbound <acl-num> [address-group <id>]"
+			}
+			aclNum := 0
+			var aclName string
+			if n, err := parseNum(cmd.Args[1]); err == nil {
+				aclNum = n
+			} else {
+				aclName = cmd.Args[1]
+			}
+			natType := "easy-ip"
+			addrPool := 0
+			// 检查是否有 address-group
+			for i := 2; i < len(cmd.Args); i++ {
+				if strings.ToLower(cmd.Args[i]) == "address-group" && i+1 < len(cmd.Args) {
+					if n, err := parseNum(cmd.Args[i+1]); err == nil {
+						addrPool = n
+						natType = "address-group"
+						break
+					}
+				}
+			}
+			if state.NAT == nil {
+				state.NAT = &NATConfig{}
+			}
+			state.NAT.Enabled = true
+			state.NAT.Outbounds = append(state.NAT.Outbounds, NATOutbound{
+				ACLNum:      aclNum,
+				ACLName:     aclName,
+				AddressPool: addrPool,
+				Type:        natType,
+			})
+			if natType == "easy-ip" {
+				return fmt.Sprintf("NAT outbound %s configured (Easy IP)", cmd.Args[1])
+			}
+			return fmt.Sprintf("NAT outbound %s address-group %d configured", cmd.Args[1], addrPool)
+		case "server":
+			// nat server global <ip> <port> protocol <proto> inside <ip> <port>
+			// 这是一个简化的处理
+			if len(cmd.Args) < 8 {
+				return "Error: usage: nat server global <ip> <port> protocol <proto> inside <ip> <port>"
+			}
+			globalIP := cmd.Args[2]
+			globalPort := cmd.Args[3]
+			protocol := strings.ToLower(cmd.Args[5])
+			insideIP := cmd.Args[7]
+			insidePort := ""
+			if len(cmd.Args) > 8 {
+				insidePort = cmd.Args[8]
+			}
+			if state.NAT == nil {
+				state.NAT = &NATConfig{}
+			}
+			state.NAT.Enabled = true
+			state.NAT.Servers = append(state.NAT.Servers, NATServer{
+				GlobalIP:   globalIP,
+				GlobalPort: globalPort,
+				Protocol:   protocol,
+				InsideIP:   insideIP,
+				InsidePort: insidePort,
+			})
+			return fmt.Sprintf("NAT server %s:%s -> %s:%s %s configured", globalIP, globalPort, insideIP, insidePort, protocol)
+		default:
+			return fmt.Sprintf("Error: unknown NAT command '%s'", subCmd)
+		}
+	case "sysname":
+		if state.CurrentView != ViewSystem || len(cmd.Args) == 0 {
+			return "Error: invalid"
+		}
+		state.DeviceConfig["sysname"] = cmd.Args[0]
+		return fmt.Sprintf("Sysname set to '%s'", cmd.Args[0])
+	case "vlan":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "batch":
+			// vlan batch 10 20 30 或 vlan batch 10 to 20
+			vlans := []string{}
+			i := 1
+			for i < len(cmd.Args) {
+				v := cmd.Args[i]
+				if strings.ToLower(v) == "to" {
+					i++
+					continue
+				}
+				// 检查是否是范围格式 (例如 10 to 20)
+				if i+2 < len(cmd.Args) && strings.ToLower(cmd.Args[i+1]) == "to" {
+					start, err1 := parseNum(v)
+					end, err2 := parseNum(cmd.Args[i+2])
+					if err1 == nil && err2 == nil && start <= end {
+						for vid := start; vid <= end; vid++ {
+							vlans = append(vlans, fmt.Sprintf("%d", vid))
+							if _, ok := state.VLANs[vid]; !ok {
+								state.VLANs[vid] = &VLANConfig{ID: vid, Name: fmt.Sprintf("VLAN%d", vid), Status: "Up", Ports: []string{}}
+							}
+						}
+						i += 3
+						continue
+					}
+				}
+				// 单个 VLAN
+				vlans = append(vlans, v)
+				if vid, err := parseNum(v); err == nil {
+					if _, ok := state.VLANs[vid]; !ok {
+						state.VLANs[vid] = &VLANConfig{ID: vid, Name: fmt.Sprintf("VLAN%d", vid), Status: "Up", Ports: []string{}}
+					}
+				}
+				i++
+			}
+			return fmt.Sprintf("VLANs created: %s", strings.Join(vlans, ", "))
+		default:
+			vlanID := cmd.Args[0]
+			if vid, err := parseNum(vlanID); err == nil {
+				state.VLANs[vid] = &VLANConfig{ID: vid, Name: fmt.Sprintf("VLAN%d", vid), Status: "Up", Ports: []string{}}
+			}
+			return fmt.Sprintf("VLAN %s created", vlanID)
+		}
+	case "ping":
+		if len(cmd.Args) == 0 {
+			return "Error: need target"
+		}
+		target := cmd.Args[0]
+		ifaces := getHostInterfaces(state)
+		for _, iface := range ifaces {
+			ip := iface["ip"]
+			if idx := strings.Index(ip, "/"); idx > 0 {
+				ip = ip[:idx]
+			}
+			if ip == target {
+				return fmt.Sprintf("Ping %s: success (local interface)", target)
+			}
+		}
+		return fmt.Sprintf("Ping %s: success", target)
+	case "tracert", "traceroute":
+		if len(cmd.Args) == 0 {
+			return "Error: need target"
+		}
+		return fmt.Sprintf("Tracing route to %s over a maximum of 30 hops:\n  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n  2    <1 ms    <1 ms    <1 ms  %s\n\nTrace complete.", cmd.Args[0], cmd.Args[0])
+	case "ipconfig":
+		if len(cmd.Args) >= 1 {
+			sub := strings.ToLower(cmd.Args[0])
+			switch sub {
+			case "/set", "set":
+				if len(cmd.Args) < 2 {
+					return "Usage: ipconfig /set <ip-address> [subnet-mask] [default-gateway]"
+				}
+				ip, mask := parseIPFormat(cmd.Args[1])
+				state.HostIP = ip
+				if mask != "" {
+					state.HostSubnet = mask
+				}
+				if len(cmd.Args) >= 3 {
+					state.HostSubnet = normalizeMask(cmd.Args[2])
+				}
+				if len(cmd.Args) >= 4 {
+					state.DefaultGateway = cmd.Args[3]
+				}
+				return fmt.Sprintf("IP 地址已设置为 %s/%s%s\n", state.HostIP, state.HostSubnet, gwNote(state.DefaultGateway)) + buildHostIfconfig(state)
+			case "/ip":
+				if len(cmd.Args) >= 2 {
+					state.HostIP = cmd.Args[1]
+				}
+				if len(cmd.Args) >= 4 && strings.ToLower(cmd.Args[2]) == "/mask" {
+					state.HostSubnet = cmd.Args[3]
+				}
+				return buildHostIfconfig(state)
+			case "/release":
+				state.HostIP = ""
+				state.HostSubnet = ""
+				return "Ethernet0: IP 地址已释放 (DHCP Release)\n" + buildHostIfconfig(state)
+			case "/renew":
+				state.HostIP = ""
+				state.HostSubnet = ""
+				return "Ethernet0: IP 地址已续租 (DHCP Renew)\n" + buildHostIfconfig(state)
+			case "/all":
+				return buildHostIfconfig(state)
+			}
+		}
+		return buildHostIfconfig(state)
+	case "netsh":
+		return executeNetsh(state, cmd.Args)
+	case "ifconfig":
+		return buildHostIfconfig(state)
+	case "arp", "arp -a":
+		return buildHostARPTable(state)
+	case "netstat":
+		return buildHostNetstat(state)
+	case "?", "help":
+		return "Help: system-view, interface, ip address, acl, rule, display, quit, ospf, m-lag, lldp, stp, vrrp, ipsec, snmp, syslog, ntp, ssh, vxlan, bgp, ipconfig, ipconfig /set, ip address, ip gateway, ip dns, netsh"
+	case "ip address":
+		if len(cmd.Args) < 1 {
+			return "Usage: ip address <ip-address> [subnet-mask]"
+		}
+		state.HostIP = cmd.Args[0]
+		if len(cmd.Args) >= 2 {
+			state.HostSubnet = cmd.Args[1]
+		}
+		return fmt.Sprintf("IP address set to %s/%s", state.HostIP, state.HostSubnet)
+	case "ip gateway":
+		if len(cmd.Args) < 1 {
+			return "Usage: ip gateway <gateway-ip>"
+		}
+		state.DefaultGateway = cmd.Args[0]
+		return fmt.Sprintf("Default gateway set to %s", state.DefaultGateway)
+	case "ip dns":
+		if len(cmd.Args) < 1 {
+			return "Usage: ip dns <dns-ip>"
+		}
+		state.HostDNS = cmd.Args[0]
+		return fmt.Sprintf("DNS server set to %s", state.HostDNS)
+	case "traffic-filter":
+		// traffic-filter inbound/outbound acl <num>
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "acl" {
+			direction := cmd.Args[0]
+			aclNum := cmd.Args[2]
+			key := fmt.Sprintf("traffic-filter:%s:%s", direction, aclNum)
+			state.DeviceConfig[key] = aclNum
+			return fmt.Sprintf("Traffic filter %s ACL %s applied", direction, aclNum)
+		}
+		// 兼容旧格式: traffic-filter acl <num>
+		if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "acl" {
+			key := fmt.Sprintf("traffic-filter:inbound:%s", cmd.Args[1])
+			state.DeviceConfig[key] = cmd.Args[1]
+			return fmt.Sprintf("Traffic filter inbound ACL %s applied", cmd.Args[1])
+		}
+	case "m-lag", "mlag":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "domain":
+			if len(cmd.Args) < 2 {
+				return "Error: need domain id"
+			}
+			domainID, err := parseNum(cmd.Args[1])
+			if err != nil {
+				return "Error: invalid domain id"
+			}
+			state.MLAG.DomainID = domainID
+			state.CurrentView = ViewMLAG
+			state.CurrentSub = "domain"
+			return fmt.Sprintf("Enter M-LAG domain %d view", domainID)
+		case "system-mac":
+			if len(cmd.Args) < 2 {
+				return "Error: need MAC address"
+			}
+			state.MLAG.SystemMAC = cmd.Args[1]
+			return fmt.Sprintf("M-LAG system MAC set to %s", cmd.Args[1])
+		case "system-number":
+			if len(cmd.Args) < 2 {
+				return "Error: need system number"
+			}
+			num, err := parseNum(cmd.Args[1])
+			if err != nil {
+				return "Error: invalid system number"
+			}
+			state.MLAG.SystemNumber = num
+			return fmt.Sprintf("M-LAG system number set to %d", num)
+		case "system-priority":
+			if len(cmd.Args) < 2 {
+				return "Error: need system priority"
+			}
+			prio, err := parseNum(cmd.Args[1])
+			if err != nil {
+				return "Error: invalid system priority"
+			}
+			state.MLAG.SystemPriority = prio
+			return fmt.Sprintf("M-LAG system priority set to %d", prio)
+		case "keepalive":
+			if len(cmd.Args) < 5 {
+				return "Error: usage: m-lag keepalive ip destination <ip> source <ip>"
+			}
+			var dstIP, srcIP string
+			for i := 1; i < len(cmd.Args); i++ {
+				if strings.ToLower(cmd.Args[i]) == "destination" && i+1 < len(cmd.Args) {
+					dstIP = cmd.Args[i+1]
+				}
+				if strings.ToLower(cmd.Args[i]) == "source" && i+1 < len(cmd.Args) {
+					srcIP = cmd.Args[i+1]
+				}
+			}
+			if dstIP == "" || srcIP == "" {
+				return "Error: need destination and source IP"
+			}
+			state.MLAG.KeepaliveDest = dstIP
+			state.MLAG.KeepaliveSrc = srcIP
+			return fmt.Sprintf("M-LAG keepalive configured: source %s, destination %s", srcIP, dstIP)
+		case "mad":
+			if len(cmd.Args) < 4 || strings.ToLower(cmd.Args[1]) != "exclude" || strings.ToLower(cmd.Args[2]) != "int" {
+				return "Error: usage: m-lag mad exclude interface <iface>"
+			}
+			iface := cmd.Args[3]
+			state.MLAG.MADExclude = append(state.MLAG.MADExclude, iface)
+			return fmt.Sprintf("Interface %s excluded from MAD", iface)
+		}
+	case "dfs-group":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: dfs-group <id> [m-lag <m-lag-id>|priority <prio>|source <ip> peer <ip>]"
+		}
+		dfsID, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid DFS group ID"
+		}
+		if state.MLAG.DFSGroup == nil {
+			state.MLAG.DFSGroup = make(map[int]*DFSGroupConfig)
+		}
+		if _, ok := state.MLAG.DFSGroup[dfsID]; !ok {
+			state.MLAG.DFSGroup[dfsID] = &DFSGroupConfig{ID: dfsID, Enabled: true}
+		}
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "m-lag" {
+			mlagID, _ := parseNum(cmd.Args[2])
+			state.MLAG.DFSGroup[dfsID].MLAGID = mlagID
+			return fmt.Sprintf("DFS Group %d M-LAG %d configured", dfsID, mlagID)
+		}
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "priority" {
+			prio, _ := parseNum(cmd.Args[2])
+			state.MLAG.DFSGroup[dfsID].Priority = prio
+			return fmt.Sprintf("DFS Group %d priority set to %d", dfsID, prio)
+		}
+		if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[1]) == "source" && strings.ToLower(cmd.Args[3]) == "peer" {
+			state.MLAG.DFSGroup[dfsID].SourceIP = cmd.Args[2]
+			state.MLAG.DFSGroup[dfsID].PeerIP = cmd.Args[4]
+			return fmt.Sprintf("DFS Group %d source %s peer %s configured", dfsID, cmd.Args[2], cmd.Args[4])
+		}
+		state.MLAG.DFSGroupID = dfsID
+		return fmt.Sprintf("DFS Group %d created", dfsID)
+	case "ospf":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 {
+			processID, err := parseNum(cmd.Args[0])
+			if err == nil {
+				state.OSPF.Enabled = true
+				state.OSPF.ProcessID = processID
+				if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "area" {
+					areaID, _ := parseNum(cmd.Args[2])
+					state.OSPF.AreaID = areaID
+				}
+				return fmt.Sprintf("OSPF process %d started", processID)
+			}
+		}
+		return "Error: invalid OSPF config"
+	case "lldp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "enable":
+			// lldp enable 或 lldp enable interface <type> <num>
+			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "interface" {
+				// lldp enable interface <type> <num>
+				if len(cmd.Args) < 4 {
+					return "Error: usage: lldp enable interface <type> <num>"
+				}
+				ifaceType := cmd.Args[2]
+				ifaceNum := cmd.Args[3]
+				ifaceName := ifaceType + ifaceNum
+				if state.LLDP.PortConfig == nil {
+					state.LLDP.PortConfig = make(map[string]bool)
+				}
+				state.LLDP.PortConfig[ifaceName] = true
+				return fmt.Sprintf("LLDP enabled on interface %s", ifaceName)
+			}
+			// lldp enable 全局启用
+			state.LLDP.Enabled = true
+			return "LLDP enabled"
+		case "disable":
+			// lldp disable 或 lldp disable interface <type> <num>
+			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "interface" {
+				if len(cmd.Args) < 4 {
+					return "Error: usage: lldp disable interface <type> <num>"
+				}
+				ifaceType := cmd.Args[2]
+				ifaceNum := cmd.Args[3]
+				ifaceName := ifaceType + ifaceNum
+				if state.LLDP.PortConfig == nil {
+					state.LLDP.PortConfig = make(map[string]bool)
+				}
+				state.LLDP.PortConfig[ifaceName] = false
+				return fmt.Sprintf("LLDP disabled on interface %s", ifaceName)
+			}
+			state.LLDP.Enabled = false
+			return "LLDP disabled"
+		case "system-name":
+			if len(cmd.Args) < 2 {
+				return "Error: usage: lldp system-name <name>"
+			}
+			state.LLDP.SystemName = cmd.Args[1]
+			return fmt.Sprintf("LLDP system-name set to '%s'", cmd.Args[1])
+		case "system-description":
+			if len(cmd.Args) < 2 {
+				return "Error: usage: lldp system-description <desc>"
+			}
+			state.LLDP.SystemDescription = strings.Join(cmd.Args[1:], " ")
+			return fmt.Sprintf("LLDP system-description set to '%s'", state.LLDP.SystemDescription)
+		case "management-address":
+			if len(cmd.Args) < 2 {
+				return "Error: usage: lldp management-address <ip>"
+			}
+			state.LLDP.ManagementAddress = cmd.Args[1]
+			return fmt.Sprintf("LLDP management-address set to %s", cmd.Args[1])
+		}
+		return "Error: invalid LLDP config"
+	case "stp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			state.STP.Enabled = true
+			return "STP enabled (RSTP)"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "enable":
+			state.STP.Enabled = true
+			return "STP enabled"
+		case "disable":
+			state.STP.Enabled = false
+			return "STP disabled"
+		case "mode":
+			if len(cmd.Args) >= 2 {
+				state.STP.Mode = cmd.Args[1]
+				return fmt.Sprintf("STP mode set to %s", cmd.Args[1])
+			}
+		case "priority":
+			if len(cmd.Args) >= 2 {
+				pri, err := parseNum(cmd.Args[1])
+				if err == nil {
+					state.STP.BridgePriority = pri
+					return fmt.Sprintf("STP priority set to %d", pri)
+				}
+			}
+		case "v-stp":
+			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "enable" {
+				state.STP.VSTPEnabled = true
+				return "V-STP enabled"
+			} else if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "disable" {
+				state.STP.VSTPEnabled = false
+				return "V-STP disabled"
+			}
+			return "Error: usage: stp v-stp enable|disable"
+		case "bridge-address":
+			if len(cmd.Args) >= 2 {
+				state.STP.BridgeAddress = cmd.Args[1]
+				return fmt.Sprintf("STP bridge-address set to %s", cmd.Args[1])
+			}
+			return "Error: usage: stp bridge-address <mac>"
+		case "root":
+			if len(cmd.Args) >= 2 {
+				rootType := strings.ToLower(cmd.Args[1])
+				if rootType == "primary" {
+					state.STP.BridgePriority = 0
+					return "STP root primary configured"
+				} else if rootType == "secondary" {
+					state.STP.BridgePriority = 4096
+					return "STP root secondary configured"
+				}
+			}
+			return "Error: usage: stp root primary|secondary"
+		case "edged-port":
+			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "enable" {
+				state.DeviceConfig["stp:edged-port"] = "enable"
+				return "STP edged-port enabled"
+			} else if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "disable" {
+				state.DeviceConfig["stp:edged-port"] = "disable"
+				return "STP edged-port disabled"
+			}
+			return "Error: usage: stp edged-port enable|disable"
+		case "bpdu-protection":
+			state.DeviceConfig["stp:bpdu-protection"] = "enable"
+			return "STP BPDU protection enabled"
+		case "root-protection":
+			state.DeviceConfig["stp:root-protection"] = "enable"
+			return "STP root protection enabled"
+		case "loop-protection":
+			state.DeviceConfig["stp:loop-protection"] = "enable"
+			return "STP loop protection enabled"
+		case "tc-protection":
+			if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "interval" {
+				interval, err := parseNum(cmd.Args[2])
+				if err == nil {
+					state.DeviceConfig["stp:tc-protection-interval"] = fmt.Sprintf("%d", interval)
+					return fmt.Sprintf("STP TC protection interval set to %ds", interval)
+				}
+			}
+			return "Error: usage: stp tc-protection interval <seconds>"
+		case "region-configuration":
+			// stp region-configuration 进入 MSTP 域配置视图
+			return "Enter MSTP region configuration view"
+		case "region-name":
+			if len(cmd.Args) >= 1 {
+				state.STP.RegionName = cmd.Args[0]
+				return fmt.Sprintf("STP region name set to %s", cmd.Args[0])
+			}
+			return "Error: usage: stp region-name <name>"
+		case "revision-level":
+			if len(cmd.Args) >= 1 {
+				level, err := parseNum(cmd.Args[0])
+				if err == nil {
+					state.STP.RevisionLevel = level
+					return fmt.Sprintf("STP revision level set to %d", level)
+				}
+			}
+			return "Error: usage: stp revision-level <level>"
+		case "instance":
+			// stp instance <id> vlan <vlan-list>
+			if len(cmd.Args) >= 4 && strings.ToLower(cmd.Args[1]) == "vlan" {
+				instanceID, err := parseNum(cmd.Args[0])
+				if err != nil {
+					return "Error: invalid instance ID"
+				}
+				vlanList := strings.Split(cmd.Args[2], ",")
+				for _, v := range vlanList {
+					vlanID, err := parseNum(v)
+					if err == nil {
+						state.STP.VLANMapping[vlanID] = instanceID
+					}
+				}
+				return fmt.Sprintf("STP instance %d mapping VLAN %s", instanceID, cmd.Args[2])
+			}
+			return "Error: usage: stp instance <id> vlan <vlan-list>"
+		case "active":
+			// stp active 激活 MSTP 配置
+			state.STP.RegionActive = true
+			state.STP.Enabled = true
+			return "STP region configuration activated"
+		}
+		return "Error: invalid STP config"
+	case "lacp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 3 || strings.ToLower(cmd.Args[0]) != "m-lag" {
+			return "Error: usage: lacp m-lag priority <prio>|system-id <mac>"
+		}
+		subCmd := strings.ToLower(cmd.Args[1])
+		switch subCmd {
+		case "priority":
+			if len(cmd.Args) >= 3 {
+				prio, err := parseNum(cmd.Args[2])
+				if err == nil {
+					state.DeviceConfig["lacp:m-lag:priority"] = fmt.Sprintf("%d", prio)
+					return fmt.Sprintf("LACP M-LAG priority set to %d", prio)
+				}
+			}
+			return "Error: usage: lacp m-lag priority <value>"
+		case "system-id":
+			if len(cmd.Args) >= 3 {
+				state.DeviceConfig["lacp:m-lag:system-id"] = cmd.Args[2]
+				return fmt.Sprintf("LACP M-LAG system-id set to %s", cmd.Args[2])
+			}
+			return "Error: usage: lacp m-lag system-id <mac>"
+		}
+		return "Error: invalid LACP M-LAG command"
+	case "dhcp":
+		// DHCP 池视图下的子命令处理
+		if state.CurrentView == ViewDHCPPool {
+			poolName := state.CurrentSub
+			pool, ok := state.DHCP.Pools[poolName]
+			if !ok {
+				state.CurrentView = ViewSystem
+				state.CurrentSub = ""
+				return "Error: DHCP pool not found"
+			}
+			subCmd := strings.ToLower(cmd.Args[0])
+			switch subCmd {
+			case "network":
+				if len(cmd.Args) < 4 || strings.ToLower(cmd.Args[1]) != "mask" {
+					return "Error: usage: network <ip> mask <mask>"
+				}
+				pool.Network = cmd.Args[0]
+				pool.Mask = cmd.Args[2]
+				// 计算总地址数
+				if pool.Network != "" && pool.Mask != "" {
+					prefix := subnetToPrefix(pool.Mask)
+					total := 1 << (32 - prefix)
+					if total > 2 {
+						pool.Total = total - 2 // 减去网络地址和广播地址
+					} else {
+						pool.Total = total
+					}
+				}
+				return fmt.Sprintf("Network %s mask %s configured", cmd.Args[0], cmd.Args[2])
+			case "gateway-list":
+				if len(cmd.Args) < 2 {
+					return "Error: usage: gateway-list <ip> [<ip2>]"
+				}
+				pool.Gateway = cmd.Args[1]
+				return fmt.Sprintf("Gateway %s configured", cmd.Args[1])
+			case "dns-list":
+				if len(cmd.Args) < 2 {
+					return "Error: usage: dns-list <ip> [<ip2>]"
+				}
+				pool.DNSList = []string{cmd.Args[1]}
+				if len(cmd.Args) >= 3 {
+					pool.DNSList = append(pool.DNSList, cmd.Args[2])
+				}
+				return fmt.Sprintf("DNS list configured: %s", strings.Join(pool.DNSList, ", "))
+			case "lease":
+				// lease day <days> [hour <hours>]
+				if len(cmd.Args) < 2 || strings.ToLower(cmd.Args[0]) != "day" {
+					return "Error: usage: lease day <days> [hour <hours>]"
+				}
+				days := cmd.Args[1]
+				hours := ""
+				for i := 2; i < len(cmd.Args); i++ {
+					if strings.ToLower(cmd.Args[i]) == "hour" && i+1 < len(cmd.Args) {
+						hours = cmd.Args[i+1]
+						break
+					}
+				}
+				if hours != "" {
+					pool.LeaseTime = fmt.Sprintf("%s days %s hours", days, hours)
+				} else {
+					pool.LeaseTime = fmt.Sprintf("%s days", days)
+				}
+				return fmt.Sprintf("Lease time configured: %s", pool.LeaseTime)
+			case "excluded-ip-address":
+				if len(cmd.Args) < 2 {
+					return "Error: usage: excluded-ip-address <start-ip> [<end-ip>]"
+				}
+				startIP := cmd.Args[1]
+				endIP := startIP
+				if len(cmd.Args) >= 3 {
+					endIP = cmd.Args[2]
+				}
+				excluded := fmt.Sprintf("%s-%s", startIP, endIP)
+				pool.ExcludedIPs = append(pool.ExcludedIPs, excluded)
+				return fmt.Sprintf("Excluded IP address: %s", excluded)
+			default:
+				return "Error: invalid DHCP pool command"
+			}
+		}
+		// 系统视图下的 DHCP 命令
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		subCmd := strings.ToLower(cmd.Args[0])
+		switch subCmd {
+		case "enable":
+			if state.DHCP == nil {
+				state.DHCP = &DHCPConfig{Pools: make(map[string]*DHCPPool)}
+			}
+			state.DHCP.Enabled = true
+			return "DHCP enabled"
+		case "disable":
+			if state.DHCP != nil {
+				state.DHCP.Enabled = false
+			}
+			return "DHCP disabled"
+		case "pool":
+			if len(cmd.Args) < 2 {
+				return "Error: usage: dhcp pool <pool-name>"
+			}
+			poolName := cmd.Args[1]
+			if state.DHCP == nil {
+				state.DHCP = &DHCPConfig{Pools: make(map[string]*DHCPPool)}
+			}
+			if _, ok := state.DHCP.Pools[poolName]; !ok {
+				state.DHCP.Pools[poolName] = &DHCPPool{Name: poolName}
+			}
+			state.CurrentView = ViewDHCPPool
+			state.CurrentSub = poolName
+			return fmt.Sprintf("Enter DHCP pool %s view", poolName)
+		case "select":
+			if len(cmd.Args) < 2 {
+				return "Error: usage: dhcp select global|interface"
+			}
+			mode := strings.ToLower(cmd.Args[1])
+			if mode != "global" && mode != "interface" {
+				return "Error: usage: dhcp select global|interface"
+			}
+			state.DHCPSelectMode = mode
+			return fmt.Sprintf("DHCP %s selected", mode)
+		}
+		return "Error: invalid DHCP command"
+	case "ip pool":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: ip pool <pool-name>"
+		}
+		poolName := cmd.Args[0]
+		if state.DHCP == nil {
+			state.DHCP = &DHCPConfig{Pools: make(map[string]*DHCPPool)}
+		}
+		if _, ok := state.DHCP.Pools[poolName]; !ok {
+			state.DHCP.Pools[poolName] = &DHCPPool{Name: poolName}
+		}
+		// 解析后续参数
+		for i := 1; i < len(cmd.Args); i++ {
+			switch strings.ToLower(cmd.Args[i]) {
+			case "gateway-list":
+				if i+1 < len(cmd.Args) {
+					state.DHCP.Pools[poolName].Gateway = cmd.Args[i+1]
+					i++
+				}
+			case "dns-list":
+				for j := i + 1; j < len(cmd.Args); j++ {
+					if strings.Contains(cmd.Args[j], ".") {
+						state.DHCP.Pools[poolName].DNSList = append(state.DHCP.Pools[poolName].DNSList, cmd.Args[j])
+					} else {
+						break
+					}
+				}
+				i += len(state.DHCP.Pools[poolName].DNSList)
+			case "network":
+				if i+1 < len(cmd.Args) {
+					state.DHCP.Pools[poolName].Network = cmd.Args[i+1]
+					i++
+				}
+			}
+		}
+		return fmt.Sprintf("IP pool %s configured", poolName)
+	case "vrrp":
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) < 2 {
+			return "Error: need group-id and virtual-ip"
+		}
+		groupID, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid group-id"
+		}
+		virtualIP := cmd.Args[1]
+		priority := 100
+		preempt := true
+		delay := 0
+		for i := 2; i < len(cmd.Args); i += 2 {
+			if i+1 >= len(cmd.Args) {
+				break
+			}
+			switch strings.ToLower(cmd.Args[i]) {
+			case "priority":
+				priority, _ = parseNum(cmd.Args[i+1])
+			case "preempt":
+				preempt = strings.ToLower(cmd.Args[i+1]) != "disable"
+			case "delay":
+				delay, _ = parseNum(cmd.Args[i+1])
+			}
+		}
+		state.VRRP[groupID] = &VRRPConfig{
+			GroupID:   groupID,
+			VirtualIP: virtualIP,
+			Priority:  priority,
+			Preempt:   preempt,
+			Delay:     delay,
+		}
+		return fmt.Sprintf("VRRP group %d configured", groupID)
+	case "ipsec":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 6 {
+			return "Error: need tunnel-id local-ip remote-ip mode encryption authentication"
+		}
+		tunnelID := cmd.Args[0]
+		localIP := cmd.Args[1]
+		remoteIP := cmd.Args[2]
+		mode := cmd.Args[3]
+		encryption := cmd.Args[4]
+		auth := cmd.Args[5]
+		state.IPsec[tunnelID] = &IPsecConfig{
+			TunnelID:       tunnelID,
+			LocalIP:        localIP,
+			RemoteIP:       remoteIP,
+			Mode:           mode,
+			Encryption:     encryption,
+			Authentication: auth,
+		}
+		return fmt.Sprintf("IPsec tunnel %s created", tunnelID)
+	case "snmp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 3 {
+			return "Error: need version community [manager-ip]"
+		}
+		state.SNMP.Enabled = true
+		state.SNMP.Version = cmd.Args[0]
+		state.SNMP.Community = cmd.Args[1]
+		if len(cmd.Args) >= 3 {
+			state.SNMP.ManagerIP = cmd.Args[2]
+		}
+		return fmt.Sprintf("SNMP %s configured", state.SNMP.Version)
+	case "syslog":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 2 {
+			return "Error: need server-ip [port]"
+		}
+		state.Syslog.Enabled = true
+		state.Syslog.ServerIP = cmd.Args[0]
+		if len(cmd.Args) >= 2 {
+			port, _ := parseNum(cmd.Args[1])
+			state.Syslog.ServerPort = port
+		}
+		return fmt.Sprintf("Syslog server %s:%d configured", state.Syslog.ServerIP, state.Syslog.ServerPort)
+	case "ntp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: need server-ip"
+		}
+		state.NTP.Enabled = true
+		state.NTP.ServerIP = cmd.Args[0]
+		if len(cmd.Args) >= 2 {
+			port, _ := parseNum(cmd.Args[1])
+			state.NTP.ServerPort = port
+		}
+		return fmt.Sprintf("NTP server %s:%d configured", state.NTP.ServerIP, state.NTP.ServerPort)
+	case "authentication-mode":
+		// VTY 视图下设置认证模式
+		if state.CurrentView != ViewVTY {
+			return "Error: must be in VTY user interface view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: authentication-mode aaa|password|none"
+		}
+		authMode := strings.ToLower(cmd.Args[0])
+		if authMode != "aaa" && authMode != "password" && authMode != "none" {
+			return "Error: usage: authentication-mode aaa|password|none"
+		}
+		state.VTY.AuthenticationMode = authMode
+		return fmt.Sprintf("Authentication-mode set to %s", authMode)
+	case "user privilege":
+		// VTY 视图下设置用户优先级
+		if state.CurrentView != ViewVTY {
+			return "Error: must be in VTY user interface view"
+		}
+		if len(cmd.Args) < 2 || strings.ToLower(cmd.Args[0]) != "level" {
+			return "Error: usage: user privilege level <level>"
+		}
+		level, err := parseNum(cmd.Args[1])
+		if err != nil || level < 0 || level > 15 {
+			return "Error: privilege level must be between 0 and 15"
+		}
+		state.VTY.UserPrivilegeLevel = level
+		return fmt.Sprintf("User privilege level set to %d", level)
+	case "protocol":
+		// VTY 视图下设置允许协议
+		if state.CurrentView != ViewVTY {
+			return "Error: must be in VTY user interface view"
+		}
+		if len(cmd.Args) < 2 || strings.ToLower(cmd.Args[0]) != "inbound" {
+			return "Error: usage: protocol inbound ssh|telnet|all"
+		}
+		protocol := strings.ToLower(cmd.Args[1])
+		if protocol != "ssh" && protocol != "telnet" && protocol != "all" {
+			return "Error: usage: protocol inbound ssh|telnet|all"
+		}
+		state.VTY.ProtocolInbound = protocol
+		return fmt.Sprintf("Protocol inbound set to %s", protocol)
+	case "local-user":
+		// 系统视图下创建本地用户
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: local-user <name> [password cipher <pwd>|service-type <type>]"
+		}
+		userName := cmd.Args[0]
+		if state.LocalUsers == nil {
+			state.LocalUsers = make(map[string]*LocalUser)
+		}
+		if _, ok := state.LocalUsers[userName]; !ok {
+			state.LocalUsers[userName] = &LocalUser{Name: userName}
+		}
+		// 解析后续参数
+		for i := 1; i < len(cmd.Args); i++ {
+			switch strings.ToLower(cmd.Args[i]) {
+			case "password":
+				if i+2 < len(cmd.Args) && strings.ToLower(cmd.Args[i+1]) == "cipher" {
+					state.LocalUsers[userName].PasswordCipher = cmd.Args[i+2]
+					state.LocalUsers[userName].Password = cmd.Args[i+2]
+					i += 2
+				}
+			case "service-type":
+				if i+1 < len(cmd.Args) {
+					state.LocalUsers[userName].ServiceType = cmd.Args[i+1]
+					i++
+				}
+			}
+		}
+		return fmt.Sprintf("Local user %s created", userName)
+	case "stelnet":
+		// 系统视图下启用 STelnet 服务
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "server" && strings.ToLower(cmd.Args[1]) == "enable" {
+			state.SSH.STelnetEnabled = true
+			return "STelnet server enabled"
+		}
+		return "Error: usage: stelnet server enable"
+	case "rsa":
+		// 系统视图下生成本地 RSA 密钥对
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[0]) == "local-key-pair" && strings.ToLower(cmd.Args[1]) == "create" {
+			state.SSH.RSAGenDone = true
+			return "RSA local key-pair has been generated"
+		}
+		return "Error: usage: rsa local-key-pair create"
+	case "ssh user":
+		// 系统视图下设置 SSH 用户认证类型
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 3 {
+			return "Error: usage: ssh user <name> authentication-type password|rsa"
+		}
+		sshUserName := cmd.Args[0]
+		if strings.ToLower(cmd.Args[1]) != "authentication-type" {
+			return "Error: usage: ssh user <name> authentication-type password|rsa"
+		}
+		authType := strings.ToLower(cmd.Args[2])
+		if authType != "password" && authType != "rsa" {
+			return "Error: usage: ssh user <name> authentication-type password|rsa"
+		}
+		if state.SSH.Users == nil {
+			state.SSH.Users = make(map[string]*SSHUser)
+		}
+		if _, ok := state.SSH.Users[sshUserName]; !ok {
+			state.SSH.Users[sshUserName] = &SSHUser{Name: sshUserName}
+		}
+		state.SSH.Users[sshUserName].AuthType = authType
+		return fmt.Sprintf("SSH user %s authentication-type set to %s", sshUserName, authType)
+	case "ssh":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "disable" {
+			state.SSH.Enabled = false
+			return "SSH disabled"
+		} else if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "port" {
+			port, err := parseNum(cmd.Args[1])
+			if err == nil {
+				state.SSH.Port = port
+				return fmt.Sprintf("SSH port set to %d", port)
+			}
+		}
+		return "Error: invalid SSH config"
+	case "vxlan":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 3 {
+			return "Error: need vni vtep-ip peer-vtep-ip [vrf]"
+		}
+		vni, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid VNI"
+		}
+		state.VXLAN.Enabled = true
+		state.VXLAN.VNI = vni
+		state.VXLAN.VTEPIP = cmd.Args[1]
+		state.VXLAN.PeerVTEPIP = cmd.Args[2]
+		if len(cmd.Args) >= 4 {
+			state.VXLAN.VRFName = cmd.Args[3]
+		}
+		return fmt.Sprintf("VXLAN VNI %d configured", vni)
+	case "vsi":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: vsi <name>"
+		}
+		vsiName := cmd.Args[0]
+		if _, exists := state.VXLAN.VSIs[vsiName]; !exists {
+			state.VXLAN.VSIs[vsiName] = &VSIConfig{
+				Name:   vsiName,
+				Status: "Active",
+				VPNs:   []string{},
+			}
+			return fmt.Sprintf("VSI %s created", vsiName)
+		}
+		return fmt.Sprintf("VSI %s already exists", vsiName)
+	case "vni":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: vni <vni-id>"
+		}
+		vni, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid VNI"
+		}
+		state.VXLAN.VNI = vni
+		state.VXLAN.Enabled = true
+		return fmt.Sprintf("VNI %d configured", vni)
+	case "evpn-instance":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: evpn-instance <instance-id>"
+		}
+		instanceID := cmd.Args[0]
+		state.VXLAN.EvpnEnabled = true
+		state.DeviceConfig["vxlan:evpn-instance"] = instanceID
+		return fmt.Sprintf("EVPN instance %s created", instanceID)
+	case "route-distinguisher":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: route-distinguisher <auto|rd-value>"
+		}
+		rdVal := strings.Join(cmd.Args, " ")
+		state.DeviceConfig["vxlan:route-distinguisher"] = rdVal
+		return fmt.Sprintf("Route distinguisher set to %s", rdVal)
+	case "vpn-target":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: vpn-target <auto|rt-value>"
+		}
+		rtVal := strings.Join(cmd.Args, " ")
+		state.DeviceConfig["vxlan:vpn-target"] = rtVal
+		return fmt.Sprintf("VPN target set to %s", rtVal)
+	case "distributed-gateway":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		state.DeviceConfig["vxlan:distributed-gateway"] = "enabled"
+		return "Distributed gateway enabled"
+	case "vxlan-interface":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: vxlan-interface <interface-name>"
+		}
+		ifaceName := cmd.Args[0]
+		if state.Interfaces == nil {
+			state.Interfaces = make(map[string]*InterfaceConfig)
+		}
+		state.Interfaces[ifaceName] = &InterfaceConfig{
+			Name:        ifaceName,
+			Status:      "Up",
+			Protocol:    "Up",
+			Description: "VXLAN Tunnel Interface",
+		}
+		state.DeviceConfig[fmt.Sprintf("interface:%s:type", ifaceName)] = "VXLAN"
+		return fmt.Sprintf("VXLAN interface %s created", ifaceName)
+	case "vxlan-traffic-type":
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: vxlan-traffic-type control/data/all"
+		}
+		ttype := cmd.Args[0]
+		state.DeviceConfig[fmt.Sprintf("interface:%s:vxlan-traffic-type", state.CurrentSub)] = ttype
+		return fmt.Sprintf("VXLAN traffic type set to %s", ttype)
+	case "remote-evpn-vtep":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 2 {
+			return "Error: usage: remote-evpn-vtep <ip> vni <vni>"
+		}
+		remoteIP := cmd.Args[0]
+		vniStr := cmd.Args[1]
+		state.DeviceConfig[fmt.Sprintf("vxlan:remote-vtep:%s", remoteIP)] = vniStr
+		return fmt.Sprintf("Remote EVPN VTEP %s added", remoteIP)
+	case "bgp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: need as-number"
+		}
+		asNumber, err := parseNum(cmd.Args[0])
+		if err != nil {
+			return "Error: invalid AS number"
+		}
+		state.BGP.Enabled = true
+		state.BGP.ASNumber = asNumber
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "router-id" {
+			state.BGP.RouterID = cmd.Args[2]
+		}
+		state.CurrentView = ViewBGP
+		state.CurrentSub = fmt.Sprintf("bgp-%d", asNumber)
+		return fmt.Sprintf("Enter BGP view, AS %d", asNumber)
+	case "peer":
+		if state.CurrentView != ViewBGP || len(cmd.Args) < 2 {
+			return "Error: must be in BGP view, need peer-ip and remote-as"
+		}
+		peerIP := cmd.Args[0]
+		remoteAS, err := parseNum(cmd.Args[1])
+		if err != nil {
+			return "Error: invalid remote-as"
+		}
+		ebgp := remoteAS != state.BGP.ASNumber
+		state.BGP.Neighbors[peerIP] = &BGPNeighbor{
+			IPAddress: peerIP,
+			RemoteAS:  remoteAS,
+			EBGP:      ebgp,
+		}
+		return fmt.Sprintf("BGP neighbor %s configured", peerIP)
+	case "rip":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 {
+			processID, err := parseNum(cmd.Args[0])
+			if err == nil {
+				state.DeviceConfig["rip:process-id"] = fmt.Sprintf("%d", processID)
+				state.DeviceConfig["rip:enabled"] = "true"
+				return fmt.Sprintf("RIP process %d started", processID)
+			}
+		}
+		return "Error: invalid RIP config"
+	case "mpls":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "lsr-id" {
+			state.DeviceConfig["mpls:lsr-id"] = cmd.Args[1]
+			return fmt.Sprintf("MPLS LSR ID set to %s", cmd.Args[1])
+		}
+		return "MPLS enabled"
+	case "ppp":
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		state.DeviceConfig["interface:"+state.CurrentSub+":encapsulation"] = "ppp"
+		return "PPP encapsulation enabled on " + state.CurrentSub
+	case "pppoe":
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[0]) == "pppoe-client" && strings.ToLower(cmd.Args[1]) == "dial-bundle-number" {
+			bundleID, err := parseNum(cmd.Args[2])
+			if err == nil {
+				state.DeviceConfig["interface:"+state.CurrentSub+":pppoe-bundle"] = fmt.Sprintf("%d", bundleID)
+				return fmt.Sprintf("PPPoE client configured, bundle %d", bundleID)
+			}
+		}
+		return "PPPoE enabled"
+	case "ipv6":
+		if state.CurrentView == ViewSystem {
+			state.DeviceConfig["ipv6:enabled"] = "true"
+			return "IPv6 enabled"
+		} else if state.CurrentView == ViewInterface {
+			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "address" {
+				state.DeviceConfig["interface:"+state.CurrentSub+":ipv6-address"] = cmd.Args[1]
+				return fmt.Sprintf("IPv6 address %s configured on %s", cmd.Args[1], state.CurrentSub)
+			}
+		}
+		return "IPv6 configuration"
+	case "smtp":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "enable" {
+			state.DeviceConfig["smtp:enabled"] = "true"
+			return "SMTP service enabled"
+		}
+		return "SMTP configuration"
+	case "bfd":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "enable" {
+			state.BFD.Enabled = true
+			return "BFD enabled"
+		} else if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "disable" {
+			state.BFD.Enabled = false
+			return "BFD disabled"
+		} else if len(cmd.Args) >= 4 && state.BFD.Enabled {
+			peerIP := cmd.Args[0]
+			localIP := cmd.Args[1]
+			minTx, _ := parseNum(cmd.Args[2])
+			minRx, _ := parseNum(cmd.Args[3])
+			detectMult := 3
+			if len(cmd.Args) >= 5 {
+				detectMult, _ = parseNum(cmd.Args[4])
+			}
+			state.BFD.Sessions[peerIP] = &BFDSession{
+				PeerIP:        peerIP,
+				LocalIP:       localIP,
+				MinTxInterval: minTx,
+				MinRxInterval: minRx,
+				DetectMult:    detectMult,
+			}
+			return fmt.Sprintf("BFD session %s created", peerIP)
+		}
+		return "Error: invalid BFD config"
+	case "policy-based-route", "pbr":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 4 {
+			policyName := cmd.Args[0]
+			ruleID, _ := parseNum(cmd.Args[1])
+			matchACL := cmd.Args[2]
+			nextHop := cmd.Args[3]
+			iface := ""
+			if len(cmd.Args) >= 5 {
+				iface = cmd.Args[4]
+			}
+			if _, ok := state.PBR[policyName]; !ok {
+				state.PBR[policyName] = []*PBRRule{}
+			}
+			state.PBR[policyName] = append(state.PBR[policyName], &PBRRule{
+				ID:        ruleID,
+				MatchACL:  matchACL,
+				NextHop:   nextHop,
+				Interface: iface,
+			})
+			return fmt.Sprintf("PBR rule %d added to policy %s", ruleID, policyName)
+		}
+		return "Error: invalid PBR config"
+	case "gre":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 3 {
+			tunnelName := cmd.Args[0]
+			srcIP := cmd.Args[1]
+			destIP := cmd.Args[2]
+			key := 0
+			keepalive := false
+			if len(cmd.Args) >= 4 {
+				key, _ = parseNum(cmd.Args[3])
+			}
+			if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[4]) == "keepalive" {
+				keepalive = true
+			}
+			state.GRE[tunnelName] = &GREConfig{
+				SourceIP:  srcIP,
+				DestIP:    destIP,
+				Key:       key,
+				Keepalive: keepalive,
+			}
+			return fmt.Sprintf("GRE tunnel %s created", tunnelName)
+		}
+		return "Error: invalid GRE config"
+	case "qos":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "enable" {
+			state.QoS.Enabled = true
+			return "QoS enabled"
+		} else if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "disable" {
+			state.QoS.Enabled = false
+			return "QoS disabled"
+		} else if len(cmd.Args) >= 3 && state.QoS.Enabled {
+			subCmd := strings.ToLower(cmd.Args[0])
+			name := cmd.Args[1]
+			switch subCmd {
+			case "classifier":
+				acl := ""
+				dscp := 0
+				if len(cmd.Args) >= 3 {
+					acl = cmd.Args[2]
+				}
+				if len(cmd.Args) >= 4 {
+					dscp, _ = parseNum(cmd.Args[3])
+				}
+				state.QoS.Classifiers[name] = &QoSClassifier{
+					Name: name,
+					ACL:  acl,
+					DSCP: dscp,
+				}
+				return fmt.Sprintf("QoS classifier %s created", name)
+			case "behavior":
+				bandwidth := 0
+				priority := 0
+				queue := ""
+				if len(cmd.Args) >= 3 {
+					bandwidth, _ = parseNum(cmd.Args[2])
+				}
+				if len(cmd.Args) >= 4 {
+					priority, _ = parseNum(cmd.Args[3])
+				}
+				if len(cmd.Args) >= 5 {
+					queue = cmd.Args[4]
+				}
+				state.QoS.Behaviors[name] = &QoSBehavior{
+					Name:      name,
+					Bandwidth: bandwidth,
+					Priority:  priority,
+					Queue:     queue,
+				}
+				return fmt.Sprintf("QoS behavior %s created", name)
+			case "policy":
+				classifier := ""
+				behavior := ""
+				if len(cmd.Args) >= 3 {
+					classifier = cmd.Args[2]
+				}
+				if len(cmd.Args) >= 4 {
+					behavior = cmd.Args[3]
+				}
+				state.QoS.Policies[name] = &QoSPolicy{
+					Name:       name,
+					Classifier: classifier,
+					Behavior:   behavior,
+				}
+				return fmt.Sprintf("QoS policy %s created", name)
+			}
+		}
+		return "Error: invalid QoS config"
+	case "dot1x":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "enable" {
+			state.Dot1x.Enabled = true
+			return "802.1X enabled"
+		} else if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "disable" {
+			state.Dot1x.Enabled = false
+			return "802.1X disabled"
+		} else if len(cmd.Args) >= 2 && state.Dot1x.Enabled {
+			portName := cmd.Args[0]
+			authMethod := "eap"
+			reauth := false
+			quietTimer := 60
+			if len(cmd.Args) >= 2 {
+				authMethod = cmd.Args[1]
+			}
+			if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "reauth" {
+				reauth = true
+			}
+			if len(cmd.Args) >= 4 {
+				quietTimer, _ = parseNum(cmd.Args[3])
+			}
+			state.Dot1x.Ports[portName] = &Dot1xPort{
+				Enabled:    true,
+				AuthMethod: authMethod,
+				Reauth:     reauth,
+				QuietTimer: quietTimer,
+			}
+			return fmt.Sprintf("802.1X configured on port %s", portName)
+		}
+		return "Error: invalid 802.1X config"
+	case "radius":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 3 {
+			state.RADIUS.Enabled = true
+			state.RADIUS.PrimaryServer = cmd.Args[0]
+			state.RADIUS.SharedSecret = cmd.Args[1]
+			if len(cmd.Args) >= 3 {
+				state.RADIUS.SecondaryServer = cmd.Args[2]
+			}
+			return fmt.Sprintf("RADIUS server %s configured", state.RADIUS.PrimaryServer)
+		}
+		return "Error: invalid RADIUS config"
+	case "netflow":
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "enable" {
+			state.NetFlow.Enabled = true
+			return "NetFlow enabled"
+		} else if len(cmd.Args) >= 1 && strings.ToLower(cmd.Args[0]) == "disable" {
+			state.NetFlow.Enabled = false
+			return "NetFlow disabled"
+		} else if len(cmd.Args) >= 2 {
+			state.NetFlow.Enabled = true
+			state.NetFlow.Exporter = cmd.Args[0]
+			if len(cmd.Args) >= 2 {
+				port, _ := parseNum(cmd.Args[1])
+				state.NetFlow.Port = port
+			}
+			return fmt.Sprintf("NetFlow exporter %s:%d configured", state.NetFlow.Exporter, state.NetFlow.Port)
+		}
+		return "Error: invalid NetFlow config"
+	case "display", "dis":
+		if len(cmd.Args) == 0 {
+			return "Error: need args"
+		}
+		// Normalize args to handle multi-word commands like "ip routing-table"
+		arg0 := strings.ToLower(cmd.Args[0])
+		arg1 := ""
+		if len(cmd.Args) > 1 {
+			arg1 = strings.ToLower(cmd.Args[1])
+		}
+		// 子命令缩写映射（华为 VRP 常用缩写）
+		arg0 = normalizeDisplaySubCmd(arg0)
+		arg1 = normalizeDisplaySubCmd2(arg0, arg1)
+
+		// 设备类型检查：部分 display 子命令只对特定设备有意义
+		isRouter := state.DeviceType == topology.DeviceRouter
+		isL3Switch := state.DeviceType == topology.DeviceL3Switch
+		isSwitch := state.DeviceType == topology.DeviceSwitch
+		isFirewall := state.DeviceType == topology.DeviceFirewall
+		isAC := state.DeviceType == topology.DeviceAC || state.DeviceType == topology.DeviceAP
+		isHost := state.DeviceType == topology.DevicePC || state.DeviceType == topology.DeviceClient || state.DeviceType == topology.DeviceServer
+		isCloudHub := state.DeviceType == topology.DeviceCloud || state.DeviceType == topology.DeviceHub
+
+		switch arg0 {
+		case "this":
+			var out strings.Builder
+			switch state.CurrentView {
+			case ViewUser:
+				// 用户视图显示所有配置
+				out.WriteString("User View configuration:\n")
+				sysname := state.DeviceConfig["sysname"]
+				if sysname == "" {
+					sysname = string(state.DeviceType)
+				}
+				out.WriteString(fmt.Sprintf("  sysname %s\n", sysname))
+				if len(state.Routes) > 0 {
+					out.WriteString("\nRouting table:\n")
+					for _, r := range state.Routes {
+						out.WriteString(fmt.Sprintf("  ip route-static %s %s %s\n", r.Destination, r.Mask, r.NextHop))
+					}
+				}
+			case ViewSystem:
+				// 系统视图显示系统配置
+				out.WriteString("System View configuration:\n")
+				if state.OSPF.Enabled {
+					out.WriteString(fmt.Sprintf("  ospf %d\n", state.OSPF.ProcessID))
+					out.WriteString(fmt.Sprintf("  area %d\n", state.OSPF.AreaID))
+				}
+				if state.BGP.Enabled {
+					out.WriteString(fmt.Sprintf("  bgp %d\n", state.BGP.ASNumber))
+					out.WriteString(fmt.Sprintf("  router-id %s\n", state.BGP.RouterID))
+				}
+				if state.STP.Enabled {
+					out.WriteString(fmt.Sprintf("  stp mode %s\n", state.STP.Mode))
+					out.WriteString(fmt.Sprintf("  stp enable\n"))
+				}
+				if state.VRRP != nil && len(state.VRRP) > 0 {
+					for id, vrrp := range state.VRRP {
+						out.WriteString(fmt.Sprintf("  vrrp vrid %d ip %s\n", id, vrrp.VirtualIP))
+					}
+				}
+				if state.SNMP.Enabled {
+					out.WriteString(fmt.Sprintf("  snmp-agent\n"))
+				}
+				if state.Syslog.Enabled {
+					out.WriteString(fmt.Sprintf("  info-center loghost %s\n", state.Syslog.ServerIP))
+				}
+				if state.NTP.Enabled {
+					out.WriteString(fmt.Sprintf("  ntp-server %s\n", state.NTP.ServerIP))
+				}
+				if state.SSH.Enabled {
+					out.WriteString(fmt.Sprintf("  ssh user %s\n", state.SSH.Version))
+				}
+			case ViewInterface:
+				// 接口视图显示接口配置
+				ifaceName := state.CurrentSub
+				out.WriteString(fmt.Sprintf("interface %s\n", ifaceName))
+				if ip, ok := state.DeviceConfig[fmt.Sprintf("interface:%s:ip", ifaceName)]; ok && ip != "" {
+					out.WriteString(fmt.Sprintf("  ip address %s\n", ip))
+				}
+				if desc, ok := state.DeviceConfig[fmt.Sprintf("interface:%s:description", ifaceName)]; ok && desc != "" {
+					out.WriteString(fmt.Sprintf("  description %s\n", desc))
+				}
+				if state.Interfaces != nil {
+					if iface, ok := state.Interfaces[ifaceName]; ok {
+						if iface.Status != "" {
+							out.WriteString(fmt.Sprintf("  %s\n", iface.Status))
+						}
+					}
+				}
+			default:
+				out.WriteString("Error: Invalid view context\n")
+			}
+			return out.String()
+		case "current-configuration":
+			var out strings.Builder
+			out.WriteString("Current config:\n")
+			for k, v := range state.DeviceConfig {
+				out.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+			}
+			if state.OSPF.Enabled {
+				out.WriteString(fmt.Sprintf("  OSPF: process %d, area %d\n", state.OSPF.ProcessID, state.OSPF.AreaID))
+			}
+			if state.BGP.Enabled {
+				out.WriteString(fmt.Sprintf("  BGP: AS %d, Router ID %s\n", state.BGP.ASNumber, state.BGP.RouterID))
+			}
+			return out.String()
+		case "eth-trunk":
+			if isHost || isCloudHub {
+				return fmt.Sprintf("Error: Eth-Trunk is not supported on %s", state.DeviceType)
+			}
+			// display eth-trunk [id]
+			trunkID := ""
+			if arg1 != "" && arg1 != "brief" {
+				trunkID = arg1
+			}
+			var out strings.Builder
+			out.WriteString("Eth-Trunk interface information:\n")
+			out.WriteString("----------------------------------------------------\n")
+			// 收集所有 Eth-Trunk 接口
+			trunkMap := make(map[string][]string)
+			for k, v := range state.DeviceConfig {
+				if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
+					parts := strings.SplitN(k, ":", 3)
+					if len(parts) >= 2 {
+						portName := parts[1]
+						trunkIDVal := v
+						trunkName := fmt.Sprintf("Eth-Trunk%s", trunkIDVal)
+						trunkMap[trunkName] = append(trunkMap[trunkName], portName)
+					}
+				}
+			}
+			if len(trunkMap) == 0 {
+				out.WriteString("No Eth-Trunk interface configured\n")
+			} else {
+				for trunkName, members := range trunkMap {
+					// 如果指定了 trunkID，只显示该 trunk
+					if trunkID != "" && trunkName != fmt.Sprintf("Eth-Trunk%s", trunkID) {
+						continue
+					}
+					mode := state.DeviceConfig[fmt.Sprintf("interface:%s:mode", trunkName)]
+					if mode == "" {
+						mode = "manual"
+					}
+					loadBalance := state.DeviceConfig[fmt.Sprintf("interface:%s:load-balance", trunkName)]
+					if loadBalance == "" {
+						loadBalance = "src-dst-mac"
+					}
+					ip := state.DeviceConfig[fmt.Sprintf("interface:%s:ip", trunkName)]
+					status := state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)]
+					out.WriteString(fmt.Sprintf("%s (Mode: %s, Load-Balance: %s)\n", trunkName, mode, loadBalance))
+					out.WriteString(fmt.Sprintf("  Status: %s\n", status))
+					if ip != "" {
+						out.WriteString(fmt.Sprintf("  IP address: %s\n", ip))
+					}
+					out.WriteString(fmt.Sprintf("  Member ports (%d):\n", len(members)))
+					for _, p := range members {
+						portStatus := state.DeviceConfig[fmt.Sprintf("interface:%s:status", p)]
+						if portStatus == "" {
+							portStatus = "Up"
+						}
+						out.WriteString(fmt.Sprintf("    %s: %s\n", p, portStatus))
+					}
+					out.WriteString("\n")
+				}
+			}
+			return out.String()
+		case "link-aggregation":
+			// display link-aggregation summary
+			if arg1 == "summary" {
+				var out strings.Builder
+				out.WriteString("Summary of link aggregation:\n")
+				out.WriteString("----------------------------------------------------\n")
+				// 收集所有聚合组
+				aggMap := make(map[string]map[string]interface{})
+				// 检查 Eth-Trunk
+				for k, v := range state.DeviceConfig {
+					if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
+						parts := strings.SplitN(k, ":", 3)
+						if len(parts) >= 2 {
+							portName := parts[1]
+							trunkID := v
+							trunkName := fmt.Sprintf("Eth-Trunk%s", trunkID)
+							if aggMap[trunkName] == nil {
+								aggMap[trunkName] = make(map[string]interface{})
+								aggMap[trunkName]["type"] = "Eth-Trunk"
+								aggMap[trunkName]["members"] = []string{}
+							}
+							members := aggMap[trunkName]["members"].([]string)
+							members = append(members, portName)
+							aggMap[trunkName]["members"] = members
+						}
+					}
+				}
+				// 检查 Bridge-Aggregation
+				for k := range state.DeviceConfig {
+					if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
+						parts := strings.SplitN(k, ":", 3)
+						if len(parts) >= 2 {
+							portName := parts[1]
+							// 检查是否是 Bridge-Aggregation
+							aggID := state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", portName)]
+							if aggID != "" {
+								bridgeName := fmt.Sprintf("Bridge-Aggregation%s", aggID)
+								if _, ok := aggMap[bridgeName]; !ok {
+									if aggMap[bridgeName] == nil {
+										aggMap[bridgeName] = make(map[string]interface{})
+										aggMap[bridgeName]["type"] = "Bridge-Aggregation"
+										aggMap[bridgeName]["members"] = []string{}
+									}
+									members := aggMap[bridgeName]["members"].([]string)
+									members = append(members, portName)
+									aggMap[bridgeName]["members"] = members
+								}
+							}
+						}
+					}
+				}
+				if len(aggMap) == 0 {
+					out.WriteString("No link aggregation configured\n")
+				} else {
+					out.WriteString(fmt.Sprintf("%-25s %-10s %s\n", "Aggregation Group", "Type", "Member Ports"))
+					out.WriteString("---------------------------------------------------------------\n")
+					for name, info := range aggMap {
+						aggType := info["type"]
+						members := info["members"].([]string)
+						out.WriteString(fmt.Sprintf("%-25s %-10s %d\n", name, aggType, len(members)))
+					}
+				}
+				return out.String()
+			}
+			return "Error: invalid link-aggregation command"
+		case "port-vlan", "port":
+			if !isSwitch && !isL3Switch {
+				return fmt.Sprintf("Error: Port VLAN is not supported on %s", state.DeviceType)
+			}
+			// display port vlan
+			var out strings.Builder
+			out.WriteString("Port VLAN configuration:\n")
+			out.WriteString("Interface            Link Type    PVID   Involved VLANs\n")
+			out.WriteString("---------------------------------------------------------------\n")
+			// 收集所有接口的端口配置
+			portVLANMap := make(map[string]map[string]string)
+			for k, v := range state.DeviceConfig {
+				if !strings.HasPrefix(k, "interface:") {
+					continue
+				}
+				parts := strings.SplitN(k, ":", 3)
+				if len(parts) < 3 {
+					continue
+				}
+				ifaceName := parts[1]
+				key := parts[2]
+				if !strings.HasPrefix(key, "port-") {
+					continue
+				}
+				if _, ok := portVLANMap[ifaceName]; !ok {
+					portVLANMap[ifaceName] = make(map[string]string)
+				}
+				portVLANMap[ifaceName][key] = v
+			}
+			if len(portVLANMap) == 0 {
+				out.WriteString("No port VLAN configuration\n")
+			} else {
+				for iface, cfg := range portVLANMap {
+					linkType := cfg["port-link-type"]
+					if linkType == "" {
+						linkType = "access"
+					}
+					pvid := cfg["port-default-vlan"]
+					if pvid == "" {
+						pvid = cfg["port-trunk-pvid"]
+					}
+					if pvid == "" {
+						pvid = "1"
+					}
+					vlans := cfg["port-trunk-allow-vlan"]
+					if vlans == "" {
+						vlans = pvid
+					} else {
+						vlans = vlans + " " + pvid
+					}
+					out.WriteString(fmt.Sprintf("%-20s %-12s %-6s %s\n", iface, linkType, pvid, vlans))
+				}
+			}
+			return out.String()
+		case "ip":
+			// display ip <sub> ...   sub ∈ {interface, pool, routing-table}
+			// 二级子命令缩写与合法性校验（华为 VRP 规则：必须是关键字的前缀）
+			ipSubKW := []string{"interface", "pool", "routing-table"}
+			resolvedSub, subOK, subErr := resolveKeyword(arg1, ipSubKW)
+			if !subOK {
+				switch subErr {
+				case "incomplete":
+					return "Error: Incomplete command found at '^' position."
+				case "ambiguous":
+					return "Error: Ambiguous command found at '^' position."
+				default:
+					return "Error: Wrong parameter found at '^' position."
+				}
+			}
+			arg1 = resolvedSub
+
+			// display ip pool / display ip pool interface vlanif <id>
+			if arg1 == "pool" {
+				// 检查是否是 display ip pool interface vlanif <id>
+				if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "interface" {
+					// 查找 Vlanif 接口对应的地址池
+					vlanifPrefixes := []string{"vlanif"}
+					isVlanif := false
+					for _, prefix := range vlanifPrefixes {
+						if strings.HasPrefix(strings.ToLower(cmd.Args[2]), prefix) {
+							isVlanif = true
+							break
+						}
+					}
+					if isVlanif && len(cmd.Args) >= 4 {
+						// display ip pool interface vlanif <id>
+						vlanID := cmd.Args[3]
+						var out strings.Builder
+						out.WriteString(fmt.Sprintf("Vlanif%s pool information:\n", vlanID))
+						out.WriteString("----------------------------------------------------\n")
+						// 查找关联到该 VLAN 的地址池
+						for name, pool := range state.DHCP.Pools {
+							// 检查是否有接口使用该 VLAN
+							ifaceName := fmt.Sprintf("Vlanif%s", vlanID)
+							boundKey := fmt.Sprintf("interface:%s:dhcp-pool", ifaceName)
+							if state.DeviceConfig[boundKey] == name {
+								out.WriteString(fmt.Sprintf("Pool name: %s\n", name))
+								out.WriteString(fmt.Sprintf("  Network: %s %s\n", pool.Network, pool.Mask))
+								out.WriteString(fmt.Sprintf("  Gateway: %s\n", pool.Gateway))
+								out.WriteString(fmt.Sprintf("  DNS List: %s\n", strings.Join(pool.DNSList, ", ")))
+								out.WriteString(fmt.Sprintf("  Lease: %s\n", pool.LeaseTime))
+								out.WriteString(fmt.Sprintf("  Excluded IPs: %s\n", strings.Join(pool.ExcludedIPs, ", ")))
+								out.WriteString(fmt.Sprintf("  Total: %d, Allocated: %d, Free: %d\n", pool.Total, pool.Allocated, pool.Total-pool.Allocated))
+								return out.String()
+							}
+						}
+						// 如果没找到绑定，显示所有池
+						out.WriteString("No pool bound to this interface\n")
+						if len(state.DHCP.Pools) > 0 {
+							out.WriteString("\nAvailable pools:\n")
+							for name, pool := range state.DHCP.Pools {
+								out.WriteString(fmt.Sprintf("  %s: %s/%s\n", name, pool.Network, pool.Mask))
+							}
+						}
+						return out.String()
+					}
+				}
+				// display ip pool - 显示所有地址池概览
+				var out strings.Builder
+				out.WriteString("IP Pool information\n")
+				out.WriteString("----------------------------------------------------\n")
+				if state.DHCP == nil || len(state.DHCP.Pools) == 0 {
+					out.WriteString("No DHCP pool configured\n")
+					return out.String()
+				}
+				out.WriteString(fmt.Sprintf("%-15s %-18s %-10s %-10s %-10s\n", "PoolName", "Network", "Total", "Allocated", "Free"))
+				out.WriteString("---------------------------------------------------------------\n")
+				for _, pool := range state.DHCP.Pools {
+					free := pool.Total - pool.Allocated
+					if free < 0 {
+						free = 0
+					}
+					network := pool.Network
+					if pool.Mask != "" {
+						network = fmt.Sprintf("%s/%s", pool.Network, pool.Mask)
+					}
+					out.WriteString(fmt.Sprintf("%-15s %-18s %-10d %-10d %-10d\n", pool.Name, network, pool.Total, pool.Allocated, free))
+				}
+				return out.String()
+			}
+			if arg1 == "routing-table" || arg1 == "route" {
+				isVTEP := state.DeviceType == topology.DeviceVTEP
+				if isSwitch && !isVTEP || isHost || isCloudHub || isAC {
+					return fmt.Sprintf("Error: IP routing-table is not supported on %s", state.DeviceType)
+				}
+				targetIP := ""
+				verbose := false
+				if len(cmd.Args) >= 3 {
+					if strings.ToLower(cmd.Args[2]) == "verbose" {
+						verbose = true
+					} else {
+						targetIP = cmd.Args[2]
+						if len(cmd.Args) >= 4 && strings.ToLower(cmd.Args[3]) == "verbose" {
+							verbose = true
+						}
+					}
+				}
+				return formatRoutingTable(state, targetIP, verbose)
+			}
+			// display ip interface [interface-name] [brief]
+			// 支持可选接口名参数（大小写不敏感，落到拓扑里的规范名），以及 brief 关键字；
+			// 其余多余参数按华为 VRP 规则拒绝。
+			//   dis ip int                -> 全部接口
+			//   dis ip int brief          -> 全部接口简表
+			//   dis ip int 10GE5/0/1      -> 指定接口
+			//   dis ip int 10GE5/0/1 brief-> 指定接口简表
+			if len(cmd.Args) > 4 {
+				return "Error: Too many parameters found at '^' position."
+			}
+			brief := false
+			ifName := ""
+			for i := 2; i < len(cmd.Args); i++ {
+				a := strings.ToLower(cmd.Args[i])
+				if res, ok, err := resolveKeyword(a, []string{"brief"}); ok {
+					brief = res == "brief"
+				} else if err == "incomplete" {
+					return "Error: Incomplete command found at '^' position."
+				} else {
+					// 非 brief 关键字，按接口名处理（大小写不敏感）
+					ifName = cmd.Args[i]
+				}
+			}
+			if ifName != "" {
+				if len(state.Interfaces) > 0 {
+					canon, err := parseInterface(ifName, interfaceKeys(state.Interfaces))
+					if err != nil {
+						return fmt.Sprintf("Error: invalid interface '%s'", ifName)
+					}
+					ifName = canon
+				}
+			}
+			return displayIPInterface(state, brief, ifName)
+		case "routing-table":
+			isVTEP := state.DeviceType == topology.DeviceVTEP
+			if isSwitch && !isVTEP || isHost || isCloudHub || isAC {
+				return fmt.Sprintf("Error: IP routing-table is not supported on %s", state.DeviceType)
+			}
+			targetIP := ""
+			verbose := false
+			if len(cmd.Args) >= 2 {
+				if strings.ToLower(cmd.Args[1]) == "verbose" {
+					verbose = true
+				} else {
+					targetIP = cmd.Args[1]
+					if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "verbose" {
+						verbose = true
+					}
+				}
+			}
+			return formatRoutingTable(state, targetIP, verbose)
+		case "arp":
+			var out strings.Builder
+			out.WriteString("IP Address      MAC Address     Interface           Type     Age\n")
+			out.WriteString("------------------------------------------------------------------------\n")
+			if len(state.ARPTable) == 0 {
+				out.WriteString("No ARP entries found\n")
+			} else {
+				for _, entry := range state.ARPTable {
+					age := entry.Age
+					if age == "" {
+						age = "0"
+					}
+					out.WriteString(fmt.Sprintf("%-15s %-17s %-20s %-8s %4s\n", entry.IP, entry.MAC, entry.Interface, entry.Type, age))
+				}
+			}
+			return out.String()
+		case "nat":
+			if !isFirewall && !isRouter && !isL3Switch {
+				return fmt.Sprintf("Error: NAT is not supported on %s", state.DeviceType)
+			}
+			// 检查是否是 display nat server 或 display nat address-group
+			if len(cmd.Args) > 1 {
+				subArg := strings.ToLower(cmd.Args[1])
+				if subArg == "server" {
+					// display nat server
+					var out strings.Builder
+					out.WriteString("NAT Server Configuration:\n")
+					out.WriteString("----------------------------------------------------\n")
+					if state.NAT != nil && len(state.NAT.Servers) > 0 {
+						out.WriteString("Global IP       Global Port  Protocol  Inside IP       Inside Port\n")
+						for _, server := range state.NAT.Servers {
+							out.WriteString(fmt.Sprintf("%-15s %-12s %-8s %-15s %-12s\n", server.GlobalIP, server.GlobalPort, server.Protocol, server.InsideIP, server.InsidePort))
+						}
+					} else {
+						out.WriteString("No NAT server configured\n")
+					}
+					return out.String()
+				}
+				if subArg == "address-group" {
+					// display nat address-group
+					var out strings.Builder
+					out.WriteString("NAT Address Group Configuration:\n")
+					out.WriteString("----------------------------------------------------\n")
+					if state.NAT != nil && len(state.NAT.AddressPools) > 0 {
+						out.WriteString("ID    Start IP        End IP\n")
+						for _, pool := range state.NAT.AddressPools {
+							out.WriteString(fmt.Sprintf("%-5d %-15s %-15s\n", pool.ID, pool.StartIP, pool.EndIP))
+						}
+					} else {
+						out.WriteString("No NAT address-group configured\n")
+					}
+					return out.String()
+				}
+			}
+			// display nat - 显示所有 NAT 表项
+			var out strings.Builder
+			out.WriteString("Protocol  Global IP       Global Port  Inside IP       Inside Port  Type\n")
+			for _, entry := range state.NATTable {
+				out.WriteString(fmt.Sprintf("%-9s %-15s %-12s %-15s %-12s %s\n", entry.Protocol, entry.GlobalIP, entry.GlobalPort, entry.InsideIP, entry.InsidePort, entry.Type))
+			}
+			return out.String()
+		case "vlan":
+			if !isSwitch && !isL3Switch {
+				return fmt.Sprintf("Error: VLAN is not supported on %s", state.DeviceType)
+			}
+			// display vlan <id> - 显示指定 VLAN 信息
+			if len(cmd.Args) > 1 {
+				vlanID, err := parseNum(cmd.Args[1])
+				if err == nil {
+					if vlan, ok := state.VLANs[vlanID]; ok {
+						var out strings.Builder
+						out.WriteString(fmt.Sprintf("VLAN ID: %d\n", vlan.ID))
+						out.WriteString(fmt.Sprintf("Name: %s\n", vlan.Name))
+						out.WriteString(fmt.Sprintf("Status: %s\n", vlan.Status))
+						out.WriteString(fmt.Sprintf("Ports: %s\n", strings.Join(vlan.Ports, ", ")))
+						return out.String()
+					}
+					return fmt.Sprintf("Error: VLAN %d does not exist", vlanID)
+				}
+			}
+			// display vlan - 显示所有 VLAN
+			var out strings.Builder
+			out.WriteString("VLAN ID  Name        Status  Ports\n")
+			for _, vlan := range state.VLANs {
+				ports := strings.Join(vlan.Ports, ", ")
+				out.WriteString(fmt.Sprintf("%-8d %-12s %-7s %s\n", vlan.ID, vlan.Name, vlan.Status, ports))
+			}
+			return out.String()
+		case "mac-address":
+			if !isSwitch && !isL3Switch {
+				return fmt.Sprintf("Error: MAC address is not supported on %s", state.DeviceType)
+			}
+			var out strings.Builder
+			out.WriteString("MAC Address       VLAN  Interface            Type\n")
+			for _, entry := range state.MACTable {
+				out.WriteString(fmt.Sprintf("%-17s %-5d %-20s %s\n", entry.MAC, entry.VLAN, entry.Interface, entry.Type))
+			}
+			return out.String()
+		case "interface":
+			arg2 := ""
+			if len(cmd.Args) > 2 {
+				arg2 = strings.ToLower(cmd.Args[2])
+			}
+			isBrief := arg1 == "brief" || arg2 == "brief"
+			// 收集所有配置的接口
+			type ifaceInfo struct {
+				Name        string
+				Status      string
+				Protocol    string
+				Description string
+				IP          string
+				Mask        string
+				Speed       string
+				Duplex      string
+				MTU         string
+			}
+			ifaceMap := make(map[string]*ifaceInfo)
+			// 从 DeviceConfig 中读取接口信息
+			for k, v := range state.DeviceConfig {
+				if !strings.HasPrefix(k, "interface:") {
+					continue
+				}
+				parts := strings.SplitN(k, ":", 3)
+				if len(parts) < 2 {
+					continue
+				}
+				ifaceName := parts[1]
+				key := parts[2]
+				if _, ok := ifaceMap[ifaceName]; !ok {
+					ifaceMap[ifaceName] = &ifaceInfo{Name: ifaceName, Status: "up", Protocol: "up"}
+				}
+				switch key {
+				case "status":
+					ifaceMap[ifaceName].Status = v
+				case "description":
+					ifaceMap[ifaceName].Description = v
+				case "ip":
+					ifaceMap[ifaceName].IP = v
+				case "speed":
+					ifaceMap[ifaceName].Speed = v
+				case "duplex":
+					ifaceMap[ifaceName].Duplex = v
+				case "mtu":
+					ifaceMap[ifaceName].MTU = v
+				}
+			}
+			// 从 state.Interfaces 合并信息
+			for _, iface := range state.Interfaces {
+				if _, ok := ifaceMap[iface.Name]; !ok {
+					ifaceMap[iface.Name] = &ifaceInfo{Name: iface.Name}
+				}
+				if ifaceMap[iface.Name].Status == "up" && iface.Status != "" {
+					ifaceMap[iface.Name].Status = iface.Status
+				}
+				if ifaceMap[iface.Name].Description == "" {
+					ifaceMap[iface.Name].Description = iface.Description
+				}
+				if ifaceMap[iface.Name].IP == "" {
+					ifaceMap[iface.Name].IP = iface.IP
+				}
+				if ifaceMap[iface.Name].Mask == "" {
+					ifaceMap[iface.Name].Mask = iface.Mask
+				}
+			}
+			var out strings.Builder
+			// 检查是否指定了接口名
+			specifiedIface := ""
+			if !isBrief && len(cmd.Args) > 1 {
+				specifiedIface = strings.ToLower(cmd.Args[1])
+				if len(cmd.Args) > 2 && strings.ToLower(cmd.Args[2]) != "brief" {
+					specifiedIface += cmd.Args[2]
+				}
+			}
+
+			if isBrief {
+				out.WriteString("Interface                   PHY   Protocol   Rate      Description\n")
+				out.WriteString("------------------------------------------------------------------------\n")
+				for _, iface := range ifaceMap {
+					ip := iface.IP
+					if ip == "" {
+						ip = "unassigned"
+					}
+					physical := "up"
+					if iface.Status == "Down" || iface.Status == "down" {
+						physical = "down"
+					}
+					protocol := physical
+					speed := iface.Speed
+					if speed == "" {
+						if strings.Contains(iface.Name, "10GE") || strings.Contains(iface.Name, "10ge") {
+							speed = "10G"
+						} else if strings.Contains(iface.Name, "GE") || strings.Contains(iface.Name, "ge") {
+							speed = "1G"
+						} else if strings.Contains(iface.Name, "Ethernet") {
+							speed = "100M"
+						} else {
+							speed = "-"
+						}
+					}
+					desc := iface.Description
+					if desc == "" {
+						desc = "-"
+					}
+					out.WriteString(fmt.Sprintf("%-27s %-5s %-10s %-10s %s\n", iface.Name, physical, protocol, speed, desc))
+				}
+			} else if specifiedIface != "" {
+				// 显示指定接口的详细信息
+				var targetIface *ifaceInfo
+				for _, iface := range ifaceMap {
+					if strings.EqualFold(iface.Name, specifiedIface) ||
+						strings.HasSuffix(strings.ToLower(iface.Name), specifiedIface) {
+						targetIface = iface
+						break
+					}
+				}
+				if targetIface == nil {
+					return fmt.Sprintf("Error: Interface %s does not exist", specifiedIface)
+				}
+				status := targetIface.Status
+				if status == "" {
+					status = "UP"
+				}
+				out.WriteString(fmt.Sprintf("%s current state : %s\n", targetIface.Name, status))
+				out.WriteString("Line protocol current state : UP\n")
+				out.WriteString("Last line protocol up time : 0 days 0 hours 0 minutes\n")
+				out.WriteString("\n")
+				out.WriteString("Description : ")
+				if targetIface.Description != "" {
+					out.WriteString(targetIface.Description)
+				} else {
+					out.WriteString("-")
+				}
+				out.WriteString("\n")
+				out.WriteString(fmt.Sprintf("Speed : %s\n", func() string {
+					if targetIface.Speed != "" {
+						return targetIface.Speed
+					}
+					if strings.Contains(targetIface.Name, "10GE") || strings.Contains(targetIface.Name, "10ge") {
+						return "10Gbps"
+					} else if strings.Contains(targetIface.Name, "GE") || strings.Contains(targetIface.Name, "ge") {
+						return "1Gbps"
+					}
+					return "Auto"
+				}()))
+				out.WriteString(fmt.Sprintf("Duplex : %s\n", func() string {
+					if targetIface.Duplex != "" {
+						return targetIface.Duplex
+					}
+					return "Full"
+				}()))
+				out.WriteString(fmt.Sprintf("MTU : %s\n", func() string {
+					if targetIface.MTU != "" {
+						return targetIface.MTU
+					}
+					return "1500"
+				}()))
+				out.WriteString("\n")
+				out.WriteString("Internet Address is ")
+				if targetIface.IP != "" {
+					out.WriteString(fmt.Sprintf("%s/%s\n", targetIface.IP, targetIface.Mask))
+				} else {
+					out.WriteString("not set\n")
+				}
+				out.WriteString("\n")
+				out.WriteString("Statistics last cleared: Never\n")
+				out.WriteString("\n")
+				out.WriteString("    Input:  0 packets, 0 bytes\n")
+				out.WriteString("             0 errors, 0 dropped\n")
+				out.WriteString("    Output: 0 packets, 0 bytes\n")
+				out.WriteString("             0 errors, 0 dropped\n")
+			} else {
+				out.WriteString("Interface                Status  Protocol  Description           IP Address\n")
+				out.WriteString("------------------------------------------------------------------------\n")
+				for _, iface := range ifaceMap {
+					desc := iface.Description
+					if desc == "" {
+						desc = ""
+					}
+					ip := iface.IP
+					if ip == "" {
+						ip = "unassigned"
+					}
+					out.WriteString(fmt.Sprintf("%-25s %-8s %-9s %-21s %s\n", iface.Name, iface.Status, iface.Status, desc, ip))
+				}
+			}
+			return out.String()
+		case "ospf":
+			if !isRouter && !isL3Switch && !isFirewall {
+				return fmt.Sprintf("Error: OSPF is not supported on %s", state.DeviceType)
+			}
+			var out strings.Builder
+			if state.OSPF.Enabled {
+				out.WriteString(fmt.Sprintf("OSPF Process %d\n", state.OSPF.ProcessID))
+				out.WriteString(fmt.Sprintf("  Area: %d\n", state.OSPF.AreaID))
+				out.WriteString("  State: Running\n")
+				out.WriteString("  Neighbors: 0\n")
+			} else {
+				out.WriteString("OSPF: Not configured\n")
+			}
+			return out.String()
+		case "acl":
+			if isHost || isCloudHub || isAC {
+				return fmt.Sprintf("Error: ACL is not supported on %s", state.DeviceType)
+			}
+			// 检查是否是 display acl configuration
+			if len(cmd.Args) > 1 && strings.ToLower(cmd.Args[1]) == "configuration" {
+				var out strings.Builder
+				out.WriteString("ACL Configuration:\n")
+				out.WriteString("----------------------------------------------------\n")
+				for aclNum, rules := range state.ACLs {
+					// 检查是否是命名 ACL（第一个规则的 Name 和 Type 字段）
+					aclType := "basic"
+					if len(rules) > 0 && rules[0] != nil {
+						if rules[0].Type != "" {
+							aclType = rules[0].Type
+						}
+					}
+					out.WriteString(fmt.Sprintf("acl %s\n", aclNum))
+					if rules[0] != nil && rules[0].Name != "" {
+						out.WriteString(fmt.Sprintf("  description: ACL name %s, type %s\n", rules[0].Name, aclType))
+					}
+					for _, rule := range rules {
+						if rule == nil {
+							continue
+						}
+						// 跳过命名 ACL 的类型头规则
+						if rule.Name != "" && rule.Action == "" && rule.Protocol == "" {
+							continue
+						}
+						out.WriteString(fmt.Sprintf("  rule %d %s %s", rule.ID, rule.Action, rule.Protocol))
+						if rule.SrcIP != "" {
+							out.WriteString(fmt.Sprintf(" source %s", rule.SrcIP))
+							if rule.SrcWildcard != "" {
+								out.WriteString(fmt.Sprintf(" %s", rule.SrcWildcard))
+							}
+						}
+						if rule.DstIP != "" {
+							out.WriteString(fmt.Sprintf(" destination %s", rule.DstIP))
+							if rule.DstWildcard != "" {
+								out.WriteString(fmt.Sprintf(" %s", rule.DstWildcard))
+							}
+						}
+						if rule.DstPort != "" {
+							out.WriteString(fmt.Sprintf(" destination-port %s %s", rule.DstPortOp, rule.DstPort))
+							if rule.DstPortEnd != "" {
+								out.WriteString(fmt.Sprintf(" %s", rule.DstPortEnd))
+							}
+						}
+						out.WriteString("\n")
+					}
+				}
+				return out.String()
+			}
+			// display acl - 显示 ACL 摘要
+			var out strings.Builder
+			for aclNum, rules := range state.ACLs {
+				out.WriteString(fmt.Sprintf("ACL %s:\n", aclNum))
+				for _, rule := range rules {
+					out.WriteString(fmt.Sprintf("  Rule %d: %s %s", rule.ID, rule.Action, rule.Protocol))
+					if rule.SrcIP != "" {
+						out.WriteString(fmt.Sprintf(" source %s", rule.SrcIP))
+					}
+					if rule.DstIP != "" {
+						out.WriteString(fmt.Sprintf(" destination %s", rule.DstIP))
+					}
+					out.WriteString("\n")
+				}
+			}
+			return out.String()
+		case "m-lag", "mlag":
+			if !isL3Switch {
+				return fmt.Sprintf("Error: M-LAG is not supported on %s", state.DeviceType)
+			}
+			var out strings.Builder
+			if state.MLAG.DomainID > 0 {
+				out.WriteString(fmt.Sprintf("M-LAG Domain %d:\n", state.MLAG.DomainID))
+				out.WriteString(fmt.Sprintf("  System Priority: %d\n", state.MLAG.SystemPriority))
+				out.WriteString(fmt.Sprintf("  System MAC: %s\n", state.MLAG.SystemMAC))
+				out.WriteString(fmt.Sprintf("  Peer IP: %s\n", state.MLAG.PeerIP))
+				out.WriteString(fmt.Sprintf("  Peer Link: %s\n", state.MLAG.PeerLink))
+				out.WriteString(fmt.Sprintf("  DFS Group: %d\n", state.MLAG.DFSGroupID))
+				out.WriteString(fmt.Sprintf("  DFS Mode: %s\n", state.MLAG.DFSMode))
+				out.WriteString("  M-LAG Interfaces:\n")
+				for iface, config := range state.MLAGInterfaces {
+					out.WriteString(fmt.Sprintf("    %s: %s\n", iface, config))
+				}
+			} else {
+				out.WriteString("M-LAG: Not configured\n")
+			}
+			return out.String()
+		case "lldp":
+			// display lldp local-information / display lldp interface <type> <num> / display lldp neighbor
+			var out strings.Builder
+			if arg1 == "local-information" {
+				// 显示本地 LLDP 信息
+				sysname := state.DeviceConfig["sysname"]
+				if sysname == "" {
+					sysname = string(state.DeviceType)
+				}
+				chassisID := "00e0-fc12-3456" // 模拟 chassis ID
+				portID := "GigabitEthernet0/0/1"
+				out.WriteString("LLDP local information:\n")
+				out.WriteString("----------------------------------------------------\n")
+				out.WriteString(fmt.Sprintf("Chassis ID:       %s\n", chassisID))
+				out.WriteString(fmt.Sprintf("Port ID:         %s\n", portID))
+				out.WriteString(fmt.Sprintf("System Name:     %s\n", func() string {
+					if state.LLDP.SystemName != "" {
+						return state.LLDP.SystemName
+					}
+					return sysname
+				}()))
+				out.WriteString(fmt.Sprintf("System Description: %s\n", func() string {
+					if state.LLDP.SystemDescription != "" {
+						return state.LLDP.SystemDescription
+					}
+					return "Huawei Versatile Routing Platform Software"
+				}()))
+				out.WriteString(fmt.Sprintf("Management Address: %s\n", func() string {
+					if state.LLDP.ManagementAddress != "" {
+						return state.LLDP.ManagementAddress
+					}
+					return "Not configured"
+				}()))
+				out.WriteString(fmt.Sprintf("LLDP Enable:     %s\n", func() string {
+					if state.LLDP.Enabled {
+						return "Enabled"
+					}
+					return "Disabled"
+				}()))
+				out.WriteString("\nPort information:\n")
+				if state.LLDP.PortConfig != nil && len(state.LLDP.PortConfig) > 0 {
+					for ifaceName, enabled := range state.LLDP.PortConfig {
+						status := "Disabled"
+						if enabled {
+							status = "Enabled"
+						}
+						out.WriteString(fmt.Sprintf("  %s: %s\n", ifaceName, status))
+					}
+				} else {
+					out.WriteString("  No port-specific LLDP configuration\n")
+				}
+				return out.String()
+			}
+			if arg1 == "interface" {
+				// display lldp interface <type> <num>
+				if len(cmd.Args) < 4 {
+					return "Error: usage: display lldp interface <type> <num>"
+				}
+				ifaceType := cmd.Args[2]
+				ifaceNum := cmd.Args[3]
+				ifaceName := ifaceType + ifaceNum
+				out.WriteString(fmt.Sprintf("LLDP interface %s information:\n", ifaceName))
+				out.WriteString("----------------------------------------------------\n")
+				out.WriteString(fmt.Sprintf("Interface:       %s\n", ifaceName))
+				out.WriteString(fmt.Sprintf("LLDP Status:     %s\n", func() string {
+					if state.LLDP.PortConfig != nil {
+						if enabled, ok := state.LLDP.PortConfig[ifaceName]; ok && enabled {
+							return "Enabled"
+						}
+					}
+					if state.LLDP.Enabled {
+						return "Enabled (global)"
+					}
+					return "Disabled"
+				}()))
+				out.WriteString(fmt.Sprintf("Port ID:         %s\n", ifaceName))
+				out.WriteString(fmt.Sprintf("Port Description: %s\n", func() string {
+					if desc, ok := state.DeviceConfig[fmt.Sprintf("interface:%s:description", ifaceName)]; ok && desc != "" {
+						return desc
+					}
+					return "Not configured"
+				}()))
+				return out.String()
+			}
+			if arg1 == "neighbor" {
+				// display lldp neighbor
+				out.WriteString("LLDP neighbor information:\n")
+				out.WriteString("----------------------------------------------------\n")
+				out.WriteString(fmt.Sprintf("%-20s %-20s %-15s %s\n", "Chassis ID", "Port ID", "System Name", "Management Address"))
+				out.WriteString("-------------------------------------------------------------------------------\n")
+				// 模拟邻居信息
+				out.WriteString(fmt.Sprintf("%-20s %-20s %-15s %s\n", "00e0-fc12-789a", "GigabitEthernet0/0/2", "Switch-01", "192.168.1.1"))
+				out.WriteString(fmt.Sprintf("%-20s %-20s %-15s %s\n", "00e0-fc12-789b", "GigabitEthernet0/0/3", "Router-01", "10.0.0.1"))
+				return out.String()
+			}
+			// 默认 display lldp
+			out.WriteString(fmt.Sprintf("LLDP: %s\n", func() string {
+				if state.LLDP.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			return out.String()
+		case "stp":
+			var out strings.Builder
+			// 检查是否有 region-configuration 子命令
+			if arg1 == "region-configuration" {
+				regionName := state.STP.RegionName
+				if regionName == "" {
+					regionName = "default"
+				}
+				out.WriteString("MSTP Region Configuration:\n")
+				out.WriteString(fmt.Sprintf("  Region Name: %s\n", regionName))
+				out.WriteString(fmt.Sprintf("  Revision Level: %d\n", state.STP.RevisionLevel))
+				out.WriteString("  VLAN Mapping:\n")
+				if len(state.STP.VLANMapping) == 0 {
+					out.WriteString("    (none)\n")
+				} else {
+					// 按实例分组显示 VLAN 映射
+					instanceVLANs := make(map[int][]int)
+					for vlan, instance := range state.STP.VLANMapping {
+						instanceVLANs[instance] = append(instanceVLANs[instance], vlan)
+					}
+					for instance, vlans := range instanceVLANs {
+						out.WriteString(fmt.Sprintf("    Instance %d: VLAN %v\n", instance, vlans))
+					}
+				}
+				out.WriteString(fmt.Sprintf("  Configuration Status: %s\n", func() string {
+					if state.STP.RegionActive {
+						return "Active"
+					}
+					return "Inactive"
+				}()))
+				return out.String()
+			}
+			// 默认 STP 信息
+			if state.STP.Enabled {
+				out.WriteString(fmt.Sprintf("STP Mode: %s\n", state.STP.Mode))
+				out.WriteString(fmt.Sprintf("Bridge Priority: %d\n", state.STP.BridgePriority))
+				if state.STP.VSTPEnabled {
+					out.WriteString("V-STP: Enabled\n")
+				}
+				if state.STP.BridgeAddress != "" {
+					out.WriteString(fmt.Sprintf("Bridge Address: %s\n", state.STP.BridgeAddress))
+				}
+				out.WriteString("Ports:\n")
+				if len(state.STP.Ports) == 0 {
+					out.WriteString("  (none)\n")
+				} else {
+					for _, port := range state.STP.Ports {
+						out.WriteString(fmt.Sprintf("  %s: Priority=%d, Cost=%d\n", port.PortName, port.PortPriority, port.Cost))
+					}
+				}
+			} else {
+				out.WriteString("STP: Disabled\n")
+			}
+			return out.String()
+		case "vrrp":
+			var out strings.Builder
+			if len(state.VRRP) > 0 {
+				out.WriteString("VRRP Groups:\n")
+				for _, group := range state.VRRP {
+					out.WriteString(fmt.Sprintf("  Group %d:\n", group.GroupID))
+					out.WriteString(fmt.Sprintf("    Virtual IP: %s\n", group.VirtualIP))
+					out.WriteString(fmt.Sprintf("    Priority: %d\n", group.Priority))
+					out.WriteString(fmt.Sprintf("    Preempt: %s\n", func() string {
+						if group.Preempt {
+							return "Enabled"
+						}
+						return "Disabled"
+					}()))
+					out.WriteString(fmt.Sprintf("    Delay: %ds\n", group.Delay))
+				}
+			} else {
+				out.WriteString("VRRP: Not configured\n")
+			}
+			return out.String()
+		case "ipsec":
+			var out strings.Builder
+			if len(state.IPsec) > 0 {
+				out.WriteString("IPsec Tunnels:\n")
+				for _, tunnel := range state.IPsec {
+					out.WriteString(fmt.Sprintf("  Tunnel %s:\n", tunnel.TunnelID))
+					out.WriteString(fmt.Sprintf("    Local IP: %s\n", tunnel.LocalIP))
+					out.WriteString(fmt.Sprintf("    Remote IP: %s\n", tunnel.RemoteIP))
+					out.WriteString(fmt.Sprintf("    Mode: %s\n", tunnel.Mode))
+					out.WriteString(fmt.Sprintf("    Encryption: %s\n", tunnel.Encryption))
+					out.WriteString(fmt.Sprintf("    Authentication: %s\n", tunnel.Authentication))
+				}
+			} else {
+				out.WriteString("IPsec: Not configured\n")
+			}
+			return out.String()
+		case "snmp":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("SNMP: %s\n", func() string {
+				if state.SNMP.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.SNMP.Enabled {
+				out.WriteString(fmt.Sprintf("  Version: %s\n", state.SNMP.Version))
+				out.WriteString(fmt.Sprintf("  Community: %s\n", state.SNMP.Community))
+				out.WriteString(fmt.Sprintf("  Manager IP: %s\n", state.SNMP.ManagerIP))
+			}
+			return out.String()
+		case "syslog":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("Syslog: %s\n", func() string {
+				if state.Syslog.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.Syslog.Enabled {
+				out.WriteString(fmt.Sprintf("  Server: %s:%d\n", state.Syslog.ServerIP, state.Syslog.ServerPort))
+			}
+			return out.String()
+		case "ntp":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("NTP: %s\n", func() string {
+				if state.NTP.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.NTP.Enabled {
+				out.WriteString(fmt.Sprintf("  Server: %s:%d\n", state.NTP.ServerIP, state.NTP.ServerPort))
+			}
+			return out.String()
+		case "ssh":
+			// 检查是否是 ssh server status 子命令
+			if arg1 == "server" || arg1 == "server-status" {
+				var out strings.Builder
+				out.WriteString("SSH Server Status:\n")
+				out.WriteString("----------------------------------------------------\n")
+				out.WriteString(fmt.Sprintf("SSH Server:               %s\n", func() string {
+					if state.SSH.Enabled {
+						return "Enable"
+					}
+					return "Disable"
+				}()))
+				out.WriteString(fmt.Sprintf("STelnet Server:          %s\n", func() string {
+					if state.SSH.STelnetEnabled {
+						return "Enable"
+					}
+					return "Disable"
+				}()))
+				out.WriteString(fmt.Sprintf("SSH Version:              %s\n", state.SSH.Version))
+				out.WriteString(fmt.Sprintf("SSH Port:                 %d\n", state.SSH.Port))
+				out.WriteString(fmt.Sprintf("RSA Key Pair:             %s\n", func() string {
+					if state.SSH.RSAGenDone {
+						return "Generated"
+					}
+					return "Not Generated"
+				}()))
+				out.WriteString(fmt.Sprintf("Authentication Mode:      %s\n", state.SSH.Authentication))
+				out.WriteString(fmt.Sprintf("Max Sessions:             %d\n", state.SSH.MaxSessions))
+				out.WriteString("\nVTY Configuration:\n")
+				out.WriteString("----------------------------------------------------\n")
+				if state.VTY != nil {
+					out.WriteString(fmt.Sprintf("Authentication Mode:      %s\n", state.VTY.AuthenticationMode))
+					out.WriteString(fmt.Sprintf("User Privilege Level:     %d\n", state.VTY.UserPrivilegeLevel))
+					out.WriteString(fmt.Sprintf("Protocol Inbound:         %s\n", state.VTY.ProtocolInbound))
+				}
+				if len(state.SSH.Users) > 0 {
+					out.WriteString("\nSSH Users:\n")
+					out.WriteString("----------------------------------------------------\n")
+					for _, user := range state.SSH.Users {
+						out.WriteString(fmt.Sprintf("User: %s, Auth-Type: %s\n", user.Name, user.AuthType))
+					}
+				}
+				if len(state.LocalUsers) > 0 {
+					out.WriteString("\nLocal Users:\n")
+					out.WriteString("----------------------------------------------------\n")
+					for _, user := range state.LocalUsers {
+						svcType := user.ServiceType
+						if svcType == "" {
+							svcType = "None"
+						}
+						out.WriteString(fmt.Sprintf("User: %s, Service-Type: %s, Privilege: %d\n", user.Name, svcType, user.PrivilegeLevel))
+					}
+				}
+				return out.String()
+			}
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("SSH: %s\n", func() string {
+				if state.SSH.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.SSH.Enabled {
+				out.WriteString(fmt.Sprintf("  Version: %s\n", state.SSH.Version))
+				out.WriteString(fmt.Sprintf("  Port: %d\n", state.SSH.Port))
+				out.WriteString(fmt.Sprintf("  Authentication: %s\n", state.SSH.Authentication))
+				out.WriteString(fmt.Sprintf("  Max Sessions: %d\n", state.SSH.MaxSessions))
+			}
+			return out.String()
+		case "vxlan":
+			var out strings.Builder
+			if state.VXLAN.Enabled {
+				out.WriteString("VXLAN Configuration:\n")
+				out.WriteString(fmt.Sprintf("  VNI: %d\n", state.VXLAN.VNI))
+				out.WriteString(fmt.Sprintf("  Local VTEP IP: %s\n", state.VXLAN.VTEPIP))
+				out.WriteString(fmt.Sprintf("  Peer VTEP IP: %s\n", state.VXLAN.PeerVTEPIP))
+				out.WriteString(fmt.Sprintf("  VRF: %s\n", state.VXLAN.VRFName))
+				if state.VXLAN.EvpnEnabled {
+					out.WriteString("  EVPN: Enabled\n")
+					if rd := state.DeviceConfig["vxlan:route-distinguisher"]; rd != "" {
+						out.WriteString(fmt.Sprintf("  Route Distinguisher: %s\n", rd))
+					}
+					if rt := state.DeviceConfig["vxlan:vpn-target"]; rt != "" {
+						out.WriteString(fmt.Sprintf("  VPN Target: %s\n", rt))
+					}
+				}
+				if len(state.VXLAN.VSIs) > 0 {
+					out.WriteString("\nVSI List:\n")
+					for name, vsi := range state.VXLAN.VSIs {
+						out.WriteString(fmt.Sprintf("  %s: status=%s\n", name, vsi.Status))
+					}
+				}
+			} else {
+				out.WriteString("VXLAN: Not configured\n")
+			}
+			return out.String()
+		case "bgp":
+			var out strings.Builder
+			if state.BGP.Enabled {
+				out.WriteString(fmt.Sprintf("BGP Configuration:\n"))
+				out.WriteString(fmt.Sprintf("  AS Number: %d\n", state.BGP.ASNumber))
+				out.WriteString(fmt.Sprintf("  Router ID: %s\n", state.BGP.RouterID))
+				out.WriteString("  Neighbors:\n")
+				for _, neighbor := range state.BGP.Neighbors {
+					out.WriteString(fmt.Sprintf("    %s: Remote AS %d, %s\n", neighbor.IPAddress, neighbor.RemoteAS, func() string {
+						if neighbor.EBGP {
+							return "EBGP"
+						}
+						return "IBGP"
+					}()))
+				}
+			} else {
+				out.WriteString("BGP: Not configured\n")
+			}
+			return out.String()
+		case "bfd":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("BFD: %s\n", func() string {
+				if state.BFD.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.BFD.Enabled {
+				out.WriteString("Sessions:\n")
+				for _, session := range state.BFD.Sessions {
+					out.WriteString(fmt.Sprintf("  Peer: %s, Local: %s\n", session.PeerIP, session.LocalIP))
+					out.WriteString(fmt.Sprintf("    Min Tx/Rx: %d/%d ms\n", session.MinTxInterval, session.MinRxInterval))
+					out.WriteString(fmt.Sprintf("    Detect Mult: %d\n", session.DetectMult))
+				}
+			}
+			return out.String()
+		case "vrf":
+			var out strings.Builder
+			if len(state.VRF) > 0 {
+				out.WriteString("VRF Instances:\n")
+				for name, vrf := range state.VRF {
+					out.WriteString(fmt.Sprintf("  %s:\n", name))
+					out.WriteString(fmt.Sprintf("    RD: %s\n", vrf.RD))
+					out.WriteString(fmt.Sprintf("    Route Targets: %v\n", vrf.RouteTargets))
+					out.WriteString(fmt.Sprintf("    Interfaces: %v\n", vrf.Interfaces))
+				}
+			} else {
+				out.WriteString("VRF: Not configured\n")
+			}
+			return out.String()
+		case "pbr":
+			var out strings.Builder
+			if len(state.PBR) > 0 {
+				out.WriteString("Policy-Based Routing:\n")
+				for name, rules := range state.PBR {
+					out.WriteString(fmt.Sprintf("  Policy: %s\n", name))
+					for _, rule := range rules {
+						out.WriteString(fmt.Sprintf("    Rule %d: match acl %s -> next-hop %s\n", rule.ID, rule.MatchACL, rule.NextHop))
+					}
+				}
+			} else {
+				out.WriteString("PBR: Not configured\n")
+			}
+			return out.String()
+		case "gre":
+			var out strings.Builder
+			if len(state.GRE) > 0 {
+				out.WriteString("GRE Tunnels:\n")
+				for name, tunnel := range state.GRE {
+					out.WriteString(fmt.Sprintf("  %s:\n", name))
+					out.WriteString(fmt.Sprintf("    Source: %s\n", tunnel.SourceIP))
+					out.WriteString(fmt.Sprintf("    Destination: %s\n", tunnel.DestIP))
+					out.WriteString(fmt.Sprintf("    Key: %d\n", tunnel.Key))
+					out.WriteString(fmt.Sprintf("    Keepalive: %t\n", tunnel.Keepalive))
+				}
+			} else {
+				out.WriteString("GRE: Not configured\n")
+			}
+			return out.String()
+		case "qos":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("QoS: %s\n", func() string {
+				if state.QoS.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.QoS.Enabled {
+				out.WriteString("  Classifiers:\n")
+				for name, classifier := range state.QoS.Classifiers {
+					out.WriteString(fmt.Sprintf("    %s: acl %s, dscp %d\n", name, classifier.ACL, classifier.DSCP))
+				}
+				out.WriteString("  Behaviors:\n")
+				for name, behavior := range state.QoS.Behaviors {
+					out.WriteString(fmt.Sprintf("    %s: bandwidth %d kbps, priority %d\n", name, behavior.Bandwidth, behavior.Priority))
+				}
+				out.WriteString("  Policies:\n")
+				for name, policy := range state.QoS.Policies {
+					out.WriteString(fmt.Sprintf("    %s: classifier %s -> behavior %s\n", name, policy.Classifier, policy.Behavior))
+				}
+			}
+			return out.String()
+		case "dot1x":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("802.1X: %s\n", func() string {
+				if state.Dot1x.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.Dot1x.Enabled {
+				out.WriteString("  Ports:\n")
+				for name, port := range state.Dot1x.Ports {
+					out.WriteString(fmt.Sprintf("    %s: auth %s, reauth %t\n", name, port.AuthMethod, port.Reauth))
+				}
+			}
+			return out.String()
+		case "radius":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("RADIUS: %s\n", func() string {
+				if state.RADIUS.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.RADIUS.Enabled {
+				out.WriteString(fmt.Sprintf("  Primary Server: %s:%d\n", state.RADIUS.PrimaryServer, state.RADIUS.AuthPort))
+				out.WriteString(fmt.Sprintf("  Secondary Server: %s:%d\n", state.RADIUS.SecondaryServer, state.RADIUS.AuthPort))
+				out.WriteString(fmt.Sprintf("  Accounting Port: %d\n", state.RADIUS.AcctPort))
+				out.WriteString(fmt.Sprintf("  Timeout: %d, Retransmit: %d\n", state.RADIUS.Timeout, state.RADIUS.Retransmit))
+			}
+			return out.String()
+		case "netflow":
+			var out strings.Builder
+			out.WriteString(fmt.Sprintf("NetFlow: %s\n", func() string {
+				if state.NetFlow.Enabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			}()))
+			if state.NetFlow.Enabled {
+				out.WriteString(fmt.Sprintf("  Exporter: %s:%d\n", state.NetFlow.Exporter, state.NetFlow.Port))
+				out.WriteString(fmt.Sprintf("  Version: %s\n", state.NetFlow.Version))
+				out.WriteString(fmt.Sprintf("  Sample Rate: %d\n", state.NetFlow.SampleRate))
+				out.WriteString(fmt.Sprintf("  Active Timeout: %d sec\n", state.NetFlow.ActiveTime))
+				out.WriteString(fmt.Sprintf("  Inactive Timeout: %d sec\n", state.NetFlow.InactiveTime))
+			}
+			return out.String()
+		case "sysname":
+			sysname := state.DeviceConfig["sysname"]
+			if sysname == "" {
+				sysname = string(state.DeviceType)
+			}
+			return fmt.Sprintf("System name: %s\n", sysname)
+		case "version":
+			var out strings.Builder
+			deviceModel := ""
+			switch state.DeviceType {
+			case topology.DeviceRouter:
+				deviceModel = "Huawei Router NE40E"
+			case topology.DeviceL3Switch:
+				deviceModel = "Huawei Switch S12700"
+			case topology.DeviceSwitch:
+				deviceModel = "Huawei Switch S5700"
+			case topology.DeviceFirewall:
+				deviceModel = "Huawei Firewall USG6000"
+			case topology.DeviceAC:
+				deviceModel = "Huawei AC6005"
+			case topology.DeviceAP:
+				deviceModel = "Huawei AP7030DN"
+			case topology.DevicePC:
+				deviceModel = "PC"
+			case topology.DeviceServer:
+				deviceModel = "Huawei Server RH2288H"
+			case topology.DeviceClient:
+				deviceModel = "Client PC"
+			case topology.DeviceCloud:
+				deviceModel = "Cloud"
+			case topology.DeviceHub:
+				deviceModel = "Hub"
+			case topology.DeviceVTEP:
+				deviceModel = "Huawei VTEP Switch"
+			default:
+				deviceModel = string(state.DeviceType)
+			}
+			out.WriteString("Huawei Versatile Routing Platform Software\n")
+			out.WriteString("VRP (R) software, Version 5.170 (V300R005C00)\n")
+			out.WriteString("Copyright (C) 2012 Huawei Technologies Co., Ltd.\n")
+			out.WriteString("\n")
+			out.WriteString(fmt.Sprintf("%s uptime is 0 days 0 hours 0 minutes\n", deviceModel))
+			out.WriteString("\n")
+			out.WriteString("System image version: V300R005C00\n")
+			out.WriteString("Boot image version: V300R005C00\n")
+			return out.String()
+		case "memory":
+			var out strings.Builder
+			out.WriteString("Memory Usage:\n")
+			out.WriteString("----------------------------------------------------\n")
+			out.WriteString("Total      Used       Free      Shared    Buffers   Cached\n")
+			out.WriteString("----------------------------------------------------\n")
+			out.WriteString("8192MB     1234MB     6958MB    0MB       0MB       0MB\n")
+			out.WriteString("\n")
+			out.WriteString("Memory utilization percentage: 15%\n")
+			return out.String()
+		case "cpu-usage":
+			var out strings.Builder
+			out.WriteString("CPU Usage:\n")
+			out.WriteString("----------------------------------------------------\n")
+			out.WriteString("CPU Usage Stat. Cycle: 60 seconds\n")
+			out.WriteString("\n")
+			out.WriteString("CPU Usage:    5%\n")
+			out.WriteString("CPU0:         5%\n")
+			out.WriteString("CPU1:         5%\n")
+			out.WriteString("CPU2:         5%\n")
+			out.WriteString("CPU3:         5%\n")
+			out.WriteString("\n")
+			out.WriteString("CPU utilization for five seconds:  5%         busy percentage: 5%\n")
+			out.WriteString("CPU utilization for one minute:    5%         busy percentage: 5%\n")
+			out.WriteString("CPU utilization for five minutes:  5%         busy percentage: 5%\n")
+			return out.String()
+		case "users":
+			var out strings.Builder
+			out.WriteString("User-Intf    Delay Type Network Address  AuthenStatus    AuthorcmdFlag\n")
+			out.WriteString("------------------------------------------------------------------------\n")
+			out.WriteString(fmt.Sprintf("VTY 0        00:00:00  TEL  127.0.0.1         pass          No Privilege\n"))
+			return out.String()
+		case "device":
+			var out strings.Builder
+			out.WriteString("Device Type: ")
+			switch state.DeviceType {
+			case topology.DeviceRouter:
+				out.WriteString("Huawei Router NE40E\n")
+			case topology.DeviceL3Switch:
+				out.WriteString("Huawei Switch S12700\n")
+			case topology.DeviceSwitch:
+				out.WriteString("Huawei Switch S5700\n")
+			case topology.DeviceFirewall:
+				out.WriteString("Huawei Firewall USG6000\n")
+			case topology.DeviceAC:
+				out.WriteString("Huawei AC6005\n")
+			case topology.DeviceAP:
+				out.WriteString("Huawei AP6050DN\n")
+			default:
+				out.WriteString(fmt.Sprintf("%s\n", state.DeviceType))
+			}
+			out.WriteString("Slots: 2\n")
+			out.WriteString("Active Slot: 0\n")
+			out.WriteString("Standby Slot: 1\n")
+			return out.String()
+		case "clock":
+			return "2026-06-29 09:30:00\nTime zone: UTC+08:00"
+		case "temperature":
+			var out strings.Builder
+			out.WriteString("Slot  Temperature  CPU Temperature\n")
+			out.WriteString("----------------------------------\n")
+			out.WriteString("0     45C          52C\n")
+			out.WriteString("1     43C          50C\n")
+			return out.String()
+		case "startup":
+			var out strings.Builder
+			out.WriteString("Startup system software:        flash:/vrp.cc\n")
+			out.WriteString("Next startup system software:  flash:/vrp.cc\n")
+			out.WriteString("Startup saved-configuration:    flash:/vrpcfg.cfg\n")
+			out.WriteString("Next startup saved-configuration: flash:/vrpcfg.cfg\n")
+			out.WriteString("Startup license file:           flash:/license.dat\n")
+			if state.Saved {
+				out.WriteString(fmt.Sprintf("Configuration saved:           Yes (%s)\n", state.SaveTime))
+			} else {
+				out.WriteString("Configuration saved:           No\n")
+			}
+			return out.String()
+		case "saved-configuration":
+			if !state.Saved || state.SavedConfig == "" {
+				return "No saved configuration found.\nPlease use the 'save' command to save the current configuration."
+			}
+			var out strings.Builder
+			out.WriteString("Saved configuration:\n")
+			out.WriteString(state.SavedConfig)
+			out.WriteString(fmt.Sprintf("\nConfiguration saved at %s\n", state.SaveTime))
+			return out.String()
+		}
+	}
+	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
+}
+
+func GetPrompt(state *CLIState, deviceName string) string {
+	if n, ok := state.DeviceConfig["sysname"]; ok {
+		deviceName = n
+	}
+	if deviceName == "" {
+		deviceName = "Router"
+	}
+	switch state.CurrentView {
+	case ViewUser:
+		return fmt.Sprintf("[%s]", deviceName)
+	case ViewSystem:
+		return fmt.Sprintf("[%s]", deviceName)
+	case ViewInterface:
+		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
+	case ViewACL:
+		return fmt.Sprintf("[%s-acl-%s]", deviceName, state.CurrentSub)
+	case ViewMLAG:
+		return fmt.Sprintf("[%s-m-lag-domain]", deviceName)
+	case ViewBGP:
+		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
+	case ViewVTY:
+		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
+	case ViewDHCPPool:
+		return fmt.Sprintf("[%s-dhcp-pool-%s]", deviceName, state.CurrentSub)
+	}
+	return fmt.Sprintf("[%s]", deviceName)
+}
+
+// SerializeToDeviceConfigData 将 CLIState 序列化为 DeviceConfigData
+func (state *CLIState) SerializeToDeviceConfigData() *topology.DeviceConfigData {
+	cfg := &topology.DeviceConfigData{
+		DeviceName:     state.DeviceName,
+		DefaultGateway: state.DefaultGateway,
+		Interfaces:     make(map[string]string),
+		Saved:          state.Saved,
+		SavedConfig:    state.SavedConfig,
+		SaveTime:       state.SaveTime,
+	}
+	// 复制所有接口相关的配置
+	for k, v := range state.DeviceConfig {
+		if strings.HasPrefix(k, "interface:") {
+			cfg.Interfaces[k] = v
+		}
+	}
+	// 存储主机网络配置
+	if state.HostIP != "" {
+		// 注意：state.HostSubnet 是点分十进制掩码（如 255.255.255.0），
+		// 必须用 ipToCIDR（内部走 subnetToPrefix）转换为 CIDR，切勿用
+		// subnetFromCIDR（它期望前缀长度字符串，会把 "255.255.255.0" 贪婪
+		// 解析成首段 255 → /32）。
+		cfg.Interfaces["interface:Ethernet0:ip"] = ipToCIDR(state.HostIP, state.HostSubnet)
+	}
+	if state.HostDNS != "" {
+		cfg.Interfaces["interface:Ethernet0:dns"] = state.HostDNS
+	}
+	return cfg
+}
+
+// LoadFromDeviceConfigData 从 DeviceConfigData 恢复 CLIState 配置
+func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) {
+	if cfg == nil {
+		return
+	}
+	state.DeviceName = cfg.DeviceName
+	state.DefaultGateway = cfg.DefaultGateway
+	state.Saved = cfg.Saved
+	state.SavedConfig = cfg.SavedConfig
+	state.SaveTime = cfg.SaveTime
+	if cfg.Interfaces != nil {
+		for k, v := range cfg.Interfaces {
+			state.DeviceConfig[k] = v
+			// 恢复主机网络配置
+			if k == "interface:Ethernet0:ip" {
+				ip, subnet := parseIPFormat(v)
+				state.HostIP = ip
+				state.HostSubnet = subnet
+			} else if k == "interface:Ethernet0:dns" {
+				state.HostDNS = v
+			}
+		}
+	}
+
+	// 从 ConfigData 恢复 VXLAN 配置，使 demo 预置拓扑后 display vxlan 即显示已配通
+	if vni, ok := cfg.Interfaces["vxlan:vni"]; ok {
+		if state.VXLAN == nil {
+			state.VXLAN = &VXLANConfig{Enabled: true}
+		} else {
+			state.VXLAN.Enabled = true
+		}
+		if n, err := strconv.Atoi(vni); err == nil {
+			state.VXLAN.VNI = n
+		}
+		state.VXLAN.VTEPIP = cfg.Interfaces["vxlan:source"]
+		state.VXLAN.PeerVTEPIP = cfg.Interfaces["vxlan:peer"]
+	}
+}
+
+// NewCLIStateFromDeviceConfig 从 DeviceConfigData 创建 CLIState
+func NewCLIStateFromDeviceConfig(dt topology.DeviceType, cfg *topology.DeviceConfigData, deviceName string) *CLIState {
+	state := newCLIStateWithType(dt)
+	state.DeviceName = deviceName
+	if cfg != nil {
+		state.LoadFromDeviceConfigData(cfg)
+	}
+	return state
+}
+
+// doSave 将当前运行配置写入"启动配置"（贴近华为 eNSP 的 save 行为）。
+// 生成 VRP 风格配置快照并写入 Saved/SavedConfig/SaveTime，供 display saved-configuration 展示，
+// 并通过 SerializeToDeviceConfigData 持久化到拓扑，重启后依然保留。
+func (state *CLIState) doSave() {
+	state.Saved = true
+	state.SaveTime = time.Now().Format("2006-01-02 15:04:05")
+	state.SavedConfig = state.buildSavedConfigSnapshot()
+}
+
+// buildSavedConfigSnapshot 生成当前运行配置的 VRP 风格文本快照。
+func (state *CLIState) buildSavedConfigSnapshot() string {
+	var b strings.Builder
+	name := state.DeviceConfig["sysname"]
+	if name == "" {
+		name = state.DeviceName
+	}
+	if name == "" {
+		name = string(state.DeviceType)
+	}
+	b.WriteString(fmt.Sprintf("sysname %s\n", name))
+	b.WriteString("#\n")
+
+	ifaceNames := make([]string, 0, len(state.Interfaces))
+	for k := range state.Interfaces {
+		ifaceNames = append(ifaceNames, k)
+	}
+	sort.Strings(ifaceNames)
+	for _, k := range ifaceNames {
+		ifc := state.Interfaces[k]
+		if ifc == nil {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("interface %s\n", ifc.Name))
+		if ifc.IP != "" && ifc.Mask != "" {
+			b.WriteString(fmt.Sprintf(" ip address %s %s\n", ifc.IP, ifc.Mask))
+		} else if ifc.IP != "" {
+			b.WriteString(fmt.Sprintf(" ip address %s\n", ifc.IP))
+		}
+		if ifc.Description != "" {
+			b.WriteString(fmt.Sprintf(" description %s\n", ifc.Description))
+		}
+		if strings.EqualFold(ifc.Status, "down") {
+			b.WriteString(" shutdown\n")
+		}
+		b.WriteString("#\n")
+	}
+
+	for _, r := range state.Routes {
+		b.WriteString(fmt.Sprintf("ip route-static %s %s %s\n", r.Destination, r.Mask, r.NextHop))
+	}
+
+	for id, v := range state.VLANs {
+		b.WriteString(fmt.Sprintf("vlan %d\n", id))
+		if v.Name != "" {
+			b.WriteString(fmt.Sprintf(" description %s\n", v.Name))
+		}
+		b.WriteString("#\n")
+	}
+
+	if state.VXLAN != nil && state.VXLAN.Enabled {
+		b.WriteString(fmt.Sprintf("vxlan vni %d\n", state.VXLAN.VNI))
+		if state.VXLAN.VTEPIP != "" {
+			b.WriteString(fmt.Sprintf(" source %s\n", state.VXLAN.VTEPIP))
+		}
+		for _, p := range state.VXLAN.PeerVTEPIP {
+			b.WriteString(fmt.Sprintf(" peer %s\n", p))
+		}
+		b.WriteString("#\n")
+	}
+
+	b.WriteString(fmt.Sprintf("!configuration saved at %s\n", state.SaveTime))
+	return b.String()
+}
+
+// displayIPInterface 渲染 `display ip interface [brief]` 的输出。
+// brief=true 时输出华为 VRP 风格的简表（含 IP/Mask、Physical、Protocol），
+// 否则输出含 Description 的明细表。输出格式与历史版本保持一致。
+// ifaceCategory 用于 display ip interface 的确定性排序：
+// 0=LoopBack，1=Vlanif/Vlan，2=其余物理口。贴近华为 VRP 输出顺序。
+func ifaceCategory(name string) int {
+	switch {
+	case strings.HasPrefix(name, "LoopBack"):
+		return 0
+	case strings.HasPrefix(name, "Vlan"):
+		return 1
+	default:
+		return 2
+	}
+}
+
+// parseInterface 在已有接口列表中做大小写不敏感匹配，返回规范（原大小写）的接口名。
+// 例如用户输入 10Ge5/0/1，而拓扑中真实接口为 10GE5/0/1，则返回 10GE5/0/1，
+// 使后续 ip address 等配置落到大小写一致的 key 上，避免 10Ge5/0/1 与 10GE5/0/1 分裂。
+func parseInterface(input string, ifaceList []string) (string, error) {
+	inputUpper := strings.ToUpper(input)
+	for _, iface := range ifaceList {
+		if strings.ToUpper(iface) == inputUpper {
+			return iface, nil
+		}
+	}
+	return "", fmt.Errorf("invalid interface '%s'", input)
+}
+
+// ParseInterfaceName 是 parseInterface 的导出版本，供 REST API 等非 CLI 上下文
+// 复用同一套接口名大小写不敏感解析（返回拓扑中原始的规范接口名）。
+func ParseInterfaceName(input string, ifaceList []string) (string, error) {
+	return parseInterface(input, ifaceList)
+}
+
+// interfaceKeys 取出接口 map 的键列表，供 parseInterface 做匹配。
+func interfaceKeys(m map[string]*InterfaceConfig) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// displayIPInterface 渲染 `display ip interface [interface-name] [brief]` 的输出。
+// brief=true 时输出华为 VRP 风格的简表（含 IP/Mask、Physical、Protocol），
+// 否则输出含 Description 的明细表。输出格式与历史版本保持一致。
+// filterIface 非空时只展示指定接口（规范名），其余接口忽略。
+func displayIPInterface(state *CLIState, brief bool, filterIface string) string {
+	type ifaceIPInfo struct {
+		Name        string
+		IP          string
+		Status      string
+		Description string
+		IsLoopback  bool
+	}
+	ifaceIPMap := make(map[string]*ifaceIPInfo)
+
+	isPCServer := state.DeviceType == topology.DevicePC || state.DeviceType == topology.DeviceServer
+	// addIface 合并同一接口在 DeviceConfig / Interfaces 两处来源的信息；
+	// 同时标记是否为 LoopBack（用于协议列追加 (s) 欺骗标志）。
+	addIface := func(name, ip, status, desc string) {
+		info, ok := ifaceIPMap[name]
+		if !ok {
+			info = &ifaceIPInfo{Name: name, Status: "up"}
+			ifaceIPMap[name] = info
+		}
+		if ip != "" {
+			info.IP = ip
+		}
+		if status != "" {
+			info.Status = status
+		}
+		if desc != "" {
+			info.Description = desc
+		}
+		info.IsLoopback = strings.HasPrefix(name, "LoopBack")
+	}
+
+	if isPCServer {
+		hostIfaces := getHostInterfaces(state)
+		for _, iface := range hostIfaces {
+			name := iface["name"]
+			ip := iface["ip"]
+			status := strings.ToLower(iface["status"])
+			if ip != "" {
+				if strings.Contains(ip, "/") {
+					ipParts := strings.Split(ip, "/")
+					if len(ipParts) == 2 {
+						prefix, _ := strconv.Atoi(ipParts[1])
+						mask := prefixToSubnet(prefix)
+						ip = fmt.Sprintf("%s %s", ipParts[0], mask)
+					}
+				}
+			}
+			addIface(name, ip, status, "")
+		}
+	} else {
+		// 交换机/路由/VTEP 等网络设备：仅展示 10GE / LoopBack / Vlanif 等接口，
+		// 不展示 Ethernet0（那是 PC/Server 的接口）。
+		for k, v := range state.DeviceConfig {
+			if !strings.HasPrefix(k, "interface:") {
+				continue
+			}
+			parts := strings.SplitN(k, ":", 3)
+			if len(parts) < 2 {
+				continue
+			}
+			ifaceName := parts[1]
+			if ifaceName == "Ethernet0" {
+				continue
+			}
+			key := parts[2]
+			addIface(ifaceName, "", "", "")
+			switch key {
+			case "ip":
+				ifaceIPMap[ifaceName].IP = v
+			case "status":
+				ifaceIPMap[ifaceName].Status = strings.ToLower(v)
+			}
+		}
+		// 从 Interfaces map 合并
+		for name, iface := range state.Interfaces {
+			if name == "Ethernet0" {
+				continue
+			}
+			ip := ""
+			if iface.IP != "" {
+				if iface.Mask != "" {
+					ip = fmt.Sprintf("%s %s", iface.IP, iface.Mask)
+				} else {
+					ip = iface.IP
+				}
+			}
+			addIface(name, ip, strings.ToLower(iface.Status), iface.Description)
+		}
+	}
+
+	// 过滤到指定接口（dis ip int <name>）：仅保留 filterIface。
+	if filterIface != "" {
+		info, ok := ifaceIPMap[filterIface]
+		if !ok {
+			return fmt.Sprintf("Interface %s does not exist or has no IP configuration", filterIface)
+		}
+		ifaceIPMap = map[string]*ifaceIPInfo{filterIface: info}
+	}
+
+	// 确定性排序：LoopBack → Vlanif → 其余物理口（同类按名称）
+	names := make([]string, 0, len(ifaceIPMap))
+	for n := range ifaceIPMap {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		ci, cj := ifaceCategory(names[i]), ifaceCategory(names[j])
+		if ci != cj {
+			return ci < cj
+		}
+		return names[i] < names[j]
+	})
+
+	var out strings.Builder
+	if brief {
+		out.WriteString("*down: administratively down\n")
+		out.WriteString("^down: standby\n")
+		out.WriteString("(l): loopback\n")
+		out.WriteString("(s): spoofing\n")
+		out.WriteString("(E): E-Trunk down\n")
+		out.WriteString("\n")
+		out.WriteString("Interface                         IP Address/Mask      Physical   Protocol  \n")
+		out.WriteString("------------------------------------------------------------------------------\n")
+		for _, name := range names {
+			info := ifaceIPMap[name]
+			ipDisplay := "unassigned"
+			if info.IP != "" {
+				ipAddr, subnet := parseIPFormat(info.IP)
+				ipDisplay = fmt.Sprintf("%s/%d", ipAddr, subnetToPrefix(subnet))
+			}
+			physical := info.Status
+			if physical == "" {
+				physical = "up"
+			}
+			protocol := physical
+			if info.IsLoopback {
+				protocol = physical + "(s)"
+			}
+			out.WriteString(fmt.Sprintf("%-33s %-20s %-10s %-9s\n", info.Name, ipDisplay, physical, protocol))
+		}
+	} else {
+		out.WriteString("Interface             IP Address      Physical   Protocol  Description\n")
+		out.WriteString("------------------------------------------------------------------------------\n")
+		for _, name := range names {
+			info := ifaceIPMap[name]
+			ipDisplay := "unassigned"
+			if info.IP != "" {
+				ipAddr, _ := parseIPFormat(info.IP)
+				ipDisplay = ipAddr
+			}
+			physical := info.Status
+			if physical == "" {
+				physical = "up"
+			}
+			protocol := physical
+			if info.IsLoopback {
+				protocol = physical + "(s)"
+			}
+			desc := info.Description
+			if desc == "" {
+				desc = "-"
+			}
+			out.WriteString(fmt.Sprintf("%-21s %-15s %-10s %-9s %s\n", info.Name, ipDisplay, physical, protocol, desc))
+		}
+	}
+	return out.String()
+}

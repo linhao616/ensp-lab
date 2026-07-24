@@ -1,0 +1,2646 @@
+/* eNSP Web Lab 全局样式
+   灵感来自 web/index.html 的暗色 CLI + 浅色画布布局 */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f5f7fa;
+  color: #333;
+  overflow: hidden;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---------- Header ---------- */
+.app-header {
+  background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+  color: #fff;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.app-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.app-header select {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  background: #fff;
+  color: #333;
+}
+
+.app-header .header-spacer {
+  flex: 1;
+}
+
+.app-header .status-pill {
+  background: rgba(255, 255, 255, 0.15);
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.app-header .status-pill.connected {
+  background: rgba(40, 167, 69, 0.5);
+}
+
+.app-header .status-pill.disconnected {
+  background: rgba(220, 53, 69, 0.5);
+}
+
+/* ---------- Main ---------- */
+.app-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---------- Device Panel (left, resizable, tabbed) ---------- */
+.device-panel {
+  background: #fff;
+  border-right: 1px solid #e0e0e0;
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.device-panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #1a1a2e;
+}
+
+.device-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: grab;
+  margin-bottom: 6px;
+  transition: all 0.15s;
+  border: 1px solid #e8eaed;
+  user-select: none;
+}
+
+.device-item:hover {
+  background: #f0f7ff;
+  border-color: #1a73e8;
+}
+
+.device-item:active {
+  cursor: grabbing;
+}
+
+.device-icon {
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.device-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #333;
+}
+
+.device-panel .toolbar-divider {
+  height: 1px;
+  background: #e8eaed;
+  margin: 12px 0;
+}
+
+.device-panel .panel-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------- Topo Area ---------- */
+.topo-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.topo-toolbar {
+  padding: 8px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1557b0;
+}
+
+.btn-danger {
+  background: #dc3545;
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #b02a37;
+}
+
+.btn-success {
+  background: #28a745;
+  color: #fff;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #1e7e34;
+}
+
+.btn-secondary {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #d2e3fc;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.tool-sep {
+  width: 1px;
+  height: 20px;
+  background: #e0e0e0;
+  margin: 0 4px;
+}
+
+.zoom-label {
+  font-size: 12px;
+  color: #666;
+  min-width: 50px;
+  text-align: center;
+}
+
+.topo-toolbar .toolbar-spacer {
+  flex: 1;
+}
+
+.topo-toolbar .topo-status {
+  font-size: 12px;
+  color: #666;
+}
+
+/* ---------- Canvas Wrapper ---------- */
+.topo-canvas-host {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+.topo-canvas-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+.topo-canvas {
+  display: block;
+  cursor: grab;
+  width: 100%;
+  height: 100%;
+}
+
+.topo-canvas:active {
+  cursor: grabbing;
+}
+
+.topo-canvas.mode-link {
+  cursor: crosshair;
+}
+
+.topo-canvas.mode-add {
+  cursor: copy;
+}
+
+/* ---------- 连线右键菜单 ---------- */
+.link-ctx-menu {
+  position: absolute;
+  z-index: 50;
+  min-width: 120px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  user-select: none;
+}
+
+.link-ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #333;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.link-ctx-item:hover {
+  background: #f1f3f5;
+}
+
+.link-ctx-item.danger {
+  color: #d32f2f;
+}
+
+.link-ctx-item.danger:hover {
+  background: #fdecea;
+}
+
+/* ---------- 连线清单面板 ---------- */
+.right-panel-dock {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 300px;
+  max-height: calc(100% - 16px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Right Panel（统一资源面板：连线清单 / 设备类型） ---------- */
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  max-height: 100%;
+}
+
+.right-panel-head {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+  border-bottom: 1px solid #eef0f2;
+  background: #f7f8fa;
+  flex-shrink: 0;
+}
+
+.right-panel-tabs {
+  display: flex;
+  flex-shrink: 0;
+  background: #f7f8fa;
+  border-bottom: 1px solid #eef0f2;
+}
+
+.right-panel-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: #5a5a6a;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.right-panel-tab:hover {
+  color: #1a73e8;
+}
+
+.right-panel-tab.active {
+  color: #1a73e8;
+  font-weight: 600;
+  border-bottom-color: #1a73e8;
+  background: #fff;
+}
+
+.right-panel-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
+/* ConnectionList / DeviceList 贴合面板内部（去掉自身卡片边框/阴影） */
+.right-panel-body > .connection-list,
+.right-panel-body > .device-list {
+  flex: 1;
+  max-height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ---------- Device List（Tab 2） ---------- */
+.device-list {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  overflow: hidden;
+  max-height: 100%;
+}
+
+.device-list-header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+  border-bottom: 1px solid #eef0f2;
+  background: #f7f8fa;
+  flex-shrink: 0;
+}
+
+.device-list-body {
+  overflow-y: auto;
+}
+
+.device-list-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: #8a8a9a;
+  text-align: center;
+}
+
+.dev-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f3f5;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dev-list-item:last-child {
+  border-bottom: none;
+}
+
+.dev-list-item:hover {
+  background: #f1f5ff;
+}
+
+.dev-list-item.active {
+  background: #e6f0ff;
+  box-shadow: inset 3px 0 0 #1a73e8;
+}
+
+.dev-list-icon {
+  width: 32px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.dev-list-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dev-list-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-list-role {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  line-height: 1.5;
+}
+
+.connection-list {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  max-height: 100%;
+}
+
+.connection-list-header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+  border-bottom: 1px solid #eef0f2;
+  background: #f7f8fa;
+  flex-shrink: 0;
+}
+
+.connection-list-body {
+  overflow-y: auto;
+}
+
+.connection-list-empty {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: #8a8a9a;
+  text-align: center;
+}
+
+.connection-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f3f5;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.connection-item:last-child {
+  border-bottom: none;
+}
+
+.connection-item:hover {
+  background: #f1f5ff;
+}
+
+.connection-item.active {
+  background: #e6f0ff;
+  box-shadow: inset 3px 0 0 #1a73e8;
+}
+
+.connection-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.connection-item-route {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.connection-item-route .arrow {
+  color: #1a73e8;
+  margin: 0 2px;
+}
+
+.connection-item-detail {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.connection-del-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: #f1f3f5;
+  color: #888;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.connection-del-btn:hover {
+  background: #fdecea;
+  color: #d32f2f;
+}
+
+/* ---------- Packet Animator ---------- */
+.packet-animator-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.packet-animator-overlay canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- Description Box ---------- */
+.desc-box {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.98);
+  border: 2px solid #1a73e8;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  color: #333;
+  z-index: 5;
+}
+
+/* ---------- Left Panel (tabbed sidebar) ---------- */
+.lp-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.lp-tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f7f8fa;
+}
+
+.lp-tab {
+  flex: 1;
+  padding: 9px 4px;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5a5a6a;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.lp-tab:hover {
+  color: #1a73e8;
+}
+
+.lp-tab.active {
+  color: #1a73e8;
+  font-weight: 600;
+  border-bottom-color: #1a73e8;
+  background: #fff;
+}
+
+.lp-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lp-palette {
+  padding: 12px;
+}
+
+.lp-subhead {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a2e;
+  background: #f7f8fa;
+  border-top: 1px solid #eef0f2;
+  border-bottom: 1px solid #eef0f2;
+  flex-shrink: 0;
+}
+
+.lp-links {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.lp-connlist {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* 嵌套在左面板内的 ConnectionList / DeviceList 去掉自身卡片边框/阴影，贴合父容器 */
+.lp-connlist > .connection-list,
+.lp-body > .device-list {
+  flex: 1;
+  max-height: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.lp-body > .device-list {
+  overflow: visible;
+}
+
+.lp-body > .device-list .device-list-body {
+  overflow: visible;
+}
+
+/* ---------- Link Types (连线种类选择) ---------- */
+.link-types {
+  padding: 10px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lt-hint {
+  font-size: 11px;
+  color: #8a8a9a;
+  line-height: 1.5;
+  margin-bottom: 2px;
+}
+
+.link-type-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+}
+
+.link-type-card:hover {
+  border-color: #1a73e8;
+  background: #f5f9ff;
+}
+
+.link-type-card.lt-active {
+  border-color: #1a73e8;
+  background: #e8f0fe;
+  box-shadow: inset 0 0 0 1px #1a73e8;
+}
+
+.lt-preview {
+  width: 56px;
+  height: 0;
+  margin-bottom: 3px;
+}
+
+.lt-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.lt-hint-small {
+  font-size: 11px;
+  color: #8a8a9a;
+}
+
+/* ---------- Panel Resizer ---------- */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 50;
+  background: transparent;
+}
+
+.panel-resizer:hover {
+  background: rgba(26, 115, 232, 0.35);
+}
+
+/* ---------- Manual Link Type Select ---------- */
+.link-type-select {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid #c5cae9;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a73e8;
+  cursor: pointer;
+}
+
+.desc-box-empty {
+  border-style: dashed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.desc-empty-hint {
+  font-size: 12px;
+  color: #999;
+  text-align: center;
+}
+
+.desc-title {
+  background: rgba(26, 115, 232, 0.08);
+  padding: 6px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #1a73e8;
+  border-bottom: 1px solid rgba(26, 115, 232, 0.15);
+}
+
+.desc-content {
+  padding: 10px 12px;
+  overflow: hidden;
+  height: calc(100% - 32px);
+  line-height: 1.5;
+  color: #333;
+}
+
+.desc-line {
+  margin-bottom: 2px;
+}
+
+.desc-h1 {
+  font-weight: 700;
+  font-size: 1.15em;
+  color: #1a73e8;
+  margin-top: 6px;
+}
+
+.desc-h2 {
+  font-weight: 700;
+  font-size: 1.08em;
+  color: #1a73e8;
+}
+
+.desc-h3 {
+  font-weight: 600;
+  color: #1a73e8;
+}
+
+.desc-textarea {
+  width: 100%;
+  height: calc(100% - 32px);
+  border: none;
+  outline: none;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 10px 12px;
+  font-family: inherit;
+  color: #333;
+  resize: none;
+  line-height: 1.5;
+}
+
+.desc-handle {
+  position: absolute;
+  background: #1a73e8;
+  color: #fff;
+  border: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.desc-handle:hover {
+  background: #1557b0;
+}
+
+.desc-handle-resize {
+  right: 4px;
+  bottom: 4px;
+  cursor: nwse-resize;
+}
+
+.desc-handle-font {
+  right: 4px;
+  bottom: 26px;
+  cursor: ns-resize;
+}
+
+/* ---------- Annotation Layer ---------- */
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.annotation {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #333;
+  cursor: move;
+  pointer-events: auto;
+  text-align: left;
+  user-select: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  overflow: visible;
+}
+
+.annotation:hover {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+}
+
+.annotation-text {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 15px;
+}
+
+.annotation-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  margin: 0;
+}
+
+.annotation-resize {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  background: #1a73e8;
+  border-radius: 3px;
+  cursor: se-resize;
+  border: 2px solid #fff;
+  display: none;
+}
+
+.annotation:hover .annotation-resize {
+  display: block;
+}
+
+.annotation-toolbar {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  display: none;
+  gap: 4px;
+  z-index: 11;
+}
+
+.annotation:hover .annotation-toolbar {
+  display: flex;
+}
+
+.annotation-settings,
+.annotation-delete {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.annotation-settings {
+  background: #1a73e8;
+}
+
+.annotation-delete {
+  background: #dc3545;
+}
+
+.annotation-settings-panel {
+  position: absolute;
+  top: -8px;
+  left: calc(100% + 10px);
+  width: 168px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  z-index: 20;
+  font-size: 12px;
+  color: #333;
+  cursor: default;
+}
+
+.asp-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.asp-row:last-child {
+  margin-bottom: 0;
+}
+
+.asp-row > span {
+  width: 32px;
+  flex: none;
+  color: #666;
+}
+
+.asp-row select {
+  flex: 1;
+  font-size: 12px;
+}
+
+.asp-btns {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.asp-btns button {
+  border: 1px solid #ccc;
+  background: #f5f5f5;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #333;
+}
+
+.asp-btns button.asp-on {
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+}
+
+.asp-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  cursor: pointer;
+  padding: 0;
+}
+
+.asp-swatch.asp-on {
+  outline: 2px solid #1a73e8;
+  outline-offset: 1px;
+}
+
+.annotation-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #888;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+/* ---------- CLI ---------- */
+.cli-section {
+  background: #1e1e2e;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-top: 1px solid #45475a;
+  min-height: 120px;
+}
+
+/* 未选中设备时隐藏 CLI 面板（贴近 eNSP：只有选中设备才弹出终端） */
+.cli-section.cli-hidden {
+  display: none;
+}
+
+.cli-resizer {
+  height: 6px;
+  background: #45475a;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.cli-resizer:hover {
+  background: #585b70;
+}
+
+.cli-resizer-handle {
+  color: #888;
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+
+.cli-header {
+  padding: 6px 16px;
+  background: #2a2a3e;
+  color: #cdd6f4;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.cli-header-state {
+  color: #6c7086;
+  font-size: 11px;
+}
+
+.cli-terminal {
+  flex: 1;
+  min-height: 0;
+  color: #a6e3a1;
+  padding: 8px 16px;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.cli-line {
+  margin-bottom: 3px;
+}
+
+.cli-time {
+  color: #6c7086;
+  font-size: 11px;
+}
+
+.cli-prompt {
+  color: #f9e2af;
+}
+
+.cli-out {
+  color: #cdd6f4;
+}
+
+.cli-error {
+  color: #f38ba8;
+}
+
+.cli-line-error .cli-out {
+  color: #f38ba8;
+}
+
+.cli-input {
+  display: flex;
+  gap: 8px;
+  padding: 6px 16px;
+  background: #2a2a3e;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.cli-input-prompt {
+  color: #f9e2af;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.cli-input input {
+  flex: 1;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  outline: none;
+}
+
+.cli-input input:focus {
+  border-color: #1a73e8;
+}
+
+.cli-input input::placeholder {
+  color: #6c7086;
+}
+
+.cli-input input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---------- IP 配置面板（方案二）---------- */
+.ip-config-panel {
+  background: #ffffff;
+  border-top: 2px solid #1a73e8;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: #24292f;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ip-config-panel.ip-config-hidden {
+  display: none;
+}
+
+.ip-config-header {
+  padding: 8px 16px;
+  background: #eef3fd;
+  color: #1a3a6b;
+  font-weight: 600;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ip-config-mode-tag {
+  background: #1a73e8;
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.ip-config-empty {
+  padding: 14px 16px;
+  color: #8a8a9a;
+}
+
+.ip-config-loading {
+  padding: 14px 16px;
+  color: #8a8a9a;
+}
+
+.ip-config-form {
+  padding: 10px 16px 14px;
+}
+
+.ip-config-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 10px;
+}
+
+.ip-config-label {
+  width: 72px;
+  flex-shrink: 0;
+  color: #555;
+}
+
+.ip-config-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  outline: none;
+  background: #fff;
+  color: #24292f;
+  box-sizing: border-box;
+}
+
+.ip-config-input:focus {
+  border-color: #1a73e8;
+}
+
+.ip-config-note {
+  color: #8a8a9a;
+  font-size: 12px;
+}
+
+.ip-config-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.ip-config-msg {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.ip-config-msg-ok {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.ip-config-msg-err {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.ip-config-current {
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #f6f8fa;
+  border: 1px solid #eaecef;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #333;
+}
+
+.ip-config-current-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #1a3a6b;
+}
+
+/* ---------- Body Resize Helper ---------- */
+body.resizing-ns {
+  cursor: ns-resize !important;
+  user-select: none;
+}
+
+body.resizing-ns * {
+  cursor: ns-resize !important;
+}
+
+/* ---------- Empty State ---------- */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8a8a9a;
+  font-size: 14px;
+  padding: 20px;
+  text-align: center;
+}
+
+/* ---------- Device Detail (Tab 切换布局) ---------- */
+.device-detail {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background: #fff;
+  border-top: 1px solid #e0e0e0;
+}
+
+.device-detail-empty {
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+}
+
+.device-detail-placeholder {
+  color: #8a8a9a;
+  font-size: 13px;
+  padding: 18px 16px;
+  text-align: center;
+}
+
+.device-detail-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #f0f4fa;
+  border-bottom: 1px solid #e6eaf0;
+  flex-shrink: 0;
+}
+
+.device-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.device-detail-id {
+  font-size: 12px;
+  color: #6c7086;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+
+.device-detail-tabs {
+  display: flex;
+  flex-shrink: 0;
+  background: #eef1f6;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.device-tab {
+  flex: 1;
+  padding: 9px 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s, color 0.15s;
+}
+
+.device-tab:hover {
+  background: #e3e8f0;
+  color: #1a73e8;
+}
+
+.device-tab-active {
+  color: #1a73e8;
+  background: #fff;
+}
+
+.device-tab-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: #1a73e8;
+}
+
+.device-detail-body {
+  min-height: 0;
+}
+
+.device-detail-pane {
+  display: block;
+}
+
+.device-detail-pane-hidden {
+  display: none;
+}
+
+/* ---------- 配置信息：接口表格 ---------- */
+.ip-config-body {
+  padding: 0;
+}
+
+.ip-config-table-wrap {
+  padding: 10px 16px 4px;
+}
+
+.ip-config-table-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #1a3a6b;
+  margin-bottom: 6px;
+}
+
+.ip-config-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #eaecef;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.ip-config-table th,
+.ip-config-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid #eaecef;
+  white-space: nowrap;
+}
+
+.ip-config-table th {
+  background: #f6f8fa;
+  color: #555;
+  font-weight: 600;
+}
+
+.ip-config-table td {
+  color: #24292f;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+
+.ip-config-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.status-up {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status-down {
+  background: #e2e3e5;
+  color: #6c757d;
+}
+
+.status-unknown {
+  background: #fff3cd;
+  color: #856404;
+}
+
+/* ---------- Ping 测试面板 ---------- */
+.ping-panel {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  width: 420px;
+  max-width: calc(100vw - 220px);
+  max-height: calc(100vh - 120px);
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.ping-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+  color: #fff;
+}
+
+.ping-title {
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ping-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.ping-header-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ping-header-btn:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.ping-form {
+  padding: 14px;
+  border-bottom: 1px solid #e8eaed;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ping-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ping-label {
+  width: 60px;
+  flex-shrink: 0;
+  color: #555;
+  font-weight: 500;
+}
+
+.ping-select,
+.ping-count-input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  color: #333;
+  outline: none;
+}
+
+.ping-select:disabled,
+.ping-count-input:disabled,
+.ping-continuous-toggle input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ping-row-inline {
+  justify-content: space-between;
+}
+
+.ping-inline-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.ping-count-input {
+  width: 60px;
+  flex: none;
+}
+
+.ping-continuous-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #444;
+  user-select: none;
+}
+
+.ping-continuous-toggle input {
+  cursor: pointer;
+}
+
+.ping-swap-btn {
+  background: #f0f7ff;
+  border: 1px solid #1a73e8;
+  color: #1a73e8;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.ping-swap-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ping-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.ping-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ping-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ping-btn-start {
+  background: #28a745;
+  color: #fff;
+}
+
+.ping-btn-start:hover:not(:disabled) {
+  background: #218838;
+}
+
+.ping-btn-stop {
+  background: #dc3545;
+  color: #fff;
+}
+
+.ping-btn-stop:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.ping-output {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+.ping-output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: #e9ecef;
+  border-bottom: 1px solid #dee2e6;
+  font-weight: 600;
+  color: #333;
+}
+
+.ping-summary {
+  font-size: 12px;
+}
+
+.ping-output-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #212529;
+}
+
+.ping-output-empty {
+  color: #6c757d;
+  font-style: italic;
+}
+
+.ping-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ping-stats {
+  display: flex;
+  justify-content: space-around;
+  padding: 10px 14px;
+  background: #fff;
+  border-top: 1px solid #e8eaed;
+}
+
+.ping-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.ping-stat-label {
+  font-size: 11px;
+  color: #6c757d;
+}
+
+.ping-stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.ping-history {
+  max-height: 140px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #e8eaed;
+  background: #fff;
+}
+
+.ping-history-header {
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #555;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e8eaed;
+}
+
+.ping-history-body {
+  overflow-y: auto;
+  padding: 6px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ping-history-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.ping-history-time {
+  color: #6c757d;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.ping-history-pair {
+  color: #333;
+  font-weight: 500;
+}
+
+.ping-history-result {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.ping-history-summary {
+  color: #6c757d;
+  font-size: 11px;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ping-success {
+  color: #28a745;
+}
+
+.ping-fail {
+  color: #dc3545;
+}
+
+
+/* ---------- 浮动窗口（设备详情，类 eNSP）---------- */
+.float-window {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #c7d0db;
+  border-radius: 8px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  min-width: 360px;
+  min-height: 220px;
+}
+
+.float-window.fw-max {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+}
+
+.fw-titlebar {
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  background: #2b2f3a;
+  color: #e8ebf0;
+  cursor: move;
+  user-select: none;
+  position: relative;
+  z-index: 2;
+}
+
+/* 确保最大化/最小化/关闭等控制按钮始终位于最上层且可点击，
+   避免被任何可能覆盖标题栏区域的浮层拦截（修复“放大后无法缩小”） */
+.fw-ctrls {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+}
+.fw-ctrls .fw-btn {
+  position: relative;
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.fw-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4caf50;
+  flex-shrink: 0;
+}
+
+.fw-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+
+.fw-sub {
+  font-size: 11px;
+  color: #9aa3b2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-status {
+  margin-left: 2px;
+}
+
+.fw-check {
+  color: #4caf50;
+  font-weight: 700;
+}
+
+.fw-ctrls {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+
+.fw-btn {
+  width: 24px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #cfd6e0;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fw-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.fw-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+.fw-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  overflow: hidden;
+}
+
+.fw-resizer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 50%,
+    #b8c0cc 50%,
+    #b8c0cc 62%,
+    transparent 62%,
+    transparent 76%,
+    #b8c0cc 76%,
+    #b8c0cc 88%,
+    transparent 88%
+  );
+}
+
+/* ---------- 窗口内部内容（DeviceDetail 重构为窗口内容）---------- */
+.device-detail-win {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: #fff;
+}
+
+.device-detail-win .device-detail-tabs {
+  flex-shrink: 0;
+}
+
+.device-detail-win .device-detail-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.device-detail-win .device-detail-pane {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.device-detail-win .device-detail-pane-hidden {
+  display: none;
+}
+
+/* CLI 终端在窗口内撑满并可滚动 */
+.device-detail-win .cli-section {
+  flex: 1;
+  min-height: 0;
+  border-top: none;
+}
+
+.device-detail-win .cli-terminal {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- 网络诊断工具集窗口 ---------- */
+.btn-warning {
+  background: #ffc107;
+  color: #333;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: #e0a800;
+}
+
+.diag-tools {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: #fff;
+}
+
+.diag-tabs {
+  display: flex;
+  flex-shrink: 0;
+  background: #eef1f6;
+  border-bottom: 1px solid #e0e0e0;
+  overflow-x: auto;
+}
+
+.diag-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 11px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: #555;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.diag-tab:hover {
+  background: #e3e8f0;
+  color: #1a73e8;
+}
+
+.diag-tab-active {
+  color: #1a73e8;
+  background: #fff;
+  border-bottom-color: #1a73e8;
+}
+
+.diag-tab-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.diag-tab-label {
+  font-size: 12px;
+}
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diag-pane {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-pane-hidden {
+  display: none;
+}
+
+.diag-form {
+  padding: 12px 14px;
+  border-bottom: 1px solid #e8eaed;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.diag-label {
+  width: 66px;
+  flex-shrink: 0;
+  color: #555;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.diag-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  color: #333;
+  outline: none;
+}
+
+.diag-select:focus {
+  border-color: #1a73e8;
+}
+
+.diag-count-input {
+  width: 66px;
+  flex: none;
+}
+
+.diag-row-inline {
+  justify-content: space-between;
+}
+
+.diag-inline-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.diag-continuous-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #444;
+  user-select: none;
+  font-size: 12px;
+}
+
+.diag-swap-btn {
+  background: #f0f7ff;
+  border: 1px solid #1a73e8;
+  color: #1a73e8;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.diag-swap-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diag-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.diag-btn {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.diag-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diag-btn-start {
+  background: #28a745;
+  color: #fff;
+}
+
+.diag-btn-start:hover:not(:disabled) {
+  background: #218838;
+}
+
+.diag-btn-stop {
+  background: #dc3545;
+  color: #fff;
+}
+
+.diag-btn-stop:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.diag-btn-secondary {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.diag-output {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f8f9fa;
+}
+
+.diag-output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: #e9ecef;
+  border-bottom: 1px solid #dee2e6;
+  font-weight: 600;
+  color: #333;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.diag-output-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 14px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #212529;
+}
+
+.diag-output-body.diag-mono {
+  white-space: pre-wrap;
+}
+
+.diag-output-empty {
+  color: #6c757d;
+  font-style: italic;
+}
+
+.diag-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diag-summary {
+  font-size: 12px;
+}
+
+.diag-success {
+  color: #28a745;
+}
+
+.diag-fail {
+  color: #dc3545;
+}
+
+.diag-stats {
+  display: flex;
+  justify-content: space-around;
+  padding: 10px 14px;
+  background: #fff;
+  border-top: 1px solid #e8eaed;
+  flex-shrink: 0;
+}
+
+.diag-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.diag-stat-label {
+  font-size: 11px;
+  color: #6c757d;
+}
+
+.diag-stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+.diag-history {
+  max-height: 150px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid #e8eaed;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.diag-history-header {
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #555;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e8eaed;
+  flex-shrink: 0;
+}
+
+.diag-history-body {
+  overflow-y: auto;
+  padding: 6px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-history-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.diag-history-item:hover {
+  background: #f1f5ff;
+}
+
+.diag-history-time {
+  color: #6c757d;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+
+.diag-history-pair {
+  color: #333;
+  font-weight: 500;
+}
+
+.diag-history-result {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.diag-history-summary {
+  color: #6c757d;
+  font-size: 11px;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-proto-group {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.diag-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+}
+
+.diag-hint {
+  font-size: 11px;
+  color: #8a8a9a;
+  line-height: 1.5;
+}
+
+.diag-telnet {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.diag-telnet-connected {
+  height: 100%;
+}
+
+.diag-telnet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #2a2a3e;
+  color: #cdd6f4;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.diag-telnet-info {
+  font-family: Consolas, Monaco, monospace;
+}
+
+.diag-telnet-banner {
+  margin: 0;
+  padding: 8px 12px;
+  background: #1e1e2e;
+  color: #a6e3a1;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow-y: auto;
+  border-bottom: 1px solid #45475a;
+  flex-shrink: 0;
+}
+
+.diag-bw {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.diag-bw-summary {
+  padding: 10px 14px;
+  background: #eafaf0;
+  border-top: 1px solid #c3e6cb;
+  color: #155724;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.diag-summary-icon {
+  font-size: 14px;
+}
+
+.diag-pcap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.diag-pcap-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid #e8eaed;
+}
+
+.diag-pcap-head,
+.diag-pcap-row {
+  display: flex;
+  padding: 6px 14px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+}
+
+.diag-pcap-head {
+  background: #eef1f6;
+  color: #555;
+  font-weight: 600;
+  border-bottom: 1px solid #e0e0e0;
+  flex-shrink: 0;
+}
+
+.diag-pcap-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.diag-pcap-row:nth-child(even) {
+  background: #fafbfc;
+}
+
+.diag-pcap-c {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-pcap-time {
+  flex: 1.4;
+  color: #6c757d;
+}
+
+.diag-pcap-proto {
+  flex: 0.7;
+  font-weight: 600;
+}
+
+.diag-pcap-len {
+  flex: 0.6;
+  text-align: right;
+}
+
+.diag-proto-TCP {
+  color: #1a73e8;
+}
+
+.diag-proto-UDP {
+  color: #0d47a1;
+}
+
+.diag-proto-ICMP {
+  color: #28a745;
+}
+
+.diag-proto-DNS {
+  color: #fd7e14;
+}
+
+.diag-proto-ARP {
+  color: #8a6d3b;
+}
+
+.diag-proto-HTTP {
+  color: #6f42c1;
+}
+
+.diag-pcap-foot {
+  padding: 6px 14px;
+  background: #f8f9fa;
+  border-top: 1px solid #e8eaed;
+  font-size: 11px;
+  color: #6c757d;
+  flex-shrink: 0;
+}
+.device-detail-win .ip-config-panel {
+  flex: 1;
+  min-height: 0;
+  border-top: none;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* ---------- 浮动窗口任务栏（右上角，已打开窗口状态）---------- */
+.win-taskbar {
+  position: fixed;
+  top: 54px;
+  right: 14px;
+  z-index: 100000;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 46vw;
+}
+
+.win-task {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #c7d0db;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #2b2f3a;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.win-task:hover {
+  background: #eef3fd;
+  border-color: #1a73e8;
+}
+
+.win-task-min {
+  opacity: 0.7;
+}
+
+.win-task-name {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.win-task-check {
+  color: #4caf50;
+  font-weight: 700;
+}
+
+/* 拖动/缩放时全局光标 */
+body.resizing-ew {
+  cursor: move !important;
+  user-select: none;
+}
+
+body.resizing-ew * {
+  cursor: move !important;
+}
+
+body.resizing-nwse {
+  cursor: nwse-resize !important;
+  user-select: none;
+}
+
+body.resizing-nwse * {
+  cursor: nwse-resize !important;
+}

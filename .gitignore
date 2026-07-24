@@ -1,0 +1,49 @@
+# eNSP Lab 子项目忽略规则
+
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ensp-lab
+server
+
+# 调试截图与临时图片
+screenshot_*.png
+*.tmp.png
+
+# 前端构建产物（由 frontend/ build 产生）
+web/dist/
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+frontend/tsconfig.tsbuildinfo
+
+# 前端环境
+.env.local
+.env.*.local
+
+# Go 测试与覆盖
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 本地数据
+data/*.local.json
+
+# 临时测试/验证产物（保留 tmp/*.py 脚本）
+tmp/*.log
+tmp/lowres-main
+tmp/*.csv
+tmp/*.json
+tmp/vxlan-data/
+tmp/cmdline.txt

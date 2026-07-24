@@ -1,0 +1,590 @@
+// state.go 集中定义 CLIState 及所有相关协议/特性的配置类型与构造函数。
+//
+// 任何「协议配置」「会话视图」「命令行解析」相关的 struct 都收在这里。
+// 真正的命令解析/分发逻辑见 parser.go，纯工具函数见 tools.go。
+package cli
+
+import (
+	"ensp-lab/internal/topology"
+)
+
+// ViewType 表示 CLI 当前所在的视图层级。
+type ViewType string
+
+const (
+	ViewUser      ViewType = "user"
+	ViewSystem    ViewType = "system"
+	ViewInterface ViewType = "interface"
+	ViewACL       ViewType = "acl"
+	ViewMLAG      ViewType = "mlag"
+	ViewBGP       ViewType = "bgp"
+	ViewVTY       ViewType = "vty"
+	ViewDHCPPool  ViewType = "dhcp-pool"
+)
+
+// Command 表示一条已解析的 CLI 命令。
+type Command struct {
+	Raw     string
+	Command string
+	Args    []string
+}
+
+// CLIState 保存一台网络设备的全部运行状态（含协议配置、接口、路由、转发表等）。
+type CLIState struct {
+	CurrentView    ViewType
+	CurrentSub     string
+	DeviceType     topology.DeviceType
+	DeviceName     string            // 设备名称
+	DeviceID       string            // 设备ID
+	DeviceConfig   map[string]string // 设备配置键值对
+	DefaultGateway string
+	HostIP         string // PC 主机 IP 地址
+	HostSubnet     string // PC 主机子网掩码
+	HostDNS        string // PC 主机 DNS 服务器
+	ACLs           map[string][]*ACLRule
+	Routes         []*RouteEntry
+	OSPF           *OSPFConfig
+	MLAG           *MLAGConfig
+	MLAGInterfaces map[string]map[string]string
+	LLDP           *LLDPConfig
+	STP            *STPConfig
+	VRRP           map[int]*VRRPConfig
+	IPRouting      bool // 三层路由功能启用标志
+	IPsec          map[string]*IPsecConfig
+	SNMP           *SNMPConfig
+	Syslog         *SyslogConfig
+	NTP            *NTPConfig
+	SSH            *SSHConfig
+	VTY            *VTYConfig
+	LocalUsers     map[string]*LocalUser
+	VXLAN          *VXLANConfig
+	BGP            *BGPConfig
+	BFD            *BFDConfig
+	VRF            map[string]*VRFConfig
+	PBR            map[string][]*PBRRule
+	GRE            map[string]*GREConfig
+	QoS            *QoSConfig
+	Dot1x          *Dot1xConfig
+	RADIUS         *RADIUSConfig
+	NetFlow        *NetFlowConfig
+	ARPTable       []*ARPEntry
+	NATTable       []*NATEntry
+	NAT            *NATConfig
+	VLANs          map[int]*VLANConfig
+	MACTable       []*MACEntry
+	Interfaces     map[string]*InterfaceConfig
+	DHCP           *DHCPConfig
+	DHCPSelectMode string // DHCP 模式: global 或 interface
+
+	// save 命令相关（贴近华为 eNSP 体验）
+	Saved       bool   `json:"saved"`         // 是否已执行 save（写入启动配置）
+	SaveTime    string `json:"save_time"`     // 最近一次 save 时间
+	SavedConfig string `json:"saved_config"`  // 已保存配置的 VRP 风格快照
+	PendingSave bool   `json:"pending_save"`  // save  awaiting Y/N 确认
+}
+
+type ARPEntry struct {
+	IP        string
+	MAC       string
+	Interface string
+	Type      string
+	Age       string
+}
+
+type NATEntry struct {
+	Protocol   string
+	GlobalIP   string
+	GlobalPort string
+	InsideIP   string
+	InsidePort string
+	Type       string
+}
+
+type VLANConfig struct {
+	ID     int
+	Name   string
+	Status string
+	Ports  []string
+}
+
+type MACEntry struct {
+	MAC       string
+	VLAN      int
+	Interface string
+	Type      string
+}
+
+type InterfaceConfig struct {
+	Name        string
+	Status      string
+	Protocol    string
+	Description string
+	IP          string
+	Mask        string
+}
+
+type DHCPConfig struct {
+	Enabled bool
+	Pools   map[string]*DHCPPool
+}
+
+type DHCPPool struct {
+	Name        string
+	Network     string
+	Mask        string
+	Gateway     string
+	DNSList     []string
+	ExcludedIPs []string
+	LeaseTime   string
+	Allocated   int
+	Total       int
+}
+
+type ACLRule struct {
+	ID          int
+	Name        string // 命名 ACL 名称
+	Type        string // basic, advanced
+	Action      string
+	Protocol    string
+	SrcIP       string
+	SrcWildcard string
+	DstIP       string
+	DstWildcard string
+	DstPort     string
+	DstPortOp   string // eq, neq, gt, lt, range
+	DstPortEnd  string // range 时的结束端口
+	SourcePort  string
+}
+
+type RouteEntry struct {
+	Destination string
+	Mask        string
+	MaskLength  int
+	Protocol    string
+	Pre         int
+	Cost        int
+	Flags       string
+	NextHop     string
+	Interface   string
+}
+
+type NATConfig struct {
+	Enabled      bool
+	Servers      []NATServer
+	AddressPools []NATAddressPool
+	Outbounds    []NATOutbound
+}
+
+type NATServer struct {
+	GlobalIP   string
+	InsideIP   string
+	Protocol   string
+	GlobalPort string
+	InsidePort string
+}
+
+type NATAddressPool struct {
+	ID      int
+	StartIP string
+	EndIP   string
+}
+
+type NATOutbound struct {
+	ACLNum      int
+	ACLName     string
+	AddressPool int
+	Type        string // "easy-ip" 或 "address-group"
+}
+
+type OSPFConfig struct {
+	Enabled   bool
+	ProcessID int
+	AreaID    int
+}
+
+type MLAGConfig struct {
+	DomainID       int
+	SystemPriority int
+	SystemMAC      string
+	SystemNumber   int
+	KeepaliveDest  string
+	KeepaliveSrc   string
+	MADExclude     []string
+	PeerIP         string
+	PeerLink       string
+	DFSGroupID     int
+	DFSMode        string
+	DFSGroup       map[int]*DFSGroupConfig
+}
+
+type STPConfig struct {
+	Enabled        bool
+	Mode           string
+	BridgePriority int
+	Ports          map[string]*STPPort
+	VSTPEnabled    bool
+	BridgeAddress  string
+	RegionName     string
+	RevisionLevel  int
+	VLANMapping    map[int]int
+	RegionActive   bool
+}
+
+type DFSGroupConfig struct {
+	ID             int
+	MLAGID         int
+	Priority       int
+	SourceIP       string
+	PeerIP         string
+	Authentication string
+	Password       string
+	Enabled        bool
+}
+
+type STPPort struct {
+	PortName     string
+	PortPriority int
+	Cost         int
+}
+
+type VRRPConfig struct {
+	GroupID   int
+	VirtualIP string
+	Priority  int
+	Preempt   bool
+	Delay     int
+}
+
+type IPsecConfig struct {
+	TunnelID       string
+	LocalIP        string
+	RemoteIP       string
+	Mode           string
+	Encryption     string
+	Authentication string
+}
+
+type SNMPConfig struct {
+	Enabled    bool
+	Version    string
+	Community  string
+	ManagerIP  string
+	TrapEnable bool
+	TrapServer string
+}
+
+type SyslogConfig struct {
+	Enabled    bool
+	ServerIP   string
+	ServerPort int
+	Severity   string
+	Facility   string
+}
+
+type NTPConfig struct {
+	Enabled    bool
+	ServerIP   string
+	ServerPort int
+}
+
+type SSHConfig struct {
+	Enabled        bool
+	Port           int
+	Version        string
+	Authentication string
+	MaxSessions    int
+	STelnetEnabled bool
+	RSAGenDone     bool
+	Users          map[string]*SSHUser
+}
+
+type SSHUser struct {
+	Name           string
+	AuthType       string // password, rsa
+	Password       string
+	ServiceType    string // ssh, telnet, http
+	PrivilegeLevel int
+}
+
+type VTYConfig struct {
+	AuthenticationMode string // aaa, password, none
+	UserPrivilegeLevel int
+	ProtocolInbound    string // ssh, telnet, all
+}
+
+type LocalUser struct {
+	Name           string
+	Password       string
+	PasswordCipher string
+	ServiceType    string
+	PrivilegeLevel int
+}
+
+type VXLANConfig struct {
+	Enabled     bool
+	VNI         int
+	VTEPIP      string
+	PeerVTEPIP  string
+	VRFName     string
+	VSIs        map[string]*VSIConfig
+	EvpnEnabled bool
+}
+
+type VSIConfig struct {
+	Name        string
+	VNI         int
+	VPNs        []string
+	Gateway     string
+	Distributed bool
+	EvpnEncap   string
+	Status      string
+}
+
+type BGPConfig struct {
+	Enabled   bool
+	ASNumber  int
+	RouterID  string
+	Neighbors map[string]*BGPNeighbor
+}
+
+type BGPNeighbor struct {
+	IPAddress string
+	RemoteAS  int
+	EBGP      bool
+}
+
+type BFDSession struct {
+	PeerIP        string
+	LocalIP       string
+	MinTxInterval int
+	MinRxInterval int
+	DetectMult    int
+}
+
+type BFDConfig struct {
+	Enabled  bool
+	Sessions map[string]*BFDSession
+}
+
+type VRFConfig struct {
+	RD           string
+	RouteTargets []string
+	Interfaces   []string
+}
+
+type PBRRule struct {
+	ID        int
+	MatchACL  string
+	NextHop   string
+	Interface string
+}
+
+type GREConfig struct {
+	SourceIP  string
+	DestIP    string
+	Key       int
+	Keepalive bool
+}
+
+type QoSClassifier struct {
+	Name string
+	ACL  string
+	DSCP int
+}
+
+type QoSBehavior struct {
+	Name      string
+	Bandwidth int
+	Priority  int
+	Queue     string
+	Action    string
+}
+
+type QoSPolicy struct {
+	Name       string
+	Classifier string
+	Behavior   string
+}
+
+type QoSConfig struct {
+	Enabled     bool
+	Classifiers map[string]*QoSClassifier
+	Behaviors   map[string]*QoSBehavior
+	Policies    map[string]*QoSPolicy
+}
+
+type Dot1xPort struct {
+	Enabled    bool
+	AuthMethod string
+	Reauth     bool
+	QuietTimer int
+}
+
+type Dot1xConfig struct {
+	Enabled bool
+	Ports   map[string]*Dot1xPort
+}
+
+type RADIUSConfig struct {
+	Enabled         bool
+	PrimaryServer   string
+	SecondaryServer string
+	SharedSecret    string
+	AuthPort        int
+	AcctPort        int
+	Timeout         int
+	Retransmit      int
+}
+
+type LLDPConfig struct {
+	Enabled           bool
+	SystemName        string
+	SystemDescription string
+	ManagementAddress string
+	PortConfig        map[string]bool // 接口名 -> 是否启用 LLDP
+}
+
+type NetFlowConfig struct {
+	Enabled      bool
+	Exporter     string
+	Port         int
+	Version      string
+	SampleRate   int
+	ActiveTime   int
+	InactiveTime int
+}
+
+func NewCLIState() *CLIState {
+	return newCLIStateWithType("")
+}
+
+// NewCLIStateWithType 构造一个绑定到指定设备类型的 CLI 会话状态。
+// 传入空字符串将得到一个未绑定类型的状态（命令能力校验会跳过）。
+func NewCLIStateWithType(dt topology.DeviceType) *CLIState {
+	return newCLIStateWithType(dt)
+}
+
+func newCLIStateWithType(dt topology.DeviceType) *CLIState {
+	return &CLIState{
+		CurrentView:  ViewUser,
+		DeviceType:   dt,
+		DeviceConfig: make(map[string]string),
+		ACLs:         make(map[string][]*ACLRule),
+		Routes:       []*RouteEntry{},
+		OSPF: &OSPFConfig{
+			Enabled: false,
+		},
+		MLAG: &MLAGConfig{
+			DFSMode: "all-active",
+		},
+		MLAGInterfaces: make(map[string]map[string]string),
+		LLDP: &LLDPConfig{
+			PortConfig: make(map[string]bool),
+		},
+		STP: &STPConfig{
+			Enabled:        false,
+			Mode:           "rstp",
+			BridgePriority: 32768,
+			Ports:          make(map[string]*STPPort),
+			VLANMapping:    make(map[int]int),
+		},
+		VRRP:   make(map[int]*VRRPConfig),
+		IPsec:  make(map[string]*IPsecConfig),
+		SNMP:   &SNMPConfig{},
+		Syslog: &SyslogConfig{},
+		NTP:    &NTPConfig{},
+		SSH: &SSHConfig{
+			Enabled:        true,
+			Port:           22,
+			Version:        "2.0",
+			Authentication: "password",
+			MaxSessions:    5,
+			STelnetEnabled: false,
+			RSAGenDone:     false,
+			Users:          make(map[string]*SSHUser),
+		},
+		VTY: &VTYConfig{
+			AuthenticationMode: "password",
+			UserPrivilegeLevel: 0,
+			ProtocolInbound:    "all",
+		},
+		LocalUsers: make(map[string]*LocalUser),
+		VXLAN: &VXLANConfig{
+			VSIs:        make(map[string]*VSIConfig),
+			EvpnEnabled: false,
+		},
+		BGP: &BGPConfig{
+			Neighbors: make(map[string]*BGPNeighbor),
+		},
+		BFD: &BFDConfig{
+			Enabled:  false,
+			Sessions: make(map[string]*BFDSession),
+		},
+		VRF: make(map[string]*VRFConfig),
+		PBR: make(map[string][]*PBRRule),
+		GRE: make(map[string]*GREConfig),
+		QoS: &QoSConfig{
+			Enabled:     false,
+			Classifiers: make(map[string]*QoSClassifier),
+			Behaviors:   make(map[string]*QoSBehavior),
+			Policies:    make(map[string]*QoSPolicy),
+		},
+		Dot1x: &Dot1xConfig{
+			Enabled: false,
+			Ports:   make(map[string]*Dot1xPort),
+		},
+		RADIUS: &RADIUSConfig{
+			AuthPort:   1812,
+			AcctPort:   1813,
+			Timeout:    5,
+			Retransmit: 3,
+		},
+		NetFlow: &NetFlowConfig{
+			Port:         9995,
+			Version:      "v9",
+			SampleRate:   100,
+			ActiveTime:   1800,
+			InactiveTime: 15,
+		},
+		ARPTable: []*ARPEntry{
+			{IP: "192.168.1.1", MAC: "00e0-fc12-3456", Interface: "GigabitEthernet0/0/1", Type: "Dynamic", Age: "00:05:23"},
+			{IP: "192.168.1.2", MAC: "00e0-fc12-3457", Interface: "GigabitEthernet0/0/1", Type: "Dynamic", Age: "00:03:12"},
+			{IP: "192.168.1.10", MAC: "00e0-fc12-3460", Interface: "GigabitEthernet0/0/2", Type: "Static", Age: "-"},
+			{IP: "10.0.0.1", MAC: "00e0-fc12-3461", Interface: "GigabitEthernet0/0/3", Type: "Dynamic", Age: "00:01:45"},
+		},
+		NATTable: []*NATEntry{
+			{Protocol: "TCP", GlobalIP: "203.0.113.1", GlobalPort: "80", InsideIP: "192.168.1.100", InsidePort: "80", Type: "NAT Server"},
+			{Protocol: "UDP", GlobalIP: "203.0.113.1", GlobalPort: "53", InsideIP: "192.168.1.101", InsidePort: "53", Type: "NAT Server"},
+			{Protocol: "TCP", GlobalIP: "203.0.113.2", GlobalPort: "1024-65535", InsideIP: "192.168.1.0", InsidePort: "-", Type: "Easy IP"},
+		},
+		NAT: &NATConfig{
+			Enabled:      false,
+			Servers:      []NATServer{},
+			AddressPools: []NATAddressPool{},
+			Outbounds:    []NATOutbound{},
+		},
+		VLANs: map[int]*VLANConfig{
+			1:   {ID: 1, Name: "VLAN1", Status: "Up", Ports: []string{"GE0/0/1", "GE0/0/2", "GE0/0/3"}},
+			10:  {ID: 10, Name: "VLAN10", Status: "Up", Ports: []string{"GE0/0/1", "GE0/0/4"}},
+			20:  {ID: 20, Name: "VLAN20", Status: "Up", Ports: []string{"GE0/0/2", "GE0/0/5"}},
+			100: {ID: 100, Name: "Management", Status: "Up", Ports: []string{"GE0/0/24"}},
+		},
+		MACTable: []*MACEntry{
+			{MAC: "00e0-fc12-3456", VLAN: 10, Interface: "GigabitEthernet0/0/1", Type: "Learned"},
+			{MAC: "00e0-fc12-3457", VLAN: 20, Interface: "GigabitEthernet0/0/2", Type: "Learned"},
+			{MAC: "00e0-fc12-3460", VLAN: 100, Interface: "GigabitEthernet0/0/24", Type: "Static"},
+			{MAC: "00e0-fc12-3461", VLAN: 1, Interface: "GigabitEthernet0/0/3", Type: "Learned"},
+		},
+		Interfaces: map[string]*InterfaceConfig{
+			"GigabitEthernet0/0/1":  {Name: "GigabitEthernet0/0/1", Status: "Up", Protocol: "Up", Description: "Link to Core", IP: "192.168.1.1", Mask: "255.255.255.0"},
+			"GigabitEthernet0/0/2":  {Name: "GigabitEthernet0/0/2", Status: "Up", Protocol: "Up", Description: "Link to Server", IP: "10.0.0.1", Mask: "255.255.255.0"},
+			"GigabitEthernet0/0/3":  {Name: "GigabitEthernet0/0/3", Status: "Down", Protocol: "Down", Description: "", IP: "", Mask: ""},
+			"GigabitEthernet0/0/24": {Name: "GigabitEthernet0/0/24", Status: "Up", Protocol: "Up", Description: "Management", IP: "172.16.0.1", Mask: "255.255.255.0"},
+			"LoopBack0":             {Name: "LoopBack0", Status: "Up", Protocol: "Up", Description: "Router ID", IP: "1.1.1.1", Mask: "255.255.255.255"},
+		},
+		DHCP: &DHCPConfig{
+			Enabled: false,
+			Pools:   make(map[string]*DHCPPool),
+		},
+	}
+}

@@ -1,0 +1,45 @@
+{
+  "id": "ok1",
+  "name": "ok",
+  "devices": {
+    "pc1": {
+      "id": "pc1",
+      "name": "",
+      "type": "pc",
+      "model": "",
+      "status": "",
+      "position_x": 0,
+      "position_y": 0,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.1.10",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.1.1",
+          "dns": "",
+          "mac": "",
+          "status": "",
+          "vlan": 0,
+          "port_type": "",
+          "bandwidth": 0,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": null,
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  "links": [],
+  "annotations": [],
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "0001-01-01T00:00:00Z",
+  "canvas_scale": 0,
+  "canvas_offset_x": 0,
+  "canvas_offset_y": 0,
+  "device_count": 1,
+  "link_count": 0
+}
