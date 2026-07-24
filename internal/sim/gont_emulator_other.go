@@ -1,11 +1,12 @@
-//go:build !linux
+//go:build !gont
 
-// Package sim: gont emulator fallback for non-Linux platforms.
+// Package sim: gont emulator fallback when the "gont" build tag is not set.
 //
-// gont depends on Linux network namespaces (netlink, netns, nftables)
-// and cannot be compiled on Windows or macOS. This file provides the
-// same constructor surface but returns ErrPlatformNotSupported so
-// that callers can fall back to the ns-x pure simulation engine.
+// This covers both non-Linux platforms AND Linux builds performed without
+// the "gont" build tag (the gont engine requires CGO + libpcap and is
+// excluded from the default build / CI). It provides the same constructor
+// surface but returns ErrPlatformNotSupported so that callers can fall back
+// to the ns-x pure-Go simulation engine.
 
 package sim
 

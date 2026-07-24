@@ -1,12 +1,17 @@
-//go:build linux
+//go:build linux && gont
 
-// Package sim: gont-based emulator (Linux only).
+// Package sim: gont-based emulator (Linux only, opt-in via the "gont" build tag).
 //
 // This file provides a gont-backed Engine implementation that creates
 // real Linux network namespaces, veth pairs, and routes so that traffic
-// between simulated devices uses the actual kernel network stack. It is
-// only compiled on Linux; on other platforms the stub in
-// gont_emulator_other.go is used instead.
+// between simulated devices uses the actual kernel network stack.
+//
+// It is only compiled when BOTH the target platform is Linux AND the
+// "gont" build tag is set (e.g. `go build -tags gont`). The gont engine
+// depends on CGO + libpcap (via gopacket/pcap) and is therefore excluded
+// from the default build and from CI. When the tag is not set, the stub in
+// gont_emulator_other.go (build tag `!gont`) is used instead and the
+// engine transparently falls back to the ns-x pure-Go simulator.
 
 package sim
 
