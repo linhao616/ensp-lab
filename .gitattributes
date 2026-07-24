@@ -1,0 +1,13 @@
+# 统一换行符：仓库内始终以 LF 存储（Windows 开发时也保持一致）
+* text=auto eol=lf
+
+# 二进制文件不转换，也不做文本 diff
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

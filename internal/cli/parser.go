@@ -4016,8 +4016,8 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 		if state.VXLAN.VTEPIP != "" {
 			b.WriteString(fmt.Sprintf(" source %s\n", state.VXLAN.VTEPIP))
 		}
-		for _, p := range state.VXLAN.PeerVTEPIP {
-			b.WriteString(fmt.Sprintf(" peer %s\n", p))
+		if state.VXLAN.PeerVTEPIP != "" {
+			b.WriteString(fmt.Sprintf(" peer %s\n", state.VXLAN.PeerVTEPIP))
 		}
 		b.WriteString("#\n")
 	}

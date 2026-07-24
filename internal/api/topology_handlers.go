@@ -66,7 +66,7 @@ func (r *Router) createTopology(c *gin.Context) {
 		}
 		return
 	}
-	c.JSON(http.StatusCreated, t)
+	c.JSON(http.StatusCreated, &t)
 }
 
 func (r *Router) updateTopology(c *gin.Context) {
