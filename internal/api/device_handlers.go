@@ -10,6 +10,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"ensp-lab/internal/topology"
@@ -29,9 +30,26 @@ func (r *Router) addDevice(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// 安全校验：ID 缺失则自动生成；类型必须已知；名称不含控制字符。
+	if device.ID == "" {
+		device.ID = generateID()
+	}
+	if err := validateIdent(device.ID, maxIdentLen); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !IsValidDeviceType(device.Type) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid device type %q", device.Type)})
+		return
+	}
+	if err := validateName(device.Name); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	device.InitializeDefaults()
 	t.AddDevice(&device)
 	r.store.UpdateTopology(t)
+	r.syncEngine(id)
 	c.JSON(http.StatusCreated, device)
 }
 
@@ -43,17 +61,50 @@ func (r *Router) updateDevice(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
-	device, ok := t.GetDevice(deviceId)
+	existing, ok := t.GetDevice(deviceId)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
 		return
 	}
-	if err := c.ShouldBindJSON(device); err != nil {
+	// 安全/并发：绑定到设备副本，避免直接改写 store 中存活的 *Device
+	// （被并发读请求 / 仿真引擎共享），造成数据竞争或 TOCTOU。
+	updated := *existing
+	if existing.Interfaces != nil {
+		updated.Interfaces = make(map[string]*topology.Interface, len(existing.Interfaces))
+		for k, v := range existing.Interfaces {
+			cp := *v
+			updated.Interfaces[k] = &cp
+		}
+	}
+	if existing.ConfigData != nil {
+		cd := *existing.ConfigData
+		if existing.ConfigData.Interfaces != nil {
+			cd.Interfaces = make(map[string]string, len(existing.ConfigData.Interfaces))
+			for k, v := range existing.ConfigData.Interfaces {
+				cd.Interfaces[k] = v
+			}
+		}
+		if existing.ConfigData.History != nil {
+			cd.History = append([]*topology.HistoryEntry(nil), existing.ConfigData.History...)
+		}
+		updated.ConfigData = &cd
+	}
+	if err := c.ShouldBindJSON(&updated); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	updated.ID = deviceId // 以路径参数为准，避免请求体篡改设备 ID
+	if !IsValidDeviceType(updated.Type) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid device type %q", updated.Type)})
+		return
+	}
+	t.Devices[deviceId] = &updated
 	r.store.UpdateTopology(t)
-	c.JSON(http.StatusOK, device)
+	// 设备配置可能变更接口/路由，失效缓存使下次 CLI 从新拓扑重建。
+	r.dropCLIState(deviceId)
+	// 把最新拓扑同步给已存在的仿真引擎（B1）。
+	r.syncEngine(id)
+	c.JSON(http.StatusOK, &updated)
 }
 
 func (r *Router) deleteDevice(c *gin.Context) {
@@ -67,7 +118,9 @@ func (r *Router) deleteDevice(c *gin.Context) {
 	t.RemoveDevice(deviceId)
 	r.store.UpdateTopology(t)
 
-	delete(r.cliStates, deviceId)
+	r.dropCLIState(deviceId)
+	// 设备已移除，把最新拓扑同步给已存在的仿真引擎（B1）。
+	r.syncEngine(id)
 
 	if r.protoSim != nil {
 		r.protoSim.RemoveRouter(deviceId)

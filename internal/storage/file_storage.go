@@ -1,11 +1,15 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"ensp-lab/internal/logging"
 	"ensp-lab/internal/topology"
@@ -14,6 +18,21 @@ import (
 )
 
 const defaultStorageDir = "./data"
+
+// ErrInvalidTopoID 表示拓扑 ID 非法（含路径分隔符或 ".."），可能被用于路径穿越写文件。
+var ErrInvalidTopoID = errors.New("storage: invalid topology id")
+
+// topoFilePath 将拓扑 ID 安全地映射到存储目录下的文件名。
+// 拒绝任何可能跳出存储目录的 ID（路径分隔符或 ".."），避免路径穿越写文件。
+func topoFilePath(dir, id string) (string, error) {
+	if id == "" {
+		return "", ErrInvalidTopoID
+	}
+	if strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+		return "", ErrInvalidTopoID
+	}
+	return filepath.Join(dir, id+".json"), nil
+}
 
 type FileStorage struct {
 	mu         sync.RWMutex
@@ -197,16 +216,31 @@ func (s *FileStorage) saveTopology(t *topology.Topology) error {
 		return fmt.Errorf("storage: failed to marshal topology: %w", err)
 	}
 
-	filePath := filepath.Join(s.storageDir, t.ID+".json")
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return fmt.Errorf("storage: failed to write topology: %w", err)
+	// 校验拓扑 ID 合法性，防止路径穿越写文件。
+	filePath, err := topoFilePath(s.storageDir, t.ID)
+	if err != nil {
+		return err
+	}
+	// 原子写入：先写同目录临时文件，再 rename 覆盖。rename 在同一文件系统内是
+	// 原子操作，避免进程崩溃/掉电时留下半截 JSON，导致下次启动 loadAll 静默跳过
+	// 该拓扑（数据丢失）。临时文件与目标文件同目录，保证 rename 不跨卷。
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("storage: failed to write temp topology: %w", err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		_ = os.Remove(tmpPath) // 清理残留临时文件，避免留下 .tmp 垃圾
+		return fmt.Errorf("storage: failed to commit topology: %w", err)
 	}
 
 	return nil
 }
 
 func (s *FileStorage) deleteTopologyFile(id string) error {
-	filePath := filepath.Join(s.storageDir, id+".json")
+	filePath, err := topoFilePath(s.storageDir, id)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(filePath); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -218,4 +252,57 @@ func (s *FileStorage) deleteTopologyFile(id string) error {
 
 func (s *FileStorage) StorageDir() string {
 	return s.storageDir
+}
+
+// Flush 将内存中所有拓扑原子写盘。即使单个拓扑写盘失败也会尽力保存其余拓扑，
+// 并最终返回首个错误。异常退出（panic/信号）时由 main 的 recover / 信号处理调用。
+//
+// 安全性：先持 RLock 拷贝出各拓扑的深拷贝快照，立即释放读锁，再在锁外序列化与写盘，
+// 避免持锁做 I/O。panic 路径调用同样安全——Go 在 panic 展开栈时会执行各层 defer，
+// 触发 panic 的函数所持有的锁会被其 defer 释放，到达 main 的 recover 时锁已空闲，
+// 因此这里的 RLock 不会死锁。
+func (s *FileStorage) Flush() error {
+	s.mu.RLock()
+	snaps := make([]*topology.Topology, 0, len(s.topologies))
+	for _, t := range s.topologies {
+		if t != nil {
+			snaps = append(snaps, t.Clone())
+		}
+	}
+	s.mu.RUnlock()
+
+	var firstErr error
+	for _, t := range snaps {
+		if err := s.saveTopology(t); err != nil {
+			logging.Error("FileStorage: flush topology failed",
+				zap.String("id", t.ID), zap.Error(err))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+// StartAutoSave 启动后台定时刷盘，直到 ctx 取消。用于兜底崩溃/掉电：
+// 即便某次 in-place 修改未走 UpdateTopology，定时快照也能将内存态落盘。
+// 刷盘失败仅记录日志，不中断循环。
+func (s *FileStorage) StartAutoSave(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.Flush(); err != nil {
+					logging.Warn("FileStorage: auto-save failed", zap.Error(err))
+				}
+			}
+		}
+	}()
 }

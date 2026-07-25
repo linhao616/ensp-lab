@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -366,5 +367,89 @@ func TestAPISimStatus(t *testing.T) {
 	}
 
 	t.Logf("Engine mode: %v", status["mode"])
+}
+
+// TestCLIConcurrentSameDevice 验证「同一设备的并发 CLI 串行执行」：
+// 8 个 goroutine 对同一设备各发 5 条 CLI 命令（共 40 条），结束后再发
+// display history-command 校验历史恰好 40 条、无丢失。本测试需在
+// `go test -race` 下运行，才能真正验证 per-device 锁消除了数据竞争。
+func TestCLIConcurrentSameDevice(t *testing.T) {
+	t.Parallel()
+
+	store := storage.NewMemoryStorage()
+	var staticFS fs.FS
+	r := NewRouter(store, staticFS)
+
+	// 建一个含 router 设备的拓扑（createTopologySimple 接受 nodes/links）。
+	createBody := []byte(`{
+		"name": "ConcurrentCLI",
+		"nodes": [{"id": "r1", "type": "router"}],
+		"links": []
+	}`)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/topology", bytes.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create topology: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var createResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("unmarshal create resp: %v", err)
+	}
+	topoID := createResp["id"].(string)
+
+	const goroutines = 8
+	const cmdsPerGoroutine = 5
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errCh := make(chan error, goroutines*cmdsPerGoroutine)
+
+	postCLI := func(command string) {
+		body := []byte(fmt.Sprintf(`{"command":%q}`, command))
+		rw := httptest.NewRecorder()
+		q, _ := http.NewRequest(http.MethodPost,
+			"/api/topologies/"+topoID+"/devices/r1/cli", bytes.NewReader(body))
+		q.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(rw, q)
+		if rw.Code != http.StatusOK {
+			errCh <- fmt.Errorf("cli %q: status %d: %s", command, rw.Code, rw.Body.String())
+		}
+	}
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < cmdsPerGoroutine; j++ {
+				postCLI("display version")
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+
+	// 并发结束后查询历史，应恰好 40 条（8×5），且无重复丢失。
+	rw := httptest.NewRecorder()
+	q, _ := http.NewRequest(http.MethodPost,
+		"/api/topologies/"+topoID+"/devices/r1/cli",
+		bytes.NewReader([]byte(`{"command":"display history-command 1000"}`)))
+	q.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rw, q)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("history-command: status %d: %s", rw.Code, rw.Body.String())
+	}
+	var histResp map[string]interface{}
+	if err := json.Unmarshal(rw.Body.Bytes(), &histResp); err != nil {
+		t.Fatalf("unmarshal history resp: %v", err)
+	}
+	output, _ := histResp["output"].(string)
+	got := strings.Count(output, "display version")
+	want := goroutines * cmdsPerGoroutine
+	if got != want {
+		t.Errorf("history entries: got %d, want %d (some commands were lost under concurrency)", got, want)
+	}
 }
 

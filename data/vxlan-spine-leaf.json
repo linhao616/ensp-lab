@@ -188,6 +188,20 @@
           "delay": 0,
           "description": ""
         },
+        "10GE5/0/2": {
+          "name": "10GE5/0/2",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
+          "port_type": "",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        },
         "Ethernet0": {
           "name": "Ethernet0",
           "ip_address": "",
@@ -225,6 +239,20 @@
           "mac": "",
           "status": "up",
           "vlan": 10,
+          "port_type": "",
+          "bandwidth": 0,
+          "delay": 0,
+          "description": ""
+        },
+        "Vlanif20": {
+          "name": "Vlanif20",
+          "ip_address": "10.0.20.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
           "port_type": "",
           "bandwidth": 0,
           "delay": 0,
@@ -295,6 +323,20 @@
           "delay": 0,
           "description": ""
         },
+        "10GE5/0/2": {
+          "name": "10GE5/0/2",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
+          "port_type": "",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        },
         "LoopBack0": {
           "name": "LoopBack0",
           "ip_address": "2.2.2.3",
@@ -318,6 +360,20 @@
           "mac": "",
           "status": "up",
           "vlan": 10,
+          "port_type": "",
+          "bandwidth": 0,
+          "delay": 0,
+          "description": ""
+        },
+        "Vlanif20": {
+          "name": "Vlanif20",
+          "ip_address": "10.0.20.3",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
           "port_type": "",
           "bandwidth": 0,
           "delay": 0,
@@ -352,13 +408,28 @@
           "bandwidth": 10000,
           "delay": 0,
           "description": ""
+        },
+        "Ethernet1": {
+          "name": "Ethernet1",
+          "ip_address": "10.0.20.100",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "10.0.20.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
+          "port_type": "",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
         }
       },
       "config": "",
       "config_data": {
         "device_name": "server-1",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.100/255.255.255.0"
+          "interface:Ethernet0:ip": "10.0.10.100/255.255.255.0",
+          "interface:Ethernet1:ip": "10.0.20.100/255.255.255.0"
         },
         "default_gateway": "10.0.10.1",
         "saved": false,
@@ -381,8 +452,8 @@
         "Ethernet0": {
           "name": "Ethernet0",
           "ip_address": "10.0.10.200",
-          "subnet_mask": "255.255.255.255",
-          "gateway": "",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "10.0.10.2",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -397,9 +468,9 @@
       "config_data": {
         "device_name": "server-2",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.200/255.255.255.255"
+          "interface:Ethernet0:ip": "10.0.10.200/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.10.2",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -421,7 +492,7 @@
           "name": "Ethernet0",
           "ip_address": "10.0.10.250",
           "subnet_mask": "255.255.255.0",
-          "gateway": "",
+          "gateway": "10.0.10.3",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -438,7 +509,7 @@
         "interfaces": {
           "interface:Ethernet0:ip": "10.0.10.250/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.10.3",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -575,7 +646,7 @@
         "Ethernet0": {
           "name": "Ethernet0",
           "ip_address": "10.0.10.10",
-          "subnet_mask": "255.255.255.255",
+          "subnet_mask": "255.255.255.0",
           "gateway": "10.0.10.1",
           "dns": "",
           "mac": "",
@@ -591,9 +662,9 @@
       "config_data": {
         "device_name": "vm-1",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.10/255.255.255.255"
+          "interface:Ethernet0:ip": "10.0.10.10/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.10.1",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -614,7 +685,7 @@
         "Ethernet0": {
           "name": "Ethernet0",
           "ip_address": "10.0.20.20",
-          "subnet_mask": "255.255.255.255",
+          "subnet_mask": "255.255.255.0",
           "gateway": "10.0.20.1",
           "dns": "",
           "mac": "",
@@ -630,9 +701,9 @@
       "config_data": {
         "device_name": "vm-2",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.20.20/255.255.255.255"
+          "interface:Ethernet0:ip": "10.0.20.20/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.20.1",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -669,9 +740,9 @@
       "config_data": {
         "device_name": "vm-3",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.30/255.255.255.255"
+          "interface:Ethernet0:ip": "10.0.10.30/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.10.2",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -692,7 +763,7 @@
         "Ethernet0": {
           "name": "Ethernet0",
           "ip_address": "10.0.10.40",
-          "subnet_mask": "255.255.255.255",
+          "subnet_mask": "255.255.255.0",
           "gateway": "10.0.10.3",
           "dns": "",
           "mac": "",
@@ -708,9 +779,9 @@
       "config_data": {
         "device_name": "vm-4",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.40/32"
+          "interface:Ethernet0:ip": "10.0.10.40/255.255.255.0"
         },
-        "default_gateway": "",
+        "default_gateway": "10.0.10.3",
         "saved": false,
         "saved_config": "",
         "save_time": ""
@@ -824,7 +895,7 @@
       "source_device": "leaf-1",
       "source_port": "10GE5/0/2",
       "target_device": "server-1",
-      "target_port": "Ethernet0",
+      "target_port": "Ethernet1",
       "link_type": "access",
       "cable_type": "copper",
       "bandwidth": 10000,
@@ -964,21 +1035,6 @@
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "vxlan_vni": 5000
-    },
-    {
-      "id": "link-1784689874230",
-      "source_device": "spine-1",
-      "source_port": "10GE1/0/1",
-      "target_device": "spine-2",
-      "target_port": "10GE3/0/1",
-      "link_type": "underlay",
-      "cable_type": "ethernet",
-      "bandwidth": 0,
-      "delay": 0,
-      "status": "up",
-      "created_at": "0001-01-01T00:00:00Z",
-      "source_label_dx": 17.86044912734194,
-      "source_label_dy": -51.34879124110807
     }
   ],
   "annotations": [
@@ -1002,5 +1058,5 @@
   "canvas_offset_x": 275,
   "canvas_offset_y": -75,
   "device_count": 12,
-  "link_count": 18
+  "link_count": 17
 }

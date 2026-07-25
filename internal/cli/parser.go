@@ -1748,17 +1748,27 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		priority := 100
 		preempt := true
 		delay := 0
+		var warn strings.Builder
 		for i := 2; i < len(cmd.Args); i += 2 {
 			if i+1 >= len(cmd.Args) {
 				break
 			}
 			switch strings.ToLower(cmd.Args[i]) {
 			case "priority":
-				priority, _ = parseNum(cmd.Args[i+1])
+				// 解析失败保留已有默认值，不再静默写成 0。
+				if n, err := parseNum(cmd.Args[i+1]); err == nil {
+					priority = n
+				} else {
+					warn.WriteString(fmt.Sprintf(" [warn: invalid priority %q, kept %d]", cmd.Args[i+1], priority))
+				}
 			case "preempt":
 				preempt = strings.ToLower(cmd.Args[i+1]) != "disable"
 			case "delay":
-				delay, _ = parseNum(cmd.Args[i+1])
+				if n, err := parseNum(cmd.Args[i+1]); err == nil {
+					delay = n
+				} else {
+					warn.WriteString(fmt.Sprintf(" [warn: invalid delay %q, kept %d]", cmd.Args[i+1], delay))
+				}
 			}
 		}
 		state.VRRP[groupID] = &VRRPConfig{
@@ -1768,7 +1778,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			Preempt:   preempt,
 			Delay:     delay,
 		}
-		return fmt.Sprintf("VRRP group %d configured", groupID)
+		return fmt.Sprintf("VRRP group %d configured%s", groupID, warn.String())
 	case "ipsec":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2201,11 +2211,22 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		} else if len(cmd.Args) >= 4 && state.BFD.Enabled {
 			peerIP := cmd.Args[0]
 			localIP := cmd.Args[1]
-			minTx, _ := parseNum(cmd.Args[2])
-			minRx, _ := parseNum(cmd.Args[3])
+			var warn strings.Builder
+			minTx, err := parseNum(cmd.Args[2])
+			if err != nil {
+				warn.WriteString(fmt.Sprintf(" [warn: invalid min-tx %q, used 0]", cmd.Args[2]))
+			}
+			minRx, err := parseNum(cmd.Args[3])
+			if err != nil {
+				warn.WriteString(fmt.Sprintf(" [warn: invalid min-rx %q, used 0]", cmd.Args[3]))
+			}
 			detectMult := 3
 			if len(cmd.Args) >= 5 {
-				detectMult, _ = parseNum(cmd.Args[4])
+				if n, e := parseNum(cmd.Args[4]); e == nil {
+					detectMult = n
+				} else {
+					warn.WriteString(fmt.Sprintf(" [warn: invalid detect-mult %q, kept 3]", cmd.Args[4]))
+				}
 			}
 			state.BFD.Sessions[peerIP] = &BFDSession{
 				PeerIP:        peerIP,
@@ -2214,7 +2235,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				MinRxInterval: minRx,
 				DetectMult:    detectMult,
 			}
-			return fmt.Sprintf("BFD session %s created", peerIP)
+			return fmt.Sprintf("BFD session %s created%s", peerIP, warn.String())
 		}
 		return "Error: invalid BFD config"
 	case "policy-based-route", "pbr":
@@ -2223,7 +2244,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		if len(cmd.Args) >= 4 {
 			policyName := cmd.Args[0]
-			ruleID, _ := parseNum(cmd.Args[1])
+			ruleID := 0
+			var warn strings.Builder
+			if n, err := parseNum(cmd.Args[1]); err == nil {
+				ruleID = n
+			} else {
+				warn.WriteString(fmt.Sprintf(" [warn: invalid rule-id %q, used 0]", cmd.Args[1]))
+			}
 			matchACL := cmd.Args[2]
 			nextHop := cmd.Args[3]
 			iface := ""
@@ -2239,7 +2266,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				NextHop:   nextHop,
 				Interface: iface,
 			})
-			return fmt.Sprintf("PBR rule %d added to policy %s", ruleID, policyName)
+			return fmt.Sprintf("PBR rule %d added to policy %s%s", ruleID, policyName, warn.String())
 		}
 		return "Error: invalid PBR config"
 	case "gre":
@@ -2252,8 +2279,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			destIP := cmd.Args[2]
 			key := 0
 			keepalive := false
+			var warn strings.Builder
 			if len(cmd.Args) >= 4 {
-				key, _ = parseNum(cmd.Args[3])
+				if n, err := parseNum(cmd.Args[3]); err == nil {
+					key = n
+				} else {
+					warn.WriteString(fmt.Sprintf(" [warn: invalid key %q, used 0]", cmd.Args[3]))
+				}
 			}
 			if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[4]) == "keepalive" {
 				keepalive = true
@@ -2264,7 +2296,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				Key:       key,
 				Keepalive: keepalive,
 			}
-			return fmt.Sprintf("GRE tunnel %s created", tunnelName)
+			return fmt.Sprintf("GRE tunnel %s created%s", tunnelName, warn.String())
 		}
 		return "Error: invalid GRE config"
 	case "qos":
@@ -2284,27 +2316,41 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			case "classifier":
 				acl := ""
 				dscp := 0
+				var warn strings.Builder
 				if len(cmd.Args) >= 3 {
 					acl = cmd.Args[2]
 				}
 				if len(cmd.Args) >= 4 {
-					dscp, _ = parseNum(cmd.Args[3])
+					if n, err := parseNum(cmd.Args[3]); err == nil {
+						dscp = n
+					} else {
+						warn.WriteString(fmt.Sprintf(" [warn: invalid dscp %q, used 0]", cmd.Args[3]))
+					}
 				}
 				state.QoS.Classifiers[name] = &QoSClassifier{
 					Name: name,
 					ACL:  acl,
 					DSCP: dscp,
 				}
-				return fmt.Sprintf("QoS classifier %s created", name)
+				return fmt.Sprintf("QoS classifier %s created%s", name, warn.String())
 			case "behavior":
 				bandwidth := 0
 				priority := 0
 				queue := ""
+				var warn strings.Builder
 				if len(cmd.Args) >= 3 {
-					bandwidth, _ = parseNum(cmd.Args[2])
+					if n, err := parseNum(cmd.Args[2]); err == nil {
+						bandwidth = n
+					} else {
+						warn.WriteString(fmt.Sprintf(" [warn: invalid bandwidth %q, used 0]", cmd.Args[2]))
+					}
 				}
 				if len(cmd.Args) >= 4 {
-					priority, _ = parseNum(cmd.Args[3])
+					if n, err := parseNum(cmd.Args[3]); err == nil {
+						priority = n
+					} else {
+						warn.WriteString(fmt.Sprintf(" [warn: invalid priority %q, used 0]", cmd.Args[3]))
+					}
 				}
 				if len(cmd.Args) >= 5 {
 					queue = cmd.Args[4]
@@ -2315,7 +2361,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 					Priority:  priority,
 					Queue:     queue,
 				}
-				return fmt.Sprintf("QoS behavior %s created", name)
+				return fmt.Sprintf("QoS behavior %s created%s", name, warn.String())
 			case "policy":
 				classifier := ""
 				behavior := ""
@@ -2348,23 +2394,28 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			portName := cmd.Args[0]
 			authMethod := "eap"
 			reauth := false
-			quietTimer := 60
-			if len(cmd.Args) >= 2 {
-				authMethod = cmd.Args[1]
+		quietTimer := 60
+		var warn strings.Builder
+		if len(cmd.Args) >= 2 {
+			authMethod = cmd.Args[1]
+		}
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "reauth" {
+			reauth = true
+		}
+		if len(cmd.Args) >= 4 {
+			if n, err := parseNum(cmd.Args[3]); err == nil {
+				quietTimer = n
+			} else {
+				warn.WriteString(fmt.Sprintf(" [warn: invalid quiet-timer %q, kept 60]", cmd.Args[3]))
 			}
-			if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "reauth" {
-				reauth = true
-			}
-			if len(cmd.Args) >= 4 {
-				quietTimer, _ = parseNum(cmd.Args[3])
-			}
+		}
 			state.Dot1x.Ports[portName] = &Dot1xPort{
 				Enabled:    true,
 				AuthMethod: authMethod,
 				Reauth:     reauth,
 				QuietTimer: quietTimer,
 			}
-			return fmt.Sprintf("802.1X configured on port %s", portName)
+			return fmt.Sprintf("802.1X configured on port %s%s", portName, warn.String())
 		}
 		return "Error: invalid 802.1X config"
 	case "radius":
@@ -3840,6 +3891,16 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			out.WriteString(state.SavedConfig)
 			out.WriteString(fmt.Sprintf("\nConfiguration saved at %s\n", state.SaveTime))
 			return out.String()
+		case "history-command":
+			// display history-command [max-size]：展示最近执行的命令行。
+			// 可选数字参数限定展示条数（如 display history-command 20）。
+			maxSize := 0
+			if len(cmd.Args) >= 2 {
+				if n, err := strconv.Atoi(cmd.Args[1]); err == nil && n > 0 {
+					maxSize = n
+				}
+			}
+			return state.FormatHistoryCommand(maxSize)
 		}
 	}
 	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
@@ -3882,6 +3943,7 @@ func (state *CLIState) SerializeToDeviceConfigData() *topology.DeviceConfigData 
 		Saved:          state.Saved,
 		SavedConfig:    state.SavedConfig,
 		SaveTime:       state.SaveTime,
+		History:        state.History,
 	}
 	// 复制所有接口相关的配置
 	for k, v := range state.DeviceConfig {
@@ -3913,6 +3975,11 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 	state.Saved = cfg.Saved
 	state.SavedConfig = cfg.SavedConfig
 	state.SaveTime = cfg.SaveTime
+	if cfg.History != nil {
+		state.History = cfg.History
+	} else {
+		state.History = []*topology.HistoryEntry{}
+	}
 	if cfg.Interfaces != nil {
 		for k, v := range cfg.Interfaces {
 			state.DeviceConfig[k] = v

@@ -29,6 +29,12 @@ func (r *Router) executeCLI(c *gin.Context) {
 	id := c.Param("id")
 	deviceId := c.Param("deviceId")
 
+	// 同一设备串行化：并发 CLI 请求按设备排队，避免争抢同一 CLIState
+	// （视图切换、配置写入、历史记录互斥），与华为 VRP 单机单会话语义一致。
+	devMu := r.deviceCLIMutex(deviceId)
+	devMu.Lock()
+	defer devMu.Unlock()
+
 	dt := r.lookupDeviceType(id, deviceId)
 	if dt == "" {
 		t, _ := r.store.GetTopology(id)
@@ -50,6 +56,10 @@ func (r *Router) executeCLI(c *gin.Context) {
 	}
 
 	cmd := cli.ParseCommand(req.Command)
+
+	// 记录命令历史（空命令已在 RecordHistory 内忽略）。历史随 CLIState 序列化
+	// 进拓扑 DeviceConfigData，executeCLI 末尾的 UpdateTopology 一并落盘。
+	state.RecordHistory(req.Command)
 
 	var output string
 	t, err := r.store.GetTopology(id)
@@ -176,10 +186,39 @@ func inferInterfaceDescription(name string, iface *topology.Interface) string {
 // 供 executeCLI 与 IP 配置 REST 端点复用，确保 CLI、Web UI、REST API 三套入口
 // 共享同一份配置状态与持久化路径。
 func (r *Router) getOrInitCLIState(id, deviceId string, dt topology.DeviceType) *cli.CLIState {
-	if state, ok := r.cliStates[deviceId]; ok {
-		state.DeviceType = dt
+	// 快速读路径：命中缓存直接返回，多设备并发 CLI 互不阻塞。
+	r.cliMu.RLock()
+	state, ok := r.cliStates[deviceId]
+	r.cliMu.RUnlock()
+	if ok {
 		return state
 	}
+
+	// 未命中：从拓扑构建（可能触发 store 读取，放在锁外避免持锁 I/O）。
+	state = r.buildCLIState(id, deviceId, dt)
+
+	// 写回前二次检查，避免两个并发 miss 各自写入（后者覆盖前者，结果等价）。
+	r.cliMu.Lock()
+	if s, exists := r.cliStates[deviceId]; exists {
+		r.cliMu.Unlock()
+		return s
+	}
+	r.cliStates[deviceId] = state
+	r.cliMu.Unlock()
+	return state
+}
+
+// dropCLIState 移除某设备的缓存 CLI 会话，使其下次访问时从（可能已变更的）
+// 拓扑重新构建。供拓扑/设备更新、删除时调用，保证 CLI 显示与拓扑模型一致。
+// 调用方无需持有 cliMu。
+func (r *Router) dropCLIState(deviceId string) {
+	r.cliMu.Lock()
+	delete(r.cliStates, deviceId)
+	r.cliMu.Unlock()
+}
+
+// buildCLIState 从拓扑模型构造一台设备的 CLIState（不含 cliStates map 的读写）。
+func (r *Router) buildCLIState(id, deviceId string, dt topology.DeviceType) *cli.CLIState {
 	var state *cli.CLIState
 	if t, err := r.store.GetTopology(id); err == nil && t != nil {
 		if device, exists := t.GetDevice(deviceId); exists && device.ConfigData != nil {
@@ -230,7 +269,6 @@ func (r *Router) getOrInitCLIState(id, deviceId string, dt topology.DeviceType) 
 	}
 	state.DeviceID = deviceId
 	state.DeviceType = dt
-	r.cliStates[deviceId] = state
 	return state
 }
 

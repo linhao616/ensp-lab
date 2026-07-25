@@ -5,6 +5,10 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+	"time"
+
 	"ensp-lab/internal/topology"
 )
 
@@ -74,7 +78,8 @@ type CLIState struct {
 	MACTable       []*MACEntry
 	Interfaces     map[string]*InterfaceConfig
 	DHCP           *DHCPConfig
-	DHCPSelectMode string // DHCP 模式: global 或 interface
+	DHCPSelectMode string                 // DHCP 模式: global 或 interface
+	History        []*topology.HistoryEntry // CLI 命令历史（FIFO，上限见 maxCLIHistory）
 
 	// save 命令相关（贴近华为 eNSP 体验）
 	Saved       bool   `json:"saved"`         // 是否已执行 save（写入启动配置）
@@ -586,5 +591,50 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 			Enabled: false,
 			Pools:   make(map[string]*DHCPPool),
 		},
+		History: []*topology.HistoryEntry{},
 	}
+}
+
+// maxCLIHistory 限制单机命令历史长度，超过后 FIFO 滚动丢弃最旧的条目，
+// 避免长会话无界增长内存。与华为 VRP 默认行为（上限 10，可配至 256）取向一致。
+const maxCLIHistory = 256
+
+// RecordHistory 记录一条命令到历史（FIFO）。空命令被忽略；超过上限时丢弃最旧。
+// 调用方应保证同一设备的 CLIState 串行访问（见 api.Router 的 per-device 锁），
+// 因此本方法本身不做额外并发保护。
+func (s *CLIState) RecordHistory(command string) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return
+	}
+	s.History = append(s.History, &topology.HistoryEntry{
+		Command:   command,
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+	})
+	if len(s.History) > maxCLIHistory {
+		s.History = s.History[len(s.History)-maxCLIHistory:]
+	}
+}
+
+// FormatHistoryCommand 生成 display history-command 的输出。maxSize<=0 时默认
+// 展示最近 10 条；否则展示最近 maxSize 条（不超过实际条数）。
+func (s *CLIState) FormatHistoryCommand(maxSize int) string {
+	n := len(s.History)
+	if n == 0 {
+		return "  History Command Record:\n  (empty)"
+	}
+	start := 0
+	limit := 10
+	if maxSize > 0 {
+		limit = maxSize
+	}
+	if limit < n {
+		start = n - limit
+	}
+	var b strings.Builder
+	b.WriteString("  History Command Record:\n")
+	for i := start; i < n; i++ {
+		b.WriteString(fmt.Sprintf("   %3d  %s\n", i+1, s.History[i].Command))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

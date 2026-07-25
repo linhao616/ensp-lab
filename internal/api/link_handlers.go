@@ -9,6 +9,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"ensp-lab/internal/topology"
@@ -47,8 +48,34 @@ func (r *Router) addLink(c *gin.Context) {
 	if link.LinkType == "" {
 		link.LinkType = lt
 	}
+	// 安全/健壮性：端口必须存在于对应设备，且同一端口不可被多条链路复用
+	// （避免引擎在转发/BFS 时把流量导向错误的并行链路）。
+	if _, ok := src.Interfaces[link.SourcePort]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("源设备 %q 上不存在端口 %q", src.ID, link.SourcePort)})
+		return
+	}
+	if _, ok := dst.Interfaces[link.TargetPort]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("目标设备 %q 上不存在端口 %q", dst.ID, link.TargetPort)})
+		return
+	}
+	for _, existing := range t.GetLinks() {
+		if existing.ID == link.ID {
+			continue
+		}
+		if (existing.SourceDevice == src.ID && existing.SourcePort == link.SourcePort) ||
+			(existing.TargetDevice == src.ID && existing.TargetPort == link.SourcePort) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("源端口 %q 已被链路 %q 占用", link.SourcePort, existing.ID)})
+			return
+		}
+		if (existing.SourceDevice == dst.ID && existing.SourcePort == link.TargetPort) ||
+			(existing.TargetDevice == dst.ID && existing.TargetPort == link.TargetPort) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("目标端口 %q 已被链路 %q 占用", link.TargetPort, existing.ID)})
+			return
+		}
+	}
 	t.AddLink(&link)
 	r.store.UpdateTopology(t)
+	r.syncEngine(id)
 	c.JSON(http.StatusCreated, link)
 }
 
@@ -106,6 +133,7 @@ func (r *Router) updateLink(c *gin.Context) {
 	found.TargetLabelDX = update.TargetLabelDX
 	found.TargetLabelDY = update.TargetLabelDY
 	r.store.UpdateTopology(t)
+	r.syncEngine(id)
 	c.JSON(http.StatusOK, found)
 }
 
@@ -119,5 +147,6 @@ func (r *Router) deleteLink(c *gin.Context) {
 	}
 	t.RemoveLink(linkId)
 	r.store.UpdateTopology(t)
+	r.syncEngine(id)
 	c.JSON(http.StatusNoContent, nil)
 }

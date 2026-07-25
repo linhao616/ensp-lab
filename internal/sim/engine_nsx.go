@@ -8,9 +8,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ensp-lab/internal/logging"
+	"ensp-lab/internal/metrics"
 	"ensp-lab/internal/topology"
 	nsx "github.com/bytedance/ns-x/v2"
 	"github.com/bytedance/ns-x/v2/base"
@@ -136,7 +138,8 @@ func (n *BridgeNode) Transfer(packet base.Packet, now time.Time) []base.Event {
 				targetVTEP := n.engine.findVTEPForIP(np.sim.DstIP, vni)
 				dbgSim("DEBUG: VXLAN - targetVTEP for IP %s = %s\n", np.sim.DstIP, targetVTEP)
 				if targetVTEP != "" && targetVTEP != n.deviceID {
-					if targetBridge, ok := n.engine.bridges[targetVTEP]; ok {
+					g := n.engine.snap()
+				if targetBridge, ok := g.bridges[targetVTEP]; ok {
 						n.engine.emit(&PacketEvent{
 							PacketID:    np.sim.ID,
 							Type:        PacketEventForward,
@@ -223,13 +226,23 @@ var _ Engine = (*nsxEngine)(nil)
 // The engine runs ns-x's event loop in a background goroutine for the
 // lifetime of the process. A periodic heartbeat event keeps the loop
 // alive even when no user traffic is flowing.
-type nsxEngine struct {
-	mode      EngineMode
-	topo      *topology.Topology
-	clock     tick.Clock
+// graphSnapshot 是引擎内部图状态的一份不可变快照。
+//
+// 设计要点：引擎绝不持有 API 层的 *topology.Topology 共享指针，而是保存一份
+// 私有深拷贝。拓扑变更通过 Rebuild 用 atomic.Value 整体替换快照，包处理路径
+// 用 snap() 读取，无需与 API 的 t.mu 协同步，从根本上消除「引擎直读共享拓扑」
+// 引发的并发读写竞争（原 B2）。快照一旦存入即不再修改，并发读取安全。
+type graphSnapshot struct {
+	topo      *topology.Topology // 引擎私有深拷贝（不可变）
+	endpoints map[string]*node.EndpointNode
+	bridges   map[string]*BridgeNode
 	network   *nsx.Network
-	endpoints map[string]*node.EndpointNode // deviceID -> endpoint
-	bridges   map[string]*BridgeNode        // deviceID -> bridge
+}
+
+type nsxEngine struct {
+	mode  EngineMode
+	clock tick.Clock
+	graph atomic.Value // *graphSnapshot
 
 	mu         sync.RWMutex
 	listeners  []PacketListener
@@ -245,6 +258,11 @@ type nsxEngine struct {
 	pendingEvents chan base.Event
 	pingResults   map[string]chan *PingResult
 	pingSemaphore chan struct{}
+}
+
+// snap 以原子方式返回当前图状态快照。快照不可变，并发读取安全。
+func (e *nsxEngine) snap() *graphSnapshot {
+	return e.graph.Load().(*graphSnapshot)
 }
 
 // NewNSxEngine builds an ns-x-backed Engine from the given topology.
@@ -265,10 +283,7 @@ func NewNSxEngine(topo *topology.Topology) (Engine, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &nsxEngine{
 		mode:          EngineModeNSX,
-		topo:          topo,
 		clock:         tick.NewRealClock(),
-		endpoints:     make(map[string]*node.EndpointNode),
-		bridges:       make(map[string]*BridgeNode),
 		listeners:     []PacketListener{},
 		eventCh:       make(chan *PacketEvent, 128),
 		history:       []*PacketEvent{},
@@ -278,9 +293,11 @@ func NewNSxEngine(topo *topology.Topology) (Engine, error) {
 		pingResults:   make(map[string]chan *PingResult),
 		pingSemaphore: make(chan struct{}, maxConcurrentPings),
 	}
-	if err := e.build(); err != nil {
+	snap, err := e.build(topo.Clone())
+	if err != nil {
 		return nil, fmt.Errorf("sim: build ns-x network: %w", err)
 	}
+	e.graph.Store(snap)
 	return e, nil
 }
 
@@ -288,40 +305,49 @@ func NewNSxEngine(topo *topology.Topology) (Engine, error) {
 // ("ns-x" or "gont"). Satisfies the Engine interface.
 func (e *nsxEngine) Mode() string { return string(e.mode) }
 
-// Rebuild 在拓扑变更时被 topology.Manager 调用，用于重建内部节点图。
+// Rebuild 在拓扑变更时被调用，用新拓扑的私有深拷贝整体替换引擎内部图状态。
 //
-// 加锁后更新 e.topo、清空 endpoints 并重新执行 build()。若引擎尚未启动
-// 或新拓扑为 nil，则直接返回 nil 以保持幂等。
+// 通过 atomic.Value.Store 原子替换快照，包处理路径用 snap() 读取，因此无需
+// 持 e.mu，调用方可在任意时刻安全调用（并发安全）。深拷贝保证 API 层后续对
+// 共享 *Topology 的就地修改不会影响已加载的引擎视图（原 B2）。
 func (e *nsxEngine) Rebuild(topo *topology.Topology) error {
 	if topo == nil {
 		return nil
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.topo = topo
-	e.endpoints = make(map[string]*node.EndpointNode)
-	if err := e.build(); err != nil {
+	snap, err := e.build(topo.Clone())
+	if err != nil {
 		return fmt.Errorf("sim: rebuild ns-x network: %w", err)
 	}
+	e.graph.Store(snap)
 	return nil
 }
 
-func (e *nsxEngine) build() error {
+// build 依据给定拓扑构建 ns-x 节点图，返回一份不可变快照。
+//
+// 构建过程完全基于入参 topo 的私有视图，不读取也不写入引擎的共享字段，
+// 因此可在任意时刻并发调用。返回的快照存入 atomic.Value 后即视为只读。
+func (e *nsxEngine) build(topo *topology.Topology) (*graphSnapshot, error) {
+	// 统计每次节点图（重）构建的耗时与次数——初始懒加载建图与后续 Rebuild 都走这里，
+	// 因此这是把「某一刻 CPU/GC 飙高」归因到拓扑编辑突发（R1）的统一口径。
+	start := time.Now()
+	defer func() { metrics.RecordRebuild(time.Since(start)) }()
+
 	builder := nsx.NewBuilder()
 
-	for id, dev := range e.topo.Devices {
+	endpoints := make(map[string]*node.EndpointNode)
+	for id, dev := range topo.Devices {
 		ep := node.NewEndpointNode(
 			node.WithTransferCallback(e.makeTransferCallback(dev.ID)),
 		)
 		ep.Receive(e.makeReact(dev.ID))
-		e.endpoints[id] = ep
+		endpoints[id] = ep
 		builder.NodeWithName(dev.ID, ep)
 		logging.Info("Created endpoint", zap.String("device", id), zap.String("devType", string(dev.Type)))
 	}
 
 	linksByDevice := make(map[string][]*topology.Link)
 	vxlanLinks := make(map[string][]*topology.Link)
-	for _, link := range e.topo.Links {
+	for _, link := range topo.Links {
 		if link.VXLANVNI > 0 {
 			vxlanLinks[link.SourceDevice] = append(vxlanLinks[link.SourceDevice], link)
 			vxlanLinks[link.TargetDevice] = append(vxlanLinks[link.TargetDevice], link)
@@ -332,7 +358,7 @@ func (e *nsxEngine) build() error {
 	}
 
 	bridges := make(map[string]*BridgeNode)
-	for id := range e.topo.Devices {
+	for id := range topo.Devices {
 		totalLinks := len(linksByDevice[id]) + len(vxlanLinks[id])
 		if totalLinks > 1 {
 			bridge := NewBridgeNode(e, id)
@@ -340,15 +366,14 @@ func (e *nsxEngine) build() error {
 			builder.NodeWithName(id+"-bridge", bridge)
 		}
 	}
-	e.bridges = bridges
 
-	for _, link := range e.topo.Links {
+	for _, link := range topo.Links {
 		if link.VXLANVNI > 0 {
 			continue
 		}
 
-		srcEp := e.endpoints[link.SourceDevice]
-		dstEp := e.endpoints[link.TargetDevice]
+		srcEp := endpoints[link.SourceDevice]
+		dstEp := endpoints[link.TargetDevice]
 		if srcEp == nil || dstEp == nil {
 			continue
 		}
@@ -371,13 +396,13 @@ func (e *nsxEngine) build() error {
 		dstNode.SetNext(append(dstNode.GetNext(), srcNode)...)
 	}
 
-	for _, link := range e.topo.Links {
+	for _, link := range topo.Links {
 		if link.VXLANVNI <= 0 {
 			continue
 		}
 
-		srcEp := e.endpoints[link.SourceDevice]
-		dstEp := e.endpoints[link.TargetDevice]
+		srcEp := endpoints[link.SourceDevice]
+		dstEp := endpoints[link.TargetDevice]
 		if srcEp == nil || dstEp == nil {
 			continue
 		}
@@ -396,23 +421,28 @@ func (e *nsxEngine) build() error {
 		dstNode.SetNext(append(dstNode.GetNext(), srcNode)...)
 	}
 
-	dbgSim("DEBUG: Build complete - endpoints=%d, bridges=%d\n", len(e.endpoints), len(bridges))
-	for devID, ep := range e.endpoints {
+	dbgSim("DEBUG: Build complete - endpoints=%d, bridges=%d\n", len(endpoints), len(bridges))
+	for devID, ep := range endpoints {
 		dbgSim("DEBUG: Endpoint %s next=%d\n", devID, len(ep.GetNext()))
 	}
 	for devID, bridge := range bridges {
 		dbgSim("DEBUG: Bridge %s next=%d\n", devID, len(bridge.GetNext()))
 	}
 
-	nodes := make([]base.Node, 0, len(e.endpoints)+len(bridges))
-	for _, ep := range e.endpoints {
+	nodes := make([]base.Node, 0, len(endpoints)+len(bridges))
+	for _, ep := range endpoints {
 		nodes = append(nodes, ep)
 	}
 	for _, bridge := range bridges {
 		nodes = append(nodes, bridge)
 	}
-	e.network = nsx.NewNetwork(nodes)
-	return nil
+	network := nsx.NewNetwork(nodes)
+	return &graphSnapshot{
+		topo:      topo,
+		endpoints: endpoints,
+		bridges:   bridges,
+		network:   network,
+	}, nil
 }
 
 // makeTransferCallback returns a callback that emits forward events.
@@ -423,7 +453,7 @@ func (e *nsxEngine) makeTransferCallback(deviceID string) base.TransferCallback 
 			return
 		}
 		var targetID string
-		for id, ep := range e.endpoints {
+		for id, ep := range e.snap().endpoints {
 			if ep == target {
 				targetID = id
 				break
@@ -442,8 +472,9 @@ func (e *nsxEngine) makeTransferCallback(deviceID string) base.TransferCallback 
 }
 
 func (e *nsxEngine) findVXLANPeers(deviceID string, vni int) []string {
+	g := e.snap()
 	var peers []string
-	for _, link := range e.topo.Links {
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI == vni && (link.SourceDevice == deviceID || link.TargetDevice == deviceID) {
 			if link.SourceDevice == deviceID {
 				peers = append(peers, link.TargetDevice)
@@ -456,7 +487,8 @@ func (e *nsxEngine) findVXLANPeers(deviceID string, vni int) []string {
 }
 
 func (e *nsxEngine) findDeviceByIP(ip net.IP) (string, bool) {
-	for id, dev := range e.topo.Devices {
+	g := e.snap()
+	for id, dev := range g.topo.Devices {
 		for _, iface := range dev.Interfaces {
 			if iface.IPAddress == ip.String() {
 				return id, true
@@ -467,7 +499,8 @@ func (e *nsxEngine) findDeviceByIP(ip net.IP) (string, bool) {
 }
 
 func (e *nsxEngine) getDeviceVLAN(ip net.IP) int {
-	for _, dev := range e.topo.Devices {
+	g := e.snap()
+	for _, dev := range g.topo.Devices {
 		for _, iface := range dev.Interfaces {
 			if iface.IPAddress == ip.String() {
 				return iface.VLAN
@@ -516,7 +549,8 @@ func ipInSubnet(ip, ifaceIP, mask string) bool {
 // findAccessNeighbor 返回 deviceID 在指定 VLAN 上的直连接入邻居
 // （仅非 VXLAN 链路，即 access / underlay 侧）。
 func (e *nsxEngine) findAccessNeighbor(deviceID string, vlan int) string {
-	for _, link := range e.topo.Links {
+	g := e.snap()
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI > 0 || link.VLAN != vlan {
 			continue
 		}
@@ -534,7 +568,8 @@ func (e *nsxEngine) findAccessNeighbor(deviceID string, vlan int) string {
 // 目的 IP，则将其从对应 egress VLAN 转发出去，模拟 VBDIF/Vlanif 网关的
 // inter-VLAN 路由。返回转发产生的事件；若无需或无法路由则返回 nil。
 func (e *nsxEngine) routeL3(deviceID string, pkt *Packet, now time.Time) []base.Event {
-	dev := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev := g.topo.Devices[deviceID]
 	if dev == nil || pkt == nil {
 		return nil
 	}
@@ -564,10 +599,10 @@ func (e *nsxEngine) routeL3(deviceID string, pkt *Packet, now time.Time) []base.
 			Description: fmt.Sprintf("L3 route at %s via %s (VLAN %d) -> %s", deviceID, iface.Name, egressVLAN, nextDev),
 			Path:        append([]string{}, pkt.Path...),
 		})
-		if target, ok := e.bridges[nextDev]; ok {
+		if target, ok := g.bridges[nextDev]; ok {
 			return target.Transfer(&nsxPacket{sim: cloned, data: cloned.Payload}, now.Add(time.Millisecond))
 		}
-		if ep, ok := e.endpoints[nextDev]; ok {
+		if ep, ok := g.endpoints[nextDev]; ok {
 			return ep.Transfer(&nsxPacket{sim: cloned, data: cloned.Payload}, now.Add(time.Millisecond))
 		}
 		return nil
@@ -576,8 +611,9 @@ func (e *nsxEngine) routeL3(deviceID string, pkt *Packet, now time.Time) []base.
 }
 
 func (e *nsxEngine) findVTEPsInVNI(vni int) []string {
+	g := e.snap()
 	var vteps []string
-	for _, link := range e.topo.Links {
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI == vni {
 			if !contains(vteps, link.SourceDevice) {
 				vteps = append(vteps, link.SourceDevice)
@@ -591,7 +627,8 @@ func (e *nsxEngine) findVTEPsInVNI(vni int) []string {
 }
 
 func (e *nsxEngine) isVTEP(deviceID string) bool {
-	dev := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev := g.topo.Devices[deviceID]
 	if dev == nil {
 		return false
 	}
@@ -599,7 +636,8 @@ func (e *nsxEngine) isVTEP(deviceID string) bool {
 }
 
 func (e *nsxEngine) isSwitch(deviceID string) bool {
-	dev := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev := g.topo.Devices[deviceID]
 	if dev == nil {
 		return false
 	}
@@ -607,7 +645,8 @@ func (e *nsxEngine) isSwitch(deviceID string) bool {
 }
 
 func (e *nsxEngine) isServer(deviceID string) bool {
-	dev := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev := g.topo.Devices[deviceID]
 	if dev == nil {
 		return false
 	}
@@ -630,6 +669,8 @@ func (e *nsxEngine) makeReact(deviceID string) node.React {
 			return nil
 		}
 		pkt := np.sim
+		// 每个被引擎接收并处理的包都计数，用于把 CPU 尖峰关联到流量突发。
+		metrics.IncrPacket()
 
 		e.emit(&PacketEvent{
 			PacketID:    pkt.ID,
@@ -656,10 +697,10 @@ func (e *nsxEngine) makeReact(deviceID string) node.React {
 					reply.TTL = 64
 					reply.Path = []string{}
 
-					ep := e.endpoints[deviceID]
-					if ep == nil {
-						return nil
-					}
+	ep := e.snap().endpoints[deviceID]
+	if ep == nil {
+		return nil
+	}
 					nextNodes := ep.GetNext()
 					if len(nextNodes) > 0 {
 						return nextNodes[0].Transfer(&nsxPacket{sim: reply, data: reply.Payload}, now.Add(time.Millisecond))
@@ -685,7 +726,7 @@ func (e *nsxEngine) makeReact(deviceID string) node.React {
 			}
 		}
 
-		ep := e.endpoints[deviceID]
+		ep := e.snap().endpoints[deviceID]
 		if ep == nil {
 			return nil
 		}
@@ -703,7 +744,8 @@ func (e *nsxEngine) makeReact(deviceID string) node.React {
 }
 
 func (e *nsxEngine) findVNIForVLAN(deviceID string, vlan int) int {
-	for _, link := range e.topo.Links {
+	g := e.snap()
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI > 0 && (link.SourceDevice == deviceID || link.TargetDevice == deviceID) {
 			return link.VXLANVNI
 		}
@@ -735,7 +777,8 @@ func (e *nsxEngine) findVTEPForIP(ip net.IP, vni int) string {
 }
 
 func (e *nsxEngine) isDirectlyConnectedTo(deviceID, targetID string) bool {
-	for _, link := range e.topo.Links {
+	g := e.snap()
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI > 0 {
 			continue
 		}
@@ -745,7 +788,7 @@ func (e *nsxEngine) isDirectlyConnectedTo(deviceID, targetID string) bool {
 		}
 	}
 
-	for _, link := range e.topo.Links {
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI > 0 {
 			continue
 		}
@@ -754,7 +797,7 @@ func (e *nsxEngine) isDirectlyConnectedTo(deviceID, targetID string) bool {
 			if serverID == deviceID {
 				serverID = link.TargetDevice
 			}
-			for _, link2 := range e.topo.Links {
+			for _, link2 := range g.topo.Links {
 				if link2.VXLANVNI > 0 {
 					continue
 				}
@@ -770,7 +813,8 @@ func (e *nsxEngine) isDirectlyConnectedTo(deviceID, targetID string) bool {
 }
 
 func (e *nsxEngine) isInSameSubnet(ip net.IP, deviceID string) bool {
-	dev := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev := g.topo.Devices[deviceID]
 	if dev == nil {
 		return false
 	}
@@ -798,6 +842,7 @@ func (e *nsxEngine) isConnectedTo(deviceID, targetID string) bool {
 }
 
 func (e *nsxEngine) isConnectedBFS(start, target string, visited map[string]bool) bool {
+	g := e.snap()
 	if start == target {
 		return true
 	}
@@ -806,7 +851,7 @@ func (e *nsxEngine) isConnectedBFS(start, target string, visited map[string]bool
 	}
 	visited[start] = true
 
-	for _, link := range e.topo.Links {
+	for _, link := range g.topo.Links {
 		if link.VXLANVNI > 0 {
 			continue
 		}
@@ -830,7 +875,8 @@ func (e *nsxEngine) isConnectedBFS(start, target string, visited map[string]bool
 
 // deviceOwnsIP returns true if any interface on the device has the IP.
 func (e *nsxEngine) deviceOwnsIP(deviceID string, ip net.IP) bool {
-	dev, ok := e.topo.Devices[deviceID]
+	g := e.snap()
+	dev, ok := g.topo.Devices[deviceID]
 	if !ok {
 		return false
 	}
@@ -850,6 +896,14 @@ func (e *nsxEngine) Start() {
 		return
 	}
 	e.started = true
+	e.closed = false
+	// 重建事件/待处理通道与取消函数：使一个被 Stop 的引擎可以再次 Start
+	// （否则已关闭的通道被复用会导致后续发送 panic）。
+	e.eventCh = make(chan *PacketEvent, 128)
+	e.pendingEvents = make(chan base.Event, 32)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.cancelCtx = ctx
+	e.cancelFunc = cancel
 	e.mu.Unlock()
 
 	e.wg.Add(1)
@@ -867,11 +921,19 @@ func (e *nsxEngine) Start() {
 			}
 		}, 1*time.Millisecond, time.Now())
 
-		e.network.Run([]base.Event{poller}, e.clock, 24*time.Hour)
+		// 使用当前快照对应的 network 运行事件循环。
+		e.snap().network.Run([]base.Event{poller}, e.clock, 24*time.Hour)
 	}()
 }
 
-// Stop signals the ns-x loop to exit and waits for it to drain.
+// Stop 停止事件循环并释放资源。幂等：重复调用安全（已停止时直接返回）。
+//
+// 修正点（原 B3）：
+//   - 先置 e.closed=true（持锁），使并发的 SendPacket 跳过向 pendingEvents 的发送，
+//     避免「向已关闭 channel 发送」panic。
+//   - 取消 cancelCtx 表达停止意图；随后关闭通道，ns-x 事件循环在待处理队列清空后
+//     自行退出（network.eventLoop 在 eventQueue 为空时结束），无需等待固定 24h。
+//   - 关闭通道时持锁，与 emit/SendPacket 的 closed 检查互斥，杜绝 send-on-closed。
 func (e *nsxEngine) Stop() {
 	e.mu.Lock()
 	if !e.started {
@@ -880,12 +942,17 @@ func (e *nsxEngine) Stop() {
 	}
 	e.started = false
 	e.closed = true
+	cancel := e.cancelFunc
 	e.mu.Unlock()
-	e.cancelFunc()
+
+	if cancel != nil {
+		cancel()
+	}
 	e.wg.Wait()
+
+	e.mu.Lock()
 	close(e.eventCh)
 	close(e.pendingEvents)
-	e.mu.Lock()
 	for pktID, ch := range e.pingResults {
 		close(ch)
 		delete(e.pingResults, pktID)
@@ -900,7 +967,12 @@ func (e *nsxEngine) QueueDepth() int {
 // SendPacket injects a packet from a device's interface.
 func (e *nsxEngine) SendPacket(pkt *Packet, fromDeviceID, _ string) {
 	e.mu.RLock()
-	ep, ok := e.endpoints[fromDeviceID]
+	if e.closed {
+		e.mu.RUnlock()
+		logging.Error("SendPacket: engine closed, drop", zap.String("device", fromDeviceID))
+		return
+	}
+	ep, ok := e.snap().endpoints[fromDeviceID]
 	e.mu.RUnlock()
 
 	if !ok {
@@ -925,12 +997,18 @@ func (e *nsxEngine) SendPacket(pkt *Packet, fromDeviceID, _ string) {
 		Path:        append([]string{}, pkt.Path...),
 	})
 
-	select {
-	case e.pendingEvents <- event:
-		dbgSim("DEBUG: SendPacket event queued\n")
-	default:
-		dbgSim("DEBUG: SendPacket event queue full\n")
+	// 发送前再次检查 closed（持 RLock），与 Stop 的关闭互斥，避免 send on closed channel。
+	e.mu.RLock()
+	if !e.closed {
+		metrics.NotePending(len(e.pendingEvents))
+		select {
+		case e.pendingEvents <- event:
+			dbgSim("DEBUG: SendPacket event queued\n")
+		default:
+			dbgSim("DEBUG: SendPacket event queue full\n")
+		}
 	}
+	e.mu.RUnlock()
 }
 
 // Ping initiates an ICMP echo from srcDeviceID to dstIP.
@@ -946,8 +1024,11 @@ func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 		}, nil
 	}
 	defer func() { <-e.pingSemaphore }()
+	// 在途 Ping 计数 +1，用于关联 CPU 尖峰与并发 Ping 突发。
+	metrics.AddPingsActive(1)
+	defer metrics.AddPingsActive(-1)
 
-	dev, ok := e.topo.Devices[srcDeviceID]
+	dev, ok := e.snap().topo.Devices[srcDeviceID]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrDeviceNotFound, srcDeviceID)
 	}
@@ -999,8 +1080,10 @@ func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 
 	select {
 	case result := <-resultCh:
+		metrics.IncrPing(false)
 		return result, nil
 	case <-time.After(3 * time.Second):
+		metrics.IncrPing(true)
 		return &PingResult{
 			Sent:     1,
 			Received: 0,

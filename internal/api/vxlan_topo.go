@@ -146,7 +146,9 @@ func CreateVXLANTopology() *topology.Topology {
 		connSvrPort string   // server 侧端口
 	}{
 		// Server 仅 1 个物理网卡 Ethernet0（上联 Leaf），VM 通过内部 vSwitch 转发，不占用物理接口
-		{"server-1", 160, []string{"10.0.10.100"}, []int{10}, "leaf-1", "10GE5/0/1", "Ethernet0"},
+		// server-1 同时承载 VLAN10/VLAN20 两个租户 VM，故分配 Ethernet0(VLAN10)+Ethernet1(VLAN20) 两块 vNIC，
+		// 分别接入 leaf-1 的 10GE5/0/1 / 10GE5/0/2，避免单网卡被两条 access 链路重复占用。
+		{"server-1", 160, []string{"10.0.10.100", "10.0.20.100"}, []int{10, 20}, "leaf-1", "10GE5/0/1", "Ethernet0"},
 		{"server-2", 480, []string{"10.0.10.200"}, []int{10}, "leaf-2", "10GE5/0/1", "Ethernet0"},
 		{"server-3", 800, []string{"10.0.10.30"}, []int{10}, "leaf-3", "10GE5/0/1", "Ethernet0"},
 	}
@@ -250,7 +252,7 @@ func CreateVXLANTopology() *topology.Topology {
 		vlan                                   int
 	}{
 		{"acc-l1-s1-v10", "leaf-1", "10GE5/0/1", "server-1", "Ethernet0", 10},
-		{"acc-l1-s1-v20", "leaf-1", "10GE5/0/2", "server-1", "Ethernet0", 20},
+		{"acc-l1-s1-v20", "leaf-1", "10GE5/0/2", "server-1", "Ethernet1", 20},
 		{"acc-l2-s2-v10", "leaf-2", "10GE5/0/1", "server-2", "Ethernet0", 10},
 		{"acc-l3-s3-v10", "leaf-3", "10GE5/0/1", "server-3", "Ethernet0", 10},
 	}

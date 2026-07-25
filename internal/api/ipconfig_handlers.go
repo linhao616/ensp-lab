@@ -68,6 +68,10 @@ func (r *Router) getIPConfig(c *gin.Context) {
 		return
 	}
 	dt := device.Type
+	// 同一设备的 CLIState 与 executeCLI / setIPConfig 共享，需串行访问避免数据竞争。
+	devMu := r.deviceCLIMutex(deviceId)
+	devMu.Lock()
+	defer devMu.Unlock()
 	state := r.getOrInitCLIState(id, deviceId, dt)
 	ifName := c.Query("interface")
 
@@ -148,7 +152,26 @@ func (r *Router) setIPConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// 安全：IP/gateway/dns 将被写入设备接口并持久化，先按 IPv4/IPv6 校验
+	// （空串表示清除，放行），与 storage.ValidateIPConfig 口径一致。
+	if err := validateIP(req.IP); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateIP(req.Gateway); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateIP(req.DNS); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
+	// 同一设备的 CLIState 与 executeCLI / getIPConfig 共享，需串行访问避免数据竞争
+	// （state.Interfaces / state.DeviceConfig 等字段会被并发读写）。
+	devMu := r.deviceCLIMutex(deviceId)
+	devMu.Lock()
+	defer devMu.Unlock()
 	state := r.getOrInitCLIState(id, deviceId, dt)
 	terminal := isTerminalHost(dt)
 

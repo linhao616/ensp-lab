@@ -9,6 +9,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -31,6 +32,15 @@ func (r *Router) addAnnotation(c *gin.Context) {
 	}
 	if anno.ID == "" {
 		anno.ID = generateID()
+	}
+	// 安全/健壮性：限制文本长度（防存储膨胀 / 渲染卡顿），坐标必须有限。
+	if len(anno.Text) > maxAnnoTextLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("annotation text too long (max %d)", maxAnnoTextLen)})
+		return
+	}
+	if !validateFinite(anno.PositionX) || !validateFinite(anno.PositionY) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid annotation position"})
+		return
 	}
 	anno.CreatedAt = time.Now()
 	t.Annotations = append(t.Annotations, &anno)
@@ -71,6 +81,15 @@ func (r *Router) updateAnnotation(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&update); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// 安全/健壮性：更新时同样限制文本长度与坐标有限性。
+	if update.Text != "" && len(update.Text) > maxAnnoTextLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("annotation text too long (max %d)", maxAnnoTextLen)})
+		return
+	}
+	if !validateFinite(update.PositionX) || !validateFinite(update.PositionY) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid annotation position"})
 		return
 	}
 	if update.Text != "" {

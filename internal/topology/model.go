@@ -142,6 +142,14 @@ type Device struct {
 	UpdatedAt  time.Time             `json:"updated_at"`
 }
 
+// HistoryEntry 表示一条已录入的 CLI 命令历史（贴近华为 VRP 的
+// display history-command 体验）。定义在 topology 包内以避免 cli 反向
+// 依赖 topology 形成 import 环。
+type HistoryEntry struct {
+	Command   string `json:"command"`   // 原始命令行
+	Timestamp string `json:"timestamp"` // 录入时间（2006-01-02 15:04:05）
+}
+
 // DeviceConfigData 存储设备的结构化配置数据
 type DeviceConfigData struct {
 	DeviceName     string            `json:"device_name"`     // 设备名称
@@ -152,6 +160,8 @@ type DeviceConfigData struct {
 	Saved      bool   `json:"saved"`        // 是否已 save
 	SavedConfig string `json:"saved_config"` // 已保存配置的快照（VRP 风格文本）
 	SaveTime   string `json:"save_time"`    // 最近一次 save 的时间
+	// CLI 命令历史：每条执行成功的命令行均记录，随拓扑持久化，重启不丢。
+	History []*HistoryEntry `json:"history,omitempty"` // 命令历史（FIFO，上限见 cli 包 maxCLIHistory）
 }
 
 type Link struct {
@@ -220,6 +230,77 @@ func NewTopology(id, name string) *Topology {
 		CanvasOffsetX: 0,
 		CanvasOffsetY: 0,
 	}
+}
+
+// Clone 返回拓扑的一份深拷贝。
+//
+// 深拷贝是「仿真引擎与 API 共享状态解耦」的关键：引擎持有 Clone 的结果而非
+// 共享的 *Topology 指针，API 层后续对原拓扑的就地修改不会影响已加载的引擎视图，
+// 从根本上消除并发读写竞争。返回的拓扑带一把新的 RWMutex，不复制原锁状态。
+func (t *Topology) Clone() *Topology {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := &Topology{
+		ID:            t.ID,
+		Name:          t.Name,
+		CreatedAt:     t.CreatedAt,
+		UpdatedAt:     t.UpdatedAt,
+		CanvasScale:   t.CanvasScale,
+		CanvasOffsetX: t.CanvasOffsetX,
+		CanvasOffsetY: t.CanvasOffsetY,
+		Devices:       make(map[string]*Device, len(t.Devices)),
+		Links:         make([]*Link, len(t.Links)),
+		Annotations:   make([]*TextAnnotation, len(t.Annotations)),
+	}
+	for id, d := range t.Devices {
+		out.Devices[id] = cloneDevice(d)
+	}
+	for i, l := range t.Links {
+		out.Links[i] = cloneLink(l)
+	}
+	for i, a := range t.Annotations {
+		ca := *a
+		out.Annotations[i] = &ca
+	}
+	return out
+}
+
+// cloneDevice 深拷贝单个设备（含接口表与结构化配置）。
+func cloneDevice(src *Device) *Device {
+	dst := *src
+	dst.Interfaces = make(map[string]*Interface, len(src.Interfaces))
+	for name, iface := range src.Interfaces {
+		ci := *iface
+		dst.Interfaces[name] = &ci
+	}
+	if src.ConfigData != nil {
+		cd := *src.ConfigData
+		if src.ConfigData.Interfaces != nil {
+			cd.Interfaces = make(map[string]string, len(src.ConfigData.Interfaces))
+			for k, v := range src.ConfigData.Interfaces {
+				cd.Interfaces[k] = v
+			}
+		}
+		if src.ConfigData.History != nil {
+			cd.History = make([]*HistoryEntry, len(src.ConfigData.History))
+			for i, h := range src.ConfigData.History {
+				hh := *h
+				cd.History[i] = &hh
+			}
+		}
+		dst.ConfigData = &cd
+	}
+	return &dst
+}
+
+// cloneLink 深拷贝单条链路（含切片类字段）。
+func cloneLink(src *Link) *Link {
+	dst := *src
+	if src.VXLANPeerList != nil {
+		dst.VXLANPeerList = make([]string, len(src.VXLANPeerList))
+		copy(dst.VXLANPeerList, src.VXLANPeerList)
+	}
+	return &dst
 }
 
 func (t *Topology) AddDevice(device *Device) {

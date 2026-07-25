@@ -47,3 +47,5 @@ tmp/*.csv
 tmp/*.json
 tmp/vxlan-data/
 tmp/cmdline.txt
+tmp/ensp-smoke*/
+tmp/ensp-smoke*/**

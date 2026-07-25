@@ -58,7 +58,13 @@ func NewEngine(topo *topology.Topology) (Engine, error) {
 	}
 	eng, err := NewNSxEngine(topo)
 	if err != nil {
-		return nil, err
+		// ns-x 初始化失败：回退到 stub 引擎，保证 REST/CLI 仍能响应
+		// （ping 等仿真命令会返回明确的 "not implemented"，而非整体 500）。
+		// 这样 stubEngine 成为真实的降级路径，而不是无人选用的死代码。
+		logging.Warn("ns-x initialization failed, falling back to stub engine",
+			zap.Error(err),
+		)
+		return NewStubEngine(), nil
 	}
 	logging.Info("engine mode=ns-x",
 		zap.String("description", "event-driven simulation"),

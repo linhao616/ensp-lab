@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"time"
 
+	"ensp-lab/internal/metrics"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,11 +21,16 @@ func (r *Router) health(c *gin.Context) {
 	engineCount := len(r.engines)
 	r.engMu.Unlock()
 
+	// 注入实时资源读数，便于一眼判断服务当下是否处于资源高压。
+	s := metrics.Default.Snapshot()
 	status := gin.H{
-		"status":       "ok",
-		"platform":     runtime.GOOS,
-		"engine_count": engineCount,
-		"timestamp":    time.Now().Format(time.RFC3339),
+		"status":        "ok",
+		"platform":      runtime.GOOS,
+		"engine_count":  engineCount,
+		"goroutines":    s.Goroutines,
+		"cpu_percent":   round1(s.CPUPercent),
+		"heap_alloc_mb": round1(s.HeapAllocMB),
+		"timestamp":     time.Now().Format(time.RFC3339),
 	}
 
 	c.JSON(http.StatusOK, status)
@@ -34,14 +41,33 @@ func (r *Router) version(c *gin.Context) {
 	engineCount := len(r.engines)
 	r.engMu.Unlock()
 
+	s := metrics.Default.Snapshot()
 	info := gin.H{
-		"version":      version,
-		"build_time":   buildTime,
-		"status":       "ok",
-		"platform":     runtime.GOOS,
-		"engine_count": engineCount,
-		"timestamp":    time.Now().Format(time.RFC3339),
+		"version":       version,
+		"build_time":    buildTime,
+		"status":        "ok",
+		"platform":      runtime.GOOS,
+		"engine_count":  engineCount,
+		"goroutines":    s.Goroutines,
+		"cpu_percent":   round1(s.CPUPercent),
+		"heap_alloc_mb": round1(s.HeapAllocMB),
+		"timestamp":     time.Now().Format(time.RFC3339),
 	}
 
 	c.JSON(http.StatusOK, info)
+}
+
+// metrics 返回进程资源使用率与引擎活动计数的完整快照（含尖峰归因诊断）。
+//
+//	GET /api/system/metrics
+//
+// 这是"监听资源使用率 / 为什么某一刻飙高"的核心端点：轮询它即可实时观测
+// CPU%、goroutine、heap、GC，以及 rebuilds_last_10s / pings_active 等业务计数；
+// 响应中的 diagnosis 字段会直接给出最可能的尖峰成因（R1–R5）。
+func (r *Router) metrics(c *gin.Context) {
+	c.JSON(http.StatusOK, metrics.Default.Snapshot())
+}
+
+func round1(v float64) float64 {
+	return float64(int64(v*10+0.5)) / 10
 }

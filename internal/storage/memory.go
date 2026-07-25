@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -43,6 +44,15 @@ type Storage interface {
 	ListPacketEvents(topologyID string, limit int) ([]*PacketEventRecord, error)
 	// ClearPacketEvents 清空指定拓扑的包事件历史。
 	ClearPacketEvents(topologyID string) error
+
+	// Flush 将当前内存中所有拓扑持久化到存储后端（文件存储会原子写盘）。
+	// 用于进程退出前（信号/panic）或定时自动保存，确保异常退出不丢失内存态。
+	Flush() error
+	// StartAutoSave 在后台按 interval 周期调用 Flush，直到 ctx 取消。
+	// 用于兜底崩溃/掉电场景下的内存态持久化。
+	StartAutoSave(ctx context.Context, interval time.Duration)
+	// StorageDir 返回底层存储目录（内存存储返回空字符串）。
+	StorageDir() string
 }
 
 type MemoryStorage struct {
@@ -143,3 +153,12 @@ func (s *MemoryStorage) ClearPacketEvents(topologyID string) error {
 	delete(s.events, topologyID)
 	return nil
 }
+
+// Flush 对 MemoryStorage 为 no-op：内存存储本就不落盘，仅用于满足接口一致性。
+func (s *MemoryStorage) Flush() error { return nil }
+
+// StartAutoSave 对 MemoryStorage 为 no-op：无磁盘后端可刷。
+func (s *MemoryStorage) StartAutoSave(ctx context.Context, interval time.Duration) {}
+
+// StorageDir 对 MemoryStorage 返回空字符串（无磁盘目录）。
+func (s *MemoryStorage) StorageDir() string { return "" }

@@ -11,11 +11,13 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"ensp-lab/internal/cli"
 	"ensp-lab/internal/logging"
+	"ensp-lab/internal/metrics"
 	"ensp-lab/internal/protocol"
 	"ensp-lab/internal/router"
 	"ensp-lab/internal/sim"
@@ -39,9 +41,29 @@ func generateID() string {
 type Router struct {
 	store     storage.Storage
 	cliStates map[string]*cli.CLIState
+	cliMu     sync.RWMutex          // protects cliStates map (was previously unprotected -> data race)
+	cliLocks  map[string]*sync.Mutex // per-device mutex: serializes concurrent CLI on the SAME device
 	protoSim  *protocol.ProtocolSimulator
 	engines   map[string]sim.Engine // topology_id -> engine
 	engMu     sync.Mutex            // protects engines map
+}
+
+// deviceCLIMutex 返回指定设备的 CLI 串行锁（按需创建）。
+// 同一设备多条并发 CLI 请求会争用同一把锁 -> 串行执行，避免争抢同一
+// CLIState 导致视图/配置错乱；不同设备使用不同锁，互不阻塞。
+// 调用方需持有返回的锁（通常 defer Unlock），锁自身生命周期与进程一致。
+func (r *Router) deviceCLIMutex(deviceID string) *sync.Mutex {
+	r.cliMu.Lock()
+	defer r.cliMu.Unlock()
+	if r.cliLocks == nil {
+		r.cliLocks = make(map[string]*sync.Mutex)
+	}
+	m, ok := r.cliLocks[deviceID]
+	if !ok {
+		m = &sync.Mutex{}
+		r.cliLocks[deviceID] = m
+	}
+	return m
 }
 
 // lookupDeviceType 根据拓扑 ID 和设备 ID 查询设备类型，未找到时返回空字符串。
@@ -91,6 +113,32 @@ func (r *Router) stopEngine(topoID string) {
 	}
 }
 
+// syncEngine 将拓扑的最新状态同步到该拓扑对应的仿真引擎（若存在）。
+//
+// 这是「编辑→仿真」链路的关键闭环（原 B1）：当 API 在共享 *Topology 上完成
+// 变更并落盘后，若已为该拓扑创建过引擎（用户已做过 Ping/CLI/仿真），则触发
+// eng.Rebuild，使引擎内部图状态反映最新拓扑；引擎尚未创建时（懒加载）无需
+// 同步——下次首次访问会自动用当前拓扑构建。Rebuild 内部对拓扑做私有深拷贝，
+// 因此即便 API 此后继续就地修改共享对象，也不会污染已加载的引擎视图。
+func (r *Router) syncEngine(topoID string) {
+	r.engMu.Lock()
+	eng, ok := r.engines[topoID]
+	r.engMu.Unlock()
+	if !ok {
+		return
+	}
+	// 记录一次触发重建的拓扑变更，用于把资源尖峰归因到编辑突发。
+	metrics.IncrTopoMutation()
+	t, err := r.store.GetTopology(topoID)
+	if err != nil || t == nil {
+		return
+	}
+	if err := eng.Rebuild(t); err != nil {
+		logging.Warn("engine rebuild failed after topology change",
+			zap.String("topology_id", topoID), zap.Error(err))
+	}
+}
+
 func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 	// 默认使用最小中间件栈：仅 Recovery（防止 panic 拖垮服务）。
 	// gin.Default() 额外挂的 gin.Logger() 会为每个请求写一行 stdout 访问日志，
@@ -115,6 +163,10 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 		protoSim:  protocol.NewProtocolSimulator(nil),
 		engines:   make(map[string]sim.Engine),
 	}
+
+	// 启动常驻资源采集（CPU%/goroutine/heap/GC + 引擎活动计数），
+	// 供 /api/system/metrics 与 health 端点实时观测与尖峰归因。
+	metrics.Start()
 
 	r.GET("/api/topologies", router.listTopologies)
 	r.GET("/api/topologies/:id", router.getTopology)
@@ -151,6 +203,7 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 
 	r.GET("/health", router.health)
 	r.GET("/version", router.version)
+	r.GET("/api/system/metrics", router.metrics)
 
 	// 低资源稳定性测试：当 ENSP_PPROF 环境变量非空时，把标准 net/http/pprof
 	// 端点挂到 gin，便于 `go tool pprof http://localhost:<port>/debug/pprof/...`
@@ -355,6 +408,11 @@ func (r *Router) streamSimEvents(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "topology query parameter required"})
 		return
 	}
+	// 安全：topoID 会被原样写入 SSE 事件体，拒绝控制字符避免破坏 SSE 帧结构。
+	if strings.ContainsAny(topoID, "\x00\n\r") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid topology parameter"})
+		return
+	}
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -529,6 +587,17 @@ func (r *Router) applyOSPFConfig(c *gin.Context) {
 		return
 	}
 
+	// 安全：OSPF network/area 将被直接写入 FRR ospfd.conf，必须先校验，
+	// 否则恶意 network 可注入额外配置行（配置注入 / 非预期邻居）。
+	if err := validateCIDR(req.Network); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateOSPFArea(req.Area); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -574,6 +643,23 @@ func (r *Router) applyBGPConfig(c *gin.Context) {
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
 		return
+	}
+
+	// 安全：BGP 邻居 IP / AS 号将被写入 FRR bgpd.conf，必须先校验，
+	// 否则恶意 neighbor IP 或非法 AS 可注入非预期 BGP 会话。
+	if err := validateASN(req.LocalAS); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, n := range req.Neighbors {
+		if err := validateIP(n.IP); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("neighbor %q: %v", n.IP, err)})
+			return
+		}
+		if err := validateASN(n.RemoteAS); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	eng, err := r.getOrCreateEngine(topoID)
