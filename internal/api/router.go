@@ -39,13 +39,15 @@ func generateID() string {
 }
 
 type Router struct {
-	store     storage.Storage
-	cliStates map[string]*cli.CLIState
-	cliMu     sync.RWMutex          // protects cliStates map (was previously unprotected -> data race)
-	cliLocks  map[string]*sync.Mutex // per-device mutex: serializes concurrent CLI on the SAME device
-	protoSim  *protocol.ProtocolSimulator
-	engines   map[string]sim.Engine // topology_id -> engine
-	engMu     sync.Mutex            // protects engines map
+	store      storage.Storage
+	cliStates  map[string]*cli.CLIState
+	cliMu      sync.RWMutex           // protects cliStates map (was previously unprotected -> data race)
+	cliLocks   map[string]*sync.Mutex // per-device mutex: serializes concurrent CLI on the SAME device
+	protoSim   *protocol.ProtocolSimulator
+	engines    map[string]sim.Engine  // topology_id -> engine
+	engMu      sync.Mutex             // protects engines map
+	syncTimers map[string]*time.Timer // per-topology debounce timers (R1)
+	syncMu     sync.Mutex             // protects syncTimers
 }
 
 // deviceCLIMutex 返回指定设备的 CLI 串行锁（按需创建）。
@@ -115,12 +117,33 @@ func (r *Router) stopEngine(topoID string) {
 
 // syncEngine 将拓扑的最新状态同步到该拓扑对应的仿真引擎（若存在）。
 //
-// 这是「编辑→仿真」链路的关键闭环（原 B1）：当 API 在共享 *Topology 上完成
-// 变更并落盘后，若已为该拓扑创建过引擎（用户已做过 Ping/CLI/仿真），则触发
-// eng.Rebuild，使引擎内部图状态反映最新拓扑；引擎尚未创建时（懒加载）无需
-// 同步——下次首次访问会自动用当前拓扑构建。Rebuild 内部对拓扑做私有深拷贝，
-// 因此即便 API 此后继续就地修改共享对象，也不会污染已加载的引擎视图。
+// 这是「编辑→仿真」链路的关键闭环（原 B1）。编辑操作（尤其拖拽连发）会高频
+// 触发，若每次都立即 eng.Rebuild 做全量 Clone+build，会造成引擎抖动与 CPU
+// 尖峰（R1）。这里对同一个 topoID 做 ~100ms 去抖合并：连续编辑只重置计时器，
+// 静默 100ms 后才真正 Rebuild，且不会丢失末次编辑。
 func (r *Router) syncEngine(topoID string) {
+	const debounce = 100 * time.Millisecond
+	var timer *time.Timer
+	timer = time.AfterFunc(debounce, func() {
+		r.runSync(topoID)
+		r.syncMu.Lock()
+		// 仅当记录的计时器仍是本计时器时才删除，避免与后续重置
+		// （已替换 map 中的计时器）冲突导致新计时器被误删。
+		if r.syncTimers[topoID] == timer {
+			delete(r.syncTimers, topoID)
+		}
+		r.syncMu.Unlock()
+	})
+	r.syncMu.Lock()
+	if old, ok := r.syncTimers[topoID]; ok {
+		old.Stop()
+	}
+	r.syncTimers[topoID] = timer
+	r.syncMu.Unlock()
+}
+
+// runSync 执行真正的引擎重建，仅在去抖计时器到期后才被调用。
+func (r *Router) runSync(topoID string) {
 	r.engMu.Lock()
 	eng, ok := r.engines[topoID]
 	r.engMu.Unlock()
@@ -158,10 +181,11 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 	}))
 
 	router := &Router{
-		store:     store,
-		cliStates: make(map[string]*cli.CLIState),
-		protoSim:  protocol.NewProtocolSimulator(nil),
-		engines:   make(map[string]sim.Engine),
+		store:      store,
+		cliStates:  make(map[string]*cli.CLIState),
+		protoSim:   protocol.NewProtocolSimulator(nil),
+		engines:    make(map[string]sim.Engine),
+		syncTimers: make(map[string]*time.Timer),
 	}
 
 	// 启动常驻资源采集（CPU%/goroutine/heap/GC + 引擎活动计数），

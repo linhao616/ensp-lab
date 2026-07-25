@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,19 @@ var debugSim = os.Getenv("ENSP_DEBUG") == "1"
 // dbgSimOut 是 dbgSim 的日志输出目标，默认 os.Stdout；测试时可替换为 bytes.Buffer 等可注入写入器，
 // 也便于将来把调试日志重定向到统一日志而非写死 stdout。
 var dbgSimOut io.Writer = os.Stdout
+
+// enginePollInterval 控制 ns-x 事件循环的轮询周期。
+// 此前使用 1ms 会使事件循环几乎不休眠，导致引擎常驻 100% CPU（诊断 R4）；
+// 5ms 对实验室级拓扑（Ping RTT 通常数十~数百 ms）无感知影响，
+// 但能显著压低基线 CPU。可用环境变量 ENS_ENGINE_POLL_MS（毫秒，>0）覆盖。
+var enginePollInterval = func() time.Duration {
+	if v := os.Getenv("ENS_ENGINE_POLL_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 5 * time.Millisecond
+}()
 
 // dbgSimRateLimit 控制开启 ENSP_DEBUG 时“每个数据包”级日志的最大输出速率，
 // 即使误开 DEBUG 也不会再刷爆 stdout/磁盘（此前曾产生 1GB 日志并拖死 HTTP）。
@@ -139,7 +153,7 @@ func (n *BridgeNode) Transfer(packet base.Packet, now time.Time) []base.Event {
 				dbgSim("DEBUG: VXLAN - targetVTEP for IP %s = %s\n", np.sim.DstIP, targetVTEP)
 				if targetVTEP != "" && targetVTEP != n.deviceID {
 					g := n.engine.snap()
-				if targetBridge, ok := g.bridges[targetVTEP]; ok {
+					if targetBridge, ok := g.bridges[targetVTEP]; ok {
 						n.engine.emit(&PacketEvent{
 							PacketID:    np.sim.ID,
 							Type:        PacketEventForward,
@@ -697,10 +711,10 @@ func (e *nsxEngine) makeReact(deviceID string) node.React {
 					reply.TTL = 64
 					reply.Path = []string{}
 
-	ep := e.snap().endpoints[deviceID]
-	if ep == nil {
-		return nil
-	}
+					ep := e.snap().endpoints[deviceID]
+					if ep == nil {
+						return nil
+					}
 					nextNodes := ep.GetNext()
 					if len(nextNodes) > 0 {
 						return nextNodes[0].Transfer(&nsxPacket{sim: reply, data: reply.Payload}, now.Add(time.Millisecond))
@@ -919,7 +933,7 @@ func (e *nsxEngine) Start() {
 					return events
 				}
 			}
-		}, 1*time.Millisecond, time.Now())
+		}, enginePollInterval, time.Now())
 
 		// 使用当前快照对应的 network 运行事件循环。
 		e.snap().network.Run([]base.Event{poller}, e.clock, 24*time.Hour)
