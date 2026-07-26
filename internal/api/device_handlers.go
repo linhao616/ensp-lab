@@ -47,6 +47,7 @@ func (r *Router) addDevice(c *gin.Context) {
 		return
 	}
 	device.InitializeDefaults()
+	t = t.Clone()
 	t.AddDevice(&device)
 	r.store.UpdateTopology(t)
 	r.syncEngine(id)
@@ -66,6 +67,7 @@ func (r *Router) updateDevice(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
 		return
 	}
+	t = t.Clone()
 	// 安全/并发：绑定到设备副本，避免直接改写 store 中存活的 *Device
 	// （被并发读请求 / 仿真引擎共享），造成数据竞争或 TOCTOU。
 	updated := *existing
@@ -115,6 +117,7 @@ func (r *Router) deleteDevice(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
+	t = t.Clone()
 	t.RemoveDevice(deviceId)
 	r.store.UpdateTopology(t)
 
@@ -154,7 +157,9 @@ func (r *Router) powerDevice(c *gin.Context) {
 	} else if req.Action == "off" {
 		device.Status = topology.StatusPowerOff
 	}
+	t = t.Clone()
 	r.store.UpdateTopology(t)
+	r.syncEngine(id)
 	c.JSON(http.StatusOK, device)
 }
 

@@ -73,6 +73,7 @@ func (r *Router) addLink(c *gin.Context) {
 			return
 		}
 	}
+	t = t.Clone()
 	t.AddLink(&link)
 	r.store.UpdateTopology(t)
 	r.syncEngine(id)
@@ -88,6 +89,7 @@ func (r *Router) updateLink(c *gin.Context) {
 		return
 	}
 	var found *topology.Link
+	t = t.Clone()
 	for _, link := range t.GetLinks() {
 		if link.ID == linkId {
 			found = link
@@ -145,6 +147,7 @@ func (r *Router) deleteLink(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
+	t = t.Clone()
 	t.RemoveLink(linkId)
 	r.store.UpdateTopology(t)
 	r.syncEngine(id)

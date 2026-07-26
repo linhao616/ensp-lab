@@ -123,7 +123,7 @@ func (r *Router) updateTopology(c *gin.Context) {
 	}
 	// 把最新拓扑同步给已存在的仿真引擎，使 Ping/路径计算反映本次更新（B1）。
 	r.syncEngine(id)
-	c.JSON(http.StatusOK, t)
+	c.JSON(http.StatusOK, updated)
 }
 
 func (r *Router) deleteTopology(c *gin.Context) {
@@ -303,6 +303,13 @@ func (r *Router) createTopologySimple(c *gin.Context) {
 			CableType:    topology.PortCopper,
 		}
 		t.AddLink(l)
+	}
+
+	// 若设备坐标全部堆叠在原点（导入/简化建图未给坐标），自动展开布局，
+	// 避免画布上设备重叠成一团。已有合理坐标的拓扑（如手工编排的 VXLAN）
+	// 不受影响。
+	if t.NeedsAutoLayout() {
+		t.AutoLayout()
 	}
 
 	if err := r.store.CreateTopology(t); err != nil {
