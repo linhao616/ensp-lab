@@ -40,6 +40,9 @@ Thumbs.db
 # 本地数据
 data/*.local.json
 
+# WorkBuddy 项目笔记（本地开发环境，不提交）
+.workbuddy/
+
 # 临时测试/验证产物（保留 tmp/*.py 脚本）
 tmp/*.log
 tmp/lowres-main
