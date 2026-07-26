@@ -1,11 +1,14 @@
 package protocol
 
 import (
+	"ensp-lab/internal/logging"
 	"ensp-lab/internal/sim"
 	"fmt"
 	"net"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // OSPFProtocol represents an OSPF routing protocol instance
@@ -208,7 +211,7 @@ type HelloPacket struct {
 func (o *OSPFProtocol) broadcastHello(iface *OSPFInterface, hello *HelloPacket) {
 	// In a real implementation, this would send a multicast packet
 	// For simulation, we'll notify neighbors directly
-	fmt.Printf("[OSPF] %s: Sending Hello on %s, neighbors: %v\n", o.RouterID, iface.Name, hello.NeighborIDs)
+	logging.Debug(fmt.Sprintf("[OSPF] %s: Sending Hello on %s, neighbors: %v", o.RouterID, iface.Name, hello.NeighborIDs), zap.String("router", o.RouterID))
 }
 
 // deadLoop checks for dead neighbors
@@ -237,7 +240,7 @@ func (o *OSPFProtocol) checkDeadNeighbors() {
 	now := time.Now()
 	for ipStr, neighbor := range o.Neighbors {
 		if now.After(neighbor.DeadTimer) {
-			fmt.Printf("[OSPF] %s: Neighbor %s is dead\n", o.RouterID, ipStr)
+			logging.Debug(fmt.Sprintf("[OSPF] %s: Neighbor %s is dead", o.RouterID, ipStr), zap.String("router", o.RouterID))
 			neighbor.State = "Down"
 		}
 	}
@@ -280,7 +283,7 @@ func (o *OSPFProtocol) ReceiveHello(ifaceName string, hello *HelloPacket, source
 
 	if weInNeighbor && neighbor.State == "Init" {
 		neighbor.State = "2-Way"
-		fmt.Printf("[OSPF] %s: Neighbor %s reached 2-Way state\n", o.RouterID, sourceIP)
+		logging.Debug(fmt.Sprintf("[OSPF] %s: Neighbor %s reached 2-Way state", o.RouterID, sourceIP), zap.String("router", o.RouterID))
 	}
 
 	// Elect DR/BDR if needed
@@ -314,7 +317,7 @@ func (o *OSPFProtocol) electDRBDR(iface *OSPFInterface) {
 			iface.BDR = candidates[1].IP.String()
 		}
 	}
-	fmt.Printf("[OSPF] %s: DR elected: %s, BDR: %s on %s\n", o.RouterID, iface.DR, iface.BDR, iface.Name)
+	logging.Debug(fmt.Sprintf("[OSPF] %s: DR elected: %s, BDR: %s on %s", o.RouterID, iface.DR, iface.BDR, iface.Name), zap.String("router", o.RouterID))
 }
 
 // SendLSA sends an LSA to neighbors
@@ -325,7 +328,7 @@ func (o *OSPFProtocol) SendLSA(lsa *LSA) {
 	key := fmt.Sprintf("%d:%s:%s", lsa.LSAType, lsa.LinkStateID, lsa.AdvertisingRouter)
 	o.LSDB[key] = lsa
 
-	fmt.Printf("[OSPF] %s: LSA %s added to LSDB\n", o.RouterID, key)
+	logging.Debug(fmt.Sprintf("[OSPF] %s: LSA %s added to LSDB", o.RouterID, key), zap.String("router", o.RouterID))
 }
 
 // CalculateRoutes performs SPF calculation
@@ -353,7 +356,7 @@ func (o *OSPFProtocol) CalculateRoutes() {
 		})
 	}
 
-	fmt.Printf("[OSPF] %s: SPF calculated, %d routes\n", o.RouterID, len(o.Routes))
+	logging.Debug(fmt.Sprintf("[OSPF] %s: SPF calculated, %d routes", o.RouterID, len(o.Routes)), zap.String("router", o.RouterID))
 }
 
 // GetRoutes returns the OSPF routes

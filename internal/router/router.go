@@ -152,17 +152,27 @@ func (r *FRRRouter) ApplyBGPConfig(localAS uint32, neighbors []BGPNeighbor) erro
 
 		config := string(content)
 
-		config = strings.Replace(config,
-			fmt.Sprintf("router bgp %d\n", localAS),
-			fmt.Sprintf("router bgp %d\n", localAS),
-			1)
-
-		for _, neighbor := range neighbors {
-			neighborLine := fmt.Sprintf(" neighbor %s remote-as %d", neighbor.IP, neighbor.RemoteAS)
-			if strings.Contains(config, neighborLine) {
-				continue
+		bgpHeader := fmt.Sprintf("router bgp %d\n", localAS)
+		// 此前锚点硬编码为 "router bgp 65000"：当 localAS != 65000 时 Replace 永不命中，
+		// 邻居配置被静默丢弃（非幂等 + 功能失效）。现改为匹配真实 localAS。
+		if !strings.Contains(config, bgpHeader) {
+			// 本地 AS 对应的 bgp 段不存在：在配置末尾新建整段（含全部邻居）。
+			if !strings.HasSuffix(config, "\n") {
+				config += "\n"
 			}
-			config = strings.Replace(config, "router bgp 65000\n", fmt.Sprintf("router bgp %d\n", localAS)+neighborLine+"\n", 1)
+			config += bgpHeader
+			for _, neighbor := range neighbors {
+				config += fmt.Sprintf(" neighbor %s remote-as %d\n", neighbor.IP, neighbor.RemoteAS)
+			}
+		} else {
+			for _, neighbor := range neighbors {
+				neighborLine := fmt.Sprintf(" neighbor %s remote-as %d", neighbor.IP, neighbor.RemoteAS)
+				if strings.Contains(config, neighborLine) {
+					continue
+				}
+				// 在该 bgp 段首行后插入邻居，保证多次调用幂等（不重复添加）。
+				config = strings.Replace(config, bgpHeader, bgpHeader+neighborLine+"\n", 1)
+			}
 		}
 
 		if err := os.WriteFile(bgpdPath, []byte(config), 0644); err != nil {
@@ -267,7 +277,7 @@ func (r *FRRRouter) writeDefaultConfigs() error {
 
 func (r *FRRRouter) startDaemons() error {
 	var err error
-	r.host.Exec(func() error {
+	err = r.host.Exec(func() error {
 		daemons := []string{"zebra", "ospfd", "bgpd"}
 		for _, daemon := range daemons {
 			cmd := exec.Command("/usr/lib/frr/" + daemon)

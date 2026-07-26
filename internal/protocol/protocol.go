@@ -10,13 +10,16 @@ import (
 	"ensp-lab/internal/topology"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type ProtocolSimulator struct {
 	topology *topology.Topology
 	routers  map[string]*RouterState
+	mu       sync.RWMutex
 }
 
 type RouterState struct {
@@ -368,7 +371,9 @@ func NewProtocolSimulator(t *topology.Topology) *ProtocolSimulator {
 	}
 }
 
-func (p *ProtocolSimulator) InitRouter(deviceID string) {
+func (p *ProtocolSimulator) InitRouter(deviceID string) *RouterState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if _, ok := p.routers[deviceID]; !ok {
 		p.routers[deviceID] = &RouterState{
 			DeviceID:     deviceID,
@@ -488,11 +493,22 @@ func (p *ProtocolSimulator) InitRouter(deviceID string) {
 			VXLANProto: NewVXLANProtocol(),
 		}
 	}
+	return p.routers[deviceID]
+}
+
+// getRouter 在 RLock 下读取 routers map，返回 (指针, 是否存在)。
+// 返回指针在 RUnlock 释放后仍有效（Go GC 不会回收被引用的对象），
+// 调用方据此读取/修改 RouterState 字段是安全的；map 本身的读写则由 mu 保护。
+func (p *ProtocolSimulator) getRouter(deviceID string) (*RouterState, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	rs, ok := p.routers[deviceID]
+	return rs, ok
 }
 
 func (p *ProtocolSimulator) AddRoute(deviceID, dest, mask, nextHop, iface, protocol string, metric int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].RoutingTable = append(p.routers[deviceID].RoutingTable, RouteEntry{
+	p.InitRouter(deviceID).RoutingTable = append(p.InitRouter(deviceID).RoutingTable, RouteEntry{
 		Destination: dest,
 		Mask:        mask,
 		NextHop:     nextHop,
@@ -504,11 +520,11 @@ func (p *ProtocolSimulator) AddRoute(deviceID, dest, mask, nextHop, iface, proto
 
 func (p *ProtocolSimulator) AddACL(deviceID, aclNum string, rules []*ACLRule) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].ACLs[aclNum] = rules
+	p.InitRouter(deviceID).ACLs[aclNum] = rules
 }
 
 func (p *ProtocolSimulator) MatchACL(deviceID, aclNum, srcIP, dstIP, protocol string, dstPort int) bool {
-	router, ok := p.routers[deviceID]
+	router, ok := p.getRouter(deviceID)
 	if !ok {
 		return true
 	}
@@ -571,10 +587,14 @@ func wildcardToMask(wildcard string) int {
 	mask := 0
 	parts := strings.Split(wildcard, ".")
 	for _, part := range parts {
-		var p int
-		fmt.Sscanf(part, "%d", &p)
+		// 显式解析并校验每个八位：非法通配符按 0 处理（与原始 Sscanf 静默语义一致），
+		// 但不再忽略解析错误，避免把脏数据误当成合法掩码位参与匹配。
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			n = 0
+		}
 		for i := 0; i < 8; i++ {
-			if (p & (1 << i)) == 0 {
+			if (n & (1 << i)) == 0 {
 				mask++
 			}
 		}
@@ -583,7 +603,7 @@ func wildcardToMask(wildcard string) int {
 }
 
 func (p *ProtocolSimulator) FindRoute(deviceID, destIP string) *RouteEntry {
-	router, ok := p.routers[deviceID]
+	router, ok := p.getRouter(deviceID)
 	if !ok {
 		return nil
 	}
@@ -596,7 +616,8 @@ func (p *ProtocolSimulator) FindRoute(deviceID, destIP string) *RouteEntry {
 		ipAddr := net.ParseIP(destIP)
 		if ipNet.Contains(ipAddr) {
 			maskLen, _ := ipNet.Mask.Size()
-			if maskLen > bestMaskLen || (maskLen == bestMaskLen && route.Metric < bestRoute.Metric) {
+			// bestRoute==nil 时（首条命中路由为 /0 默认路由）跳过 Metric 比较，避免空指针解引用。
+			if maskLen > bestMaskLen || (bestRoute != nil && maskLen == bestMaskLen && route.Metric < bestRoute.Metric) {
 				bestRoute = &route
 				bestMaskLen = maskLen
 			}
@@ -606,33 +627,77 @@ func (p *ProtocolSimulator) FindRoute(deviceID, destIP string) *RouteEntry {
 	return bestRoute
 }
 
+// CheckReachability 基于拓扑链路图做无向 BFS，判断 srcDevice 与 dstDevice
+// 是否在网络层可达（经交换机/集线器桥接视为同一广播域，可达）。
+//
+// 修复：此前为 `return true` 桩，任何调用都恒为真，会向诊断/可达性判定
+// 返回错误结果（例如把本不连通的两台设备判为可达）。现改为真实图遍历，
+// 并处理参数/边界：空/未知设备、同设备、空拓扑均返回确定结果。
 func (p *ProtocolSimulator) CheckReachability(srcDevice, dstDevice, srcIP, dstIP string) bool {
-	return true
+	if p == nil || p.topology == nil {
+		return false
+	}
+	topo := p.topology
+	if srcDevice == "" || dstDevice == "" {
+		return false
+	}
+	if _, ok := topo.GetDevice(srcDevice); !ok {
+		return false
+	}
+	if _, ok := topo.GetDevice(dstDevice); !ok {
+		return false
+	}
+	if srcDevice == dstDevice {
+		return true
+	}
+
+	adj := make(map[string][]string)
+	for _, l := range topo.GetLinks() {
+		adj[l.SourceDevice] = append(adj[l.SourceDevice], l.TargetDevice)
+		adj[l.TargetDevice] = append(adj[l.TargetDevice], l.SourceDevice)
+	}
+
+	visited := map[string]bool{srcDevice: true}
+	queue := []string{srcDevice}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, nb := range adj[cur] {
+			if nb == dstDevice {
+				return true
+			}
+			if !visited[nb] {
+				visited[nb] = true
+				queue = append(queue, nb)
+			}
+		}
+	}
+	return false
 }
 
 func (p *ProtocolSimulator) StartOSPF(deviceID string, processID, areaID int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].OSPF.Enabled = true
-	p.routers[deviceID].OSPF.ProcessID = processID
-	p.routers[deviceID].OSPF.AreaID = areaID
+	p.InitRouter(deviceID).OSPF.Enabled = true
+	p.InitRouter(deviceID).OSPF.ProcessID = processID
+	p.InitRouter(deviceID).OSPF.AreaID = areaID
 }
 
 func (p *ProtocolSimulator) StopOSPF(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.OSPF.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) UpdateOSPFNeighbors(deviceID string, neighbors []string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.OSPF.Neighbors = neighbors
 	}
 }
 
 func (p *ProtocolSimulator) StartMLAG(deviceID string, domainID, priority int, systemMAC, peerIP string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].MLAG.Enabled = true
-	p.routers[deviceID].MLAG.Domain = &MLAGDomain{
+	p.InitRouter(deviceID).MLAG.Enabled = true
+	p.InitRouter(deviceID).MLAG.Domain = &MLAGDomain{
 		DomainID:       domainID,
 		SystemPriority: priority,
 		SystemMAC:      systemMAC,
@@ -645,7 +710,7 @@ func (p *ProtocolSimulator) StartMLAG(deviceID string, domainID, priority int, s
 }
 
 func (p *ProtocolSimulator) StopMLAG(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.MLAG.Enabled = false
 		router.MLAG.Domain = nil
 	}
@@ -653,7 +718,7 @@ func (p *ProtocolSimulator) StopMLAG(deviceID string) {
 
 func (p *ProtocolSimulator) AddMLAGInterface(deviceID, ifaceName string, groupID int, mode string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.MLAG.Domain != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.MLAG.Domain != nil {
 		router.MLAG.Domain.Interfaces[ifaceName] = &MLAGInterface{
 			InterfaceName: ifaceName,
 			GroupID:       groupID,
@@ -665,14 +730,14 @@ func (p *ProtocolSimulator) AddMLAGInterface(deviceID, ifaceName string, groupID
 }
 
 func (p *ProtocolSimulator) SetMLAGPeerLink(deviceID, peerLink string) {
-	if router, ok := p.routers[deviceID]; ok && router.MLAG.Domain != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.MLAG.Domain != nil {
 		router.MLAG.Domain.PeerLink = peerLink
 		router.MLAG.Domain.Status = "peer-link-up"
 	}
 }
 
 func (p *ProtocolSimulator) CheckMLAGStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.MLAG.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.MLAG.Enabled {
 		if router.MLAG.Domain == nil {
 			return "M-LAG: Enabled, Domain not configured"
 		}
@@ -702,7 +767,7 @@ func (p *ProtocolSimulator) CheckMLAGStatus(deviceID string) string {
 }
 
 func (p *ProtocolSimulator) SimulateMLAGFailover(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok && router.MLAG.Enabled && router.MLAG.Domain != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.MLAG.Enabled && router.MLAG.Domain != nil {
 		for _, iface := range router.MLAG.Domain.Interfaces {
 			if iface.Active {
 				iface.Active = false
@@ -718,22 +783,22 @@ func (p *ProtocolSimulator) SimulateMLAGFailover(deviceID string) {
 
 func (p *ProtocolSimulator) StartLLDP(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].LLDP.Enabled = true
+	p.InitRouter(deviceID).LLDP.Enabled = true
 }
 
 func (p *ProtocolSimulator) StopLLDP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.LLDP.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddLLDPNeighbor(deviceID, portName string, neighbor LLDPNeighbor) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].LLDP.Neighbors[portName] = append(p.routers[deviceID].LLDP.Neighbors[portName], neighbor)
+	p.InitRouter(deviceID).LLDP.Neighbors[portName] = append(p.InitRouter(deviceID).LLDP.Neighbors[portName], neighbor)
 }
 
 func (p *ProtocolSimulator) GetLLDPNeighbors(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.LLDP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.LLDP.Enabled {
 		var out strings.Builder
 		out.WriteString("LLDP Neighbors:\n")
 		for port, neighbors := range router.LLDP.Neighbors {
@@ -752,23 +817,28 @@ func (p *ProtocolSimulator) GetLLDPNeighbors(deviceID string) string {
 }
 
 func (p *ProtocolSimulator) StartSTP(deviceID string, mode string) {
-	p.InitRouter(deviceID)
-	p.routers[deviceID].STP.Enabled = true
-	p.routers[deviceID].STP.Mode = mode
-	p.routers[deviceID].STP.RootBridgeID = fmt.Sprintf("%d.%s", p.routers[deviceID].STP.BridgePriority, deviceID[:12])
-	p.routers[deviceID].STP.DesignatedRoot = p.routers[deviceID].STP.RootBridgeID
-	p.routers[deviceID].STP.RootCost = 0
+	router := p.InitRouter(deviceID)
+	router.STP.Enabled = true
+	router.STP.Mode = mode
+	// deviceID 可能短于 12 字符，先做安全切片避免越界 panic。
+	shortID := deviceID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+	router.STP.RootBridgeID = fmt.Sprintf("%d.%s", router.STP.BridgePriority, shortID)
+	router.STP.DesignatedRoot = router.STP.RootBridgeID
+	router.STP.RootCost = 0
 }
 
 func (p *ProtocolSimulator) StopSTP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.STP.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) ConfigureSTPPort(deviceID, portName string, priority, cost int) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.STP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.STP.Enabled {
 		router.STP.Ports[portName] = &STPPort{
 			PortName:     portName,
 			PortPriority: priority,
@@ -780,7 +850,7 @@ func (p *ProtocolSimulator) ConfigureSTPPort(deviceID, portName string, priority
 }
 
 func (p *ProtocolSimulator) GetSTPStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.STP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.STP.Enabled {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("STP Mode: %s\n", router.STP.Mode))
 		out.WriteString(fmt.Sprintf("Bridge Priority: %d\n", router.STP.BridgePriority))
@@ -798,7 +868,7 @@ func (p *ProtocolSimulator) GetSTPStatus(deviceID string) string {
 }
 
 func (p *ProtocolSimulator) SimulateSTPConvergence(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok && router.STP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.STP.Enabled {
 		for _, port := range router.STP.Ports {
 			if port.State == "forwarding" && port.Role == "designated" {
 				port.State = "forwarding"
@@ -810,8 +880,8 @@ func (p *ProtocolSimulator) SimulateSTPConvergence(deviceID string) {
 func (p *ProtocolSimulator) StartVRRP(deviceID string, groupID int, virtualIP string, priority int, preempt bool, delay int) {
 	p.InitRouter(deviceID)
 	virtualMAC := fmt.Sprintf("00-00-5E-00-01-%02X", groupID)
-	p.routers[deviceID].VRRP.Enabled = true
-	p.routers[deviceID].VRRP.Groups[groupID] = &VRRPGroup{
+	p.InitRouter(deviceID).VRRP.Enabled = true
+	p.InitRouter(deviceID).VRRP.Groups[groupID] = &VRRPGroup{
 		GroupID:    groupID,
 		VirtualIP:  virtualIP,
 		VirtualMAC: virtualMAC,
@@ -824,7 +894,7 @@ func (p *ProtocolSimulator) StartVRRP(deviceID string, groupID int, virtualIP st
 }
 
 func (p *ProtocolSimulator) StopVRRP(deviceID string, groupID int) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		delete(router.VRRP.Groups, groupID)
 		if len(router.VRRP.Groups) == 0 {
 			router.VRRP.Enabled = false
@@ -833,7 +903,7 @@ func (p *ProtocolSimulator) StopVRRP(deviceID string, groupID int) {
 }
 
 func (p *ProtocolSimulator) GetVRRPStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.VRRP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.VRRP.Enabled {
 		var out strings.Builder
 		out.WriteString("VRRP Groups:\n")
 		for _, group := range router.VRRP.Groups {
@@ -862,7 +932,7 @@ func (p *ProtocolSimulator) GetVRRPStatus(deviceID string) string {
 }
 
 func (p *ProtocolSimulator) SimulateVRRPFailover(deviceID string, groupID int) {
-	if router, ok := p.routers[deviceID]; ok && router.VRRP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.VRRP.Enabled {
 		if group, ok := router.VRRP.Groups[groupID]; ok {
 			group.Master = !group.Master
 			if group.Master {
@@ -876,8 +946,8 @@ func (p *ProtocolSimulator) SimulateVRRPFailover(deviceID string, groupID int) {
 
 func (p *ProtocolSimulator) AddIPsecTunnel(deviceID, tunnelID, localIP, remoteIP, mode, encryption, auth string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].IPsec.Enabled = true
-	p.routers[deviceID].IPsec.Tunnels[tunnelID] = &IPsecTunnel{
+	p.InitRouter(deviceID).IPsec.Enabled = true
+	p.InitRouter(deviceID).IPsec.Tunnels[tunnelID] = &IPsecTunnel{
 		TunnelID:       tunnelID,
 		LocalIP:        localIP,
 		RemoteIP:       remoteIP,
@@ -889,7 +959,7 @@ func (p *ProtocolSimulator) AddIPsecTunnel(deviceID, tunnelID, localIP, remoteIP
 }
 
 func (p *ProtocolSimulator) RemoveIPsecTunnel(deviceID, tunnelID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		delete(router.IPsec.Tunnels, tunnelID)
 		if len(router.IPsec.Tunnels) == 0 {
 			router.IPsec.Enabled = false
@@ -898,7 +968,7 @@ func (p *ProtocolSimulator) RemoveIPsecTunnel(deviceID, tunnelID string) {
 }
 
 func (p *ProtocolSimulator) GetIPsecStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.IPsec.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.IPsec.Enabled {
 		var out strings.Builder
 		out.WriteString("IPsec Tunnels:\n")
 		for _, tunnel := range router.IPsec.Tunnels {
@@ -917,22 +987,22 @@ func (p *ProtocolSimulator) GetIPsecStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureSNMP(deviceID, version, community, managerIP string, trapEnable bool, trapServer string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].SNMP.Enabled = true
-	p.routers[deviceID].SNMP.Version = version
-	p.routers[deviceID].SNMP.Community = community
-	p.routers[deviceID].SNMP.ManagerIP = managerIP
-	p.routers[deviceID].SNMP.TrapEnable = trapEnable
-	p.routers[deviceID].SNMP.TrapServer = trapServer
+	p.InitRouter(deviceID).SNMP.Enabled = true
+	p.InitRouter(deviceID).SNMP.Version = version
+	p.InitRouter(deviceID).SNMP.Community = community
+	p.InitRouter(deviceID).SNMP.ManagerIP = managerIP
+	p.InitRouter(deviceID).SNMP.TrapEnable = trapEnable
+	p.InitRouter(deviceID).SNMP.TrapServer = trapServer
 }
 
 func (p *ProtocolSimulator) DisableSNMP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.SNMP.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) GetSNMPConfig(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("SNMP: %s\n", func() string {
 			if router.SNMP.Enabled {
@@ -959,21 +1029,21 @@ func (p *ProtocolSimulator) GetSNMPConfig(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureSyslog(deviceID, serverIP string, serverPort int, severity, facility string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].Syslog.Enabled = true
-	p.routers[deviceID].Syslog.ServerIP = serverIP
-	p.routers[deviceID].Syslog.ServerPort = serverPort
-	p.routers[deviceID].Syslog.Severity = severity
-	p.routers[deviceID].Syslog.Facility = facility
+	p.InitRouter(deviceID).Syslog.Enabled = true
+	p.InitRouter(deviceID).Syslog.ServerIP = serverIP
+	p.InitRouter(deviceID).Syslog.ServerPort = serverPort
+	p.InitRouter(deviceID).Syslog.Severity = severity
+	p.InitRouter(deviceID).Syslog.Facility = facility
 }
 
 func (p *ProtocolSimulator) DisableSyslog(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.Syslog.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) GetSyslogConfig(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("Syslog: %s\n", func() string {
 			if router.Syslog.Enabled {
@@ -993,17 +1063,17 @@ func (p *ProtocolSimulator) GetSyslogConfig(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureNTP(deviceID, serverIP string, serverPort int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].NTP.Enabled = true
-	p.routers[deviceID].NTP.ServerIP = serverIP
-	p.routers[deviceID].NTP.ServerPort = serverPort
-	p.routers[deviceID].NTP.SyncStatus = "synchronized"
+	p.InitRouter(deviceID).NTP.Enabled = true
+	p.InitRouter(deviceID).NTP.ServerIP = serverIP
+	p.InitRouter(deviceID).NTP.ServerPort = serverPort
+	p.InitRouter(deviceID).NTP.SyncStatus = "synchronized"
 	if serverIP != "" {
-		p.routers[deviceID].NTP.Stratum = 4
+		p.InitRouter(deviceID).NTP.Stratum = 4
 	}
 }
 
 func (p *ProtocolSimulator) DisableNTP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.NTP.Enabled = false
 		router.NTP.SyncStatus = "not synchronized"
 		router.NTP.Stratum = 15
@@ -1011,7 +1081,7 @@ func (p *ProtocolSimulator) DisableNTP(deviceID string) {
 }
 
 func (p *ProtocolSimulator) GetNTPStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("NTP: %s\n", func() string {
 			if router.NTP.Enabled {
@@ -1031,21 +1101,21 @@ func (p *ProtocolSimulator) GetNTPStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureSSH(deviceID, version, auth string, port, maxSessions int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].SSH.Enabled = true
-	p.routers[deviceID].SSH.Version = version
-	p.routers[deviceID].SSH.Authentication = auth
-	p.routers[deviceID].SSH.Port = port
-	p.routers[deviceID].SSH.MaxSessions = maxSessions
+	p.InitRouter(deviceID).SSH.Enabled = true
+	p.InitRouter(deviceID).SSH.Version = version
+	p.InitRouter(deviceID).SSH.Authentication = auth
+	p.InitRouter(deviceID).SSH.Port = port
+	p.InitRouter(deviceID).SSH.MaxSessions = maxSessions
 }
 
 func (p *ProtocolSimulator) DisableSSH(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.SSH.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) GetSSHConfig(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("SSH: %s\n", func() string {
 			if router.SSH.Enabled {
@@ -1066,23 +1136,23 @@ func (p *ProtocolSimulator) GetSSHConfig(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureVXLAN(deviceID string, vni int, vtepIP, peerVTEPIP, vrfName string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].VXLAN.Enabled = true
-	p.routers[deviceID].VXLAN.VNI = vni
-	p.routers[deviceID].VXLAN.VTEPIP = vtepIP
-	p.routers[deviceID].VXLAN.PeerVTEPIP = peerVTEPIP
-	p.routers[deviceID].VXLAN.VRFName = vrfName
-	p.routers[deviceID].VXLAN.Status = "up"
+	p.InitRouter(deviceID).VXLAN.Enabled = true
+	p.InitRouter(deviceID).VXLAN.VNI = vni
+	p.InitRouter(deviceID).VXLAN.VTEPIP = vtepIP
+	p.InitRouter(deviceID).VXLAN.PeerVTEPIP = peerVTEPIP
+	p.InitRouter(deviceID).VXLAN.VRFName = vrfName
+	p.InitRouter(deviceID).VXLAN.Status = "up"
 }
 
 func (p *ProtocolSimulator) DisableVXLAN(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.VXLAN.Enabled = false
 		router.VXLAN.Status = "down"
 	}
 }
 
 func (p *ProtocolSimulator) GetVXLANStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.VXLAN.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.VXLAN.Enabled {
 		var out strings.Builder
 		out.WriteString("VXLAN Configuration:\n")
 		out.WriteString(fmt.Sprintf("  VNI: %d\n", router.VXLAN.VNI))
@@ -1097,20 +1167,20 @@ func (p *ProtocolSimulator) GetVXLANStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureBGP(deviceID string, asNumber int, routerID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].BGP.Enabled = true
-	p.routers[deviceID].BGP.ASNumber = asNumber
-	p.routers[deviceID].BGP.RouterID = routerID
+	p.InitRouter(deviceID).BGP.Enabled = true
+	p.InitRouter(deviceID).BGP.ASNumber = asNumber
+	p.InitRouter(deviceID).BGP.RouterID = routerID
 }
 
 func (p *ProtocolSimulator) DisableBGP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.BGP.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddBGPNeighbor(deviceID, neighborIP string, remoteAS int, ebgp bool) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.BGP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.BGP.Enabled {
 		router.BGP.Neighbors[neighborIP] = &BGPNeighbor{
 			IP:            net.ParseIP(neighborIP),
 			ASN:           router.BGP.ASNumber,
@@ -1125,13 +1195,13 @@ func (p *ProtocolSimulator) AddBGPNeighbor(deviceID, neighborIP string, remoteAS
 }
 
 func (p *ProtocolSimulator) RemoveBGPNeighbor(deviceID, neighborIP string) {
-	if router, ok := p.routers[deviceID]; ok && router.BGP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.BGP.Enabled {
 		delete(router.BGP.Neighbors, neighborIP)
 	}
 }
 
 func (p *ProtocolSimulator) GetBGPStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.BGP.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.BGP.Enabled {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("BGP Configuration:\n"))
 		out.WriteString(fmt.Sprintf("  AS Number: %d\n", router.BGP.ASNumber))
@@ -1165,18 +1235,18 @@ func (p *ProtocolSimulator) GetBGPStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) EnableBFD(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].BFD.Enabled = true
+	p.InitRouter(deviceID).BFD.Enabled = true
 }
 
 func (p *ProtocolSimulator) DisableBFD(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.BFD.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddBFDSession(deviceID, peerIP, localIP string, minTx, minRx, detectMult int) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.BFD.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.BFD.Enabled {
 		router.BFD.Sessions[peerIP] = &BFDSession{
 			PeerIP:        peerIP,
 			LocalIP:       localIP,
@@ -1191,7 +1261,7 @@ func (p *ProtocolSimulator) AddBFDSession(deviceID, peerIP, localIP string, minT
 }
 
 func (p *ProtocolSimulator) GetBFDStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.BFD.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.BFD.Enabled {
 		var out strings.Builder
 		out.WriteString("BFD Sessions:\n")
 		for _, session := range router.BFD.Sessions {
@@ -1209,7 +1279,7 @@ func (p *ProtocolSimulator) GetBFDStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) CreateVRF(deviceID, name, rd string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.VRF.Enabled = true
 		router.VRF.VRFs[name] = &VRF{
 			Name:         name,
@@ -1222,7 +1292,7 @@ func (p *ProtocolSimulator) CreateVRF(deviceID, name, rd string) {
 }
 
 func (p *ProtocolSimulator) AddVRFRouteTarget(deviceID, vrfName, rt string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		if vrf, ok := router.VRF.VRFs[vrfName]; ok {
 			vrf.RouteTargets = append(vrf.RouteTargets, rt)
 		}
@@ -1230,7 +1300,7 @@ func (p *ProtocolSimulator) AddVRFRouteTarget(deviceID, vrfName, rt string) {
 }
 
 func (p *ProtocolSimulator) BindVRFToInterface(deviceID, vrfName, iface string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		if vrf, ok := router.VRF.VRFs[vrfName]; ok {
 			vrf.Interfaces = append(vrf.Interfaces, iface)
 		}
@@ -1238,7 +1308,7 @@ func (p *ProtocolSimulator) BindVRFToInterface(deviceID, vrfName, iface string) 
 }
 
 func (p *ProtocolSimulator) GetVRFStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.VRF.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.VRF.Enabled {
 		var out strings.Builder
 		out.WriteString("VRF Instances:\n")
 		for name, vrf := range router.VRF.VRFs {
@@ -1255,18 +1325,18 @@ func (p *ProtocolSimulator) GetVRFStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) EnablePBR(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].PBR.Enabled = true
+	p.InitRouter(deviceID).PBR.Enabled = true
 }
 
 func (p *ProtocolSimulator) DisablePBR(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.PBR.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddPBRRule(deviceID, policyName string, ruleID int, matchACL, nextHop, iface string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.PBR.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.PBR.Enabled {
 		if _, ok := router.PBR.Rules[policyName]; !ok {
 			router.PBR.Rules[policyName] = []*PBRRule{}
 		}
@@ -1280,7 +1350,7 @@ func (p *ProtocolSimulator) AddPBRRule(deviceID, policyName string, ruleID int, 
 }
 
 func (p *ProtocolSimulator) GetPBRStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.PBR.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.PBR.Enabled {
 		var out strings.Builder
 		out.WriteString("Policy-Based Routing:\n")
 		for name, rules := range router.PBR.Rules {
@@ -1297,18 +1367,18 @@ func (p *ProtocolSimulator) GetPBRStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) EnableGRE(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].GRE.Enabled = true
+	p.InitRouter(deviceID).GRE.Enabled = true
 }
 
 func (p *ProtocolSimulator) DisableGRE(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.GRE.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddGRETunnel(deviceID, tunnelName, srcIP, destIP string, key int, keepalive bool) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.GRE.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.GRE.Enabled {
 		router.GRE.Tunnels[tunnelName] = &GRETunnel{
 			Name:      tunnelName,
 			SourceIP:  srcIP,
@@ -1321,7 +1391,7 @@ func (p *ProtocolSimulator) AddGRETunnel(deviceID, tunnelName, srcIP, destIP str
 }
 
 func (p *ProtocolSimulator) GetGREStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.GRE.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.GRE.Enabled {
 		var out strings.Builder
 		out.WriteString("GRE Tunnels:\n")
 		for name, tunnel := range router.GRE.Tunnels {
@@ -1339,18 +1409,18 @@ func (p *ProtocolSimulator) GetGREStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) EnableQoS(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].QoS.Enabled = true
+	p.InitRouter(deviceID).QoS.Enabled = true
 }
 
 func (p *ProtocolSimulator) DisableQoS(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.QoS.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) AddQoSClassifier(deviceID, name, acl string, dscp int) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.QoS.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.QoS.Enabled {
 		router.QoS.Classifiers[name] = &QoSClassifier{
 			Name:     name,
 			ACL:      acl,
@@ -1364,7 +1434,7 @@ func (p *ProtocolSimulator) AddQoSClassifier(deviceID, name, acl string, dscp in
 
 func (p *ProtocolSimulator) AddQoSBehavior(deviceID, name string, bandwidth, priority int, queue, action string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.QoS.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.QoS.Enabled {
 		router.QoS.Behaviors[name] = &QoSBehavior{
 			Name:      name,
 			Bandwidth: bandwidth,
@@ -1377,7 +1447,7 @@ func (p *ProtocolSimulator) AddQoSBehavior(deviceID, name string, bandwidth, pri
 
 func (p *ProtocolSimulator) AddQoSPolicy(deviceID, name, classifier, behavior string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.QoS.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.QoS.Enabled {
 		router.QoS.Policies[name] = &QoSPolicy{
 			Name:       name,
 			Classifier: classifier,
@@ -1387,7 +1457,7 @@ func (p *ProtocolSimulator) AddQoSPolicy(deviceID, name, classifier, behavior st
 }
 
 func (p *ProtocolSimulator) GetQoSStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.QoS.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.QoS.Enabled {
 		var out strings.Builder
 		out.WriteString("QoS Configuration:\n")
 		out.WriteString("  Classifiers:\n")
@@ -1411,18 +1481,18 @@ func (p *ProtocolSimulator) GetQoSStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) EnableDot1x(deviceID string) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].Dot1x.Enabled = true
+	p.InitRouter(deviceID).Dot1x.Enabled = true
 }
 
 func (p *ProtocolSimulator) DisableDot1x(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.Dot1x.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) ConfigureDot1xPort(deviceID, portName, authMethod string, reauth bool, quietTimer int) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.Dot1x.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.Dot1x.Enabled {
 		router.Dot1x.Ports[portName] = &Dot1xPort{
 			PortName:   portName,
 			Enabled:    true,
@@ -1434,7 +1504,7 @@ func (p *ProtocolSimulator) ConfigureDot1xPort(deviceID, portName, authMethod st
 }
 
 func (p *ProtocolSimulator) GetDot1xStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok && router.Dot1x.Enabled {
+	if router, ok := p.getRouter(deviceID); ok && router.Dot1x.Enabled {
 		var out strings.Builder
 		out.WriteString("802.1X Configuration:\n")
 		for name, port := range router.Dot1x.Ports {
@@ -1451,24 +1521,24 @@ func (p *ProtocolSimulator) GetDot1xStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureRADIUS(deviceID, primary, secondary, secret string, authPort, acctPort, timeout, retransmit int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].RADIUS.Enabled = true
-	p.routers[deviceID].RADIUS.PrimaryServer = primary
-	p.routers[deviceID].RADIUS.SecondaryServer = secondary
-	p.routers[deviceID].RADIUS.SharedSecret = secret
-	p.routers[deviceID].RADIUS.AuthPort = authPort
-	p.routers[deviceID].RADIUS.AcctPort = acctPort
-	p.routers[deviceID].RADIUS.Timeout = timeout
-	p.routers[deviceID].RADIUS.Retransmit = retransmit
+	p.InitRouter(deviceID).RADIUS.Enabled = true
+	p.InitRouter(deviceID).RADIUS.PrimaryServer = primary
+	p.InitRouter(deviceID).RADIUS.SecondaryServer = secondary
+	p.InitRouter(deviceID).RADIUS.SharedSecret = secret
+	p.InitRouter(deviceID).RADIUS.AuthPort = authPort
+	p.InitRouter(deviceID).RADIUS.AcctPort = acctPort
+	p.InitRouter(deviceID).RADIUS.Timeout = timeout
+	p.InitRouter(deviceID).RADIUS.Retransmit = retransmit
 }
 
 func (p *ProtocolSimulator) DisableRADIUS(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.RADIUS.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) GetRADIUSStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("RADIUS: %s\n", func() string {
 			if router.RADIUS.Enabled {
@@ -1490,23 +1560,23 @@ func (p *ProtocolSimulator) GetRADIUSStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) ConfigureNetFlow(deviceID, exporter string, port int, version string, sampleRate, activeTime, inactiveTime int) {
 	p.InitRouter(deviceID)
-	p.routers[deviceID].NetFlow.Enabled = true
-	p.routers[deviceID].NetFlow.Exporter = exporter
-	p.routers[deviceID].NetFlow.Port = port
-	p.routers[deviceID].NetFlow.Version = version
-	p.routers[deviceID].NetFlow.SampleRate = sampleRate
-	p.routers[deviceID].NetFlow.ActiveTime = activeTime
-	p.routers[deviceID].NetFlow.InactiveTime = inactiveTime
+	p.InitRouter(deviceID).NetFlow.Enabled = true
+	p.InitRouter(deviceID).NetFlow.Exporter = exporter
+	p.InitRouter(deviceID).NetFlow.Port = port
+	p.InitRouter(deviceID).NetFlow.Version = version
+	p.InitRouter(deviceID).NetFlow.SampleRate = sampleRate
+	p.InitRouter(deviceID).NetFlow.ActiveTime = activeTime
+	p.InitRouter(deviceID).NetFlow.InactiveTime = inactiveTime
 }
 
 func (p *ProtocolSimulator) DisableNetFlow(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		router.NetFlow.Enabled = false
 	}
 }
 
 func (p *ProtocolSimulator) GetNetFlowStatus(deviceID string) string {
-	if router, ok := p.routers[deviceID]; ok {
+	if router, ok := p.getRouter(deviceID); ok {
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("NetFlow: %s\n", func() string {
 			if router.NetFlow.Enabled {
@@ -1528,14 +1598,14 @@ func (p *ProtocolSimulator) GetNetFlowStatus(deviceID string) string {
 
 func (p *ProtocolSimulator) Ping(deviceID, targetIP string, timeout time.Duration, count, size int, checker ReachabilityChecker) []ICMPResult {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.ICMP != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.ICMP != nil {
 		return router.ICMP.Ping(targetIP, timeout, count, size, checker)
 	}
 	return []ICMPResult{}
 }
 
 func (p *ProtocolSimulator) GetICMPStats(deviceID string) ICMPStats {
-	if router, ok := p.routers[deviceID]; ok && router.ICMP != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.ICMP != nil {
 		return router.ICMP.GetStats()
 	}
 	return ICMPStats{}
@@ -1543,30 +1613,30 @@ func (p *ProtocolSimulator) GetICMPStats(deviceID string) ICMPStats {
 
 func (p *ProtocolSimulator) ResetICMPStats(deviceID string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.ICMP != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.ICMP != nil {
 		router.ICMP.ResetStats()
 	}
 }
 
 func (p *ProtocolSimulator) EnableICMP(deviceID string) {
 	p.InitRouter(deviceID)
-	if router, ok := p.routers[deviceID]; ok && router.ICMP != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.ICMP != nil {
 		router.ICMP.Enable()
 	}
 }
 
 func (p *ProtocolSimulator) DisableICMP(deviceID string) {
-	if router, ok := p.routers[deviceID]; ok && router.ICMP != nil {
+	if router, ok := p.getRouter(deviceID); ok && router.ICMP != nil {
 		router.ICMP.Disable()
 	}
 }
 
 func (p *ProtocolSimulator) GetRouter(deviceID string) (*RouterState, bool) {
-	p.InitRouter(deviceID)
-	router, ok := p.routers[deviceID]
-	return router, ok
+	return p.getRouter(deviceID)
 }
 
 func (p *ProtocolSimulator) RemoveRouter(deviceID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	delete(p.routers, deviceID)
 }
