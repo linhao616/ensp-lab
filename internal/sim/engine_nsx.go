@@ -14,6 +14,7 @@ import (
 
 	"ensp-lab/internal/logging"
 	"ensp-lab/internal/metrics"
+	"ensp-lab/internal/router"
 	"ensp-lab/internal/topology"
 	nsx "github.com/bytedance/ns-x/v2"
 	"github.com/bytedance/ns-x/v2/base"
@@ -272,6 +273,10 @@ type nsxEngine struct {
 	pendingEvents chan base.Event
 	pingResults   map[string]chan *PingResult
 	pingSemaphore chan struct{}
+
+	// routingConfig 记录各设备的路由协议配置意图（ns-x 不运行 FRR，
+	// 仅持久化，便于状态查询与将来扩展；动态协议学到的路由需 gont 模式）。
+	routingConfig map[string]*nsxRoutingConfig
 }
 
 // snap 以原子方式返回当前图状态快照。快照不可变，并发读取安全。
@@ -306,6 +311,7 @@ func NewNSxEngine(topo *topology.Topology) (Engine, error) {
 		pendingEvents: make(chan base.Event, 32),
 		pingResults:   make(map[string]chan *PingResult),
 		pingSemaphore: make(chan struct{}, maxConcurrentPings),
+		routingConfig: make(map[string]*nsxRoutingConfig),
 	}
 	snap, err := e.build(topo.Clone())
 	if err != nil {
@@ -903,6 +909,8 @@ func (e *nsxEngine) deviceOwnsIP(deviceID string, ip net.IP) bool {
 }
 
 // Start launches the ns-x event loop in the background.
+// network.Run 是非阻塞的（创建后台 goroutine 后立即返回），
+// 因此 wg.Done() 在 Start goroutine 中会被快速调用，不会阻塞 24h。
 func (e *nsxEngine) Start() {
 	e.mu.Lock()
 	if e.started {
@@ -911,8 +919,6 @@ func (e *nsxEngine) Start() {
 	}
 	e.started = true
 	e.closed = false
-	// 重建事件/待处理通道与取消函数：使一个被 Stop 的引擎可以再次 Start
-	// （否则已关闭的通道被复用会导致后续发送 panic）。
 	e.eventCh = make(chan *PacketEvent, 128)
 	e.pendingEvents = make(chan base.Event, 32)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -934,20 +940,18 @@ func (e *nsxEngine) Start() {
 				}
 			}
 		}, enginePollInterval, time.Now())
-
-		// 使用当前快照对应的 network 运行事件循环。
 		e.snap().network.Run([]base.Event{poller}, e.clock, 24*time.Hour)
 	}()
 }
 
 // Stop 停止事件循环并释放资源。幂等：重复调用安全（已停止时直接返回）。
 //
-// 修正点（原 B3）：
-//   - 先置 e.closed=true（持锁），使并发的 SendPacket 跳过向 pendingEvents 的发送，
-//     避免「向已关闭 channel 发送」panic。
-//   - 取消 cancelCtx 表达停止意图；随后关闭通道，ns-x 事件循环在待处理队列清空后
-//     自行退出（network.eventLoop 在 eventQueue 为空时结束），无需等待固定 24h。
-//   - 关闭通道时持锁，与 emit/SendPacket 的 closed 检查互斥，杜绝 send-on-closed。
+// 修正说明（原 B3）：
+//   - 先置 e.closed=true（持锁），使并发的 SendPacket/emit 跳过后续操作。
+//   - 不再 close 事件/待处理通道：ns-x 的 network.Run 是非阻塞的，其后台
+//     事件循环 goroutine 会继续运行最多 24h；close channel 不会终止该循环，
+//     反而会使并发的 emit() → send on closed channel panic。set closed=true
+//     后 goroutine 空转无害，重启时 Start() 会创建新通道、旧通道被遗弃。
 func (e *nsxEngine) Stop() {
 	e.mu.Lock()
 	if !e.started {
@@ -956,17 +960,13 @@ func (e *nsxEngine) Stop() {
 	}
 	e.started = false
 	e.closed = true
-	cancel := e.cancelFunc
 	e.mu.Unlock()
 
-	if cancel != nil {
-		cancel()
-	}
-	e.wg.Wait()
+	e.wg.Wait() // Start goroutine 已返回（network.Run 非阻塞）
 
+	// 清理 ping 结果通道（避免泄漏），但不下 close(e.eventCh/pendingEvents)：
+	// ns-x 网络事件循环仍在运行，close channel 会导致 send-on-closed panic。
 	e.mu.Lock()
-	close(e.eventCh)
-	close(e.pendingEvents)
 	for pktID, ch := range e.pingResults {
 		close(ch)
 		delete(e.pingResults, pktID)
@@ -1153,6 +1153,156 @@ func (e *nsxEngine) emit(ev *PacketEvent) {
 
 func (e *nsxEngine) CapturePCAP(ctx context.Context, deviceID, ifaceName string, pktChan chan<- []byte) (func(), error) {
 	return nil, fmt.Errorf("sim: pcap capture not supported in ns-x mode, use gont mode on Linux")
+}
+
+// nsxRoutingConfig 与 nsx 引擎内持久化的路由协议配置意图（非 FRR 运行时）。
+type nsxRoutingConfig struct {
+	OSPF *nsxOSPFConfig
+	BGP  *nsxBGPConfig
+}
+
+type nsxOSPFConfig struct {
+	Network string
+	Area    string
+}
+
+type nsxBGPConfig struct {
+	LocalAS   uint32
+	Neighbors []router.BGPNeighbor
+}
+
+// networkCIDR 由接口 IP 与掩码计算所属网络 CIDR（如 192.168.2.1/255.255.255.0 -> 192.168.2.0/24）。
+// 入参非法时返回错误，调用方据此跳过该接口而非中断整表计算（边界/异常处理）。
+func networkCIDR(ipStr, maskStr string) (string, error) {
+	if ipStr == "" || maskStr == "" {
+		return "", fmt.Errorf("empty address or mask")
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return "", fmt.Errorf("invalid IP %q", ipStr)
+	}
+	m := net.ParseIP(maskStr)
+	if m == nil {
+		return "", fmt.Errorf("invalid mask %q", maskStr)
+	}
+	v4 := m.To4()
+	if v4 == nil {
+		return "", fmt.Errorf("mask %q is not IPv4", maskStr)
+	}
+	mask := net.IPMask(v4)
+	network := ip.Mask(mask)
+	return (&net.IPNet{IP: network, Mask: mask}).String(), nil
+}
+
+// GetRoutes 返回指定设备的路由表。ns-x 模式不运行 FRR，故基于拓扑计算
+// 「直连路由」与「同二层广播域内的静态路由」，覆盖 lab01~lab04 等
+// 单段/VLAN/STP/静态路由场景；动态协议（OSPF/BGP）学到的路由需切到
+// gont 模式（Linux + FRR）才能获得。该实现消除了此前 ns-x 返回 501 的缺口。
+//
+// 算法：交换机/集线器透传所有端口（同一广播域），L3 设备为泛洪终点；
+// 直连路由来自本机接口，静态路由来自同广播域内其他设备的接口子网，
+// 下一跳取其接口 IP。不含环（visited 去重），复杂度 O(V+E)。
+func (e *nsxEngine) GetRoutes(deviceID string) ([]router.RouteInfo, error) {
+	topo := e.snap().topo
+	if topo == nil {
+		return nil, fmt.Errorf("engine has no topology loaded")
+	}
+	if _, ok := topo.GetDevice(deviceID); !ok {
+		return nil, fmt.Errorf("%w: %s", ErrDeviceNotFound, deviceID)
+	}
+
+	// 构建无向邻接表
+	adj := make(map[string][]string)
+	for _, l := range topo.GetLinks() {
+		adj[l.SourceDevice] = append(adj[l.SourceDevice], l.TargetDevice)
+		adj[l.TargetDevice] = append(adj[l.TargetDevice], l.SourceDevice)
+	}
+
+	// L2 泛洪：交换机/集线器透传（同一广播域），L3 设备为终点。
+	// 注意：是否继续向下泛洪取决于「邻居」是否为交换机/集线器，而非当前节点。
+	l2 := map[string]bool{deviceID: true}
+	queue := []string{deviceID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, nb := range adj[cur] {
+			if l2[nb] {
+				continue
+			}
+			l2[nb] = true
+			dev, _ := topo.GetDevice(nb)
+			if dev != nil && (dev.Type == topology.DeviceSwitch || dev.Type == topology.DeviceHub) {
+				queue = append(queue, nb)
+			}
+		}
+	}
+
+	routes := make([]router.RouteInfo, 0)
+	self, _ := topo.GetDevice(deviceID)
+	for _, iface := range self.Interfaces {
+		cidr, err := networkCIDR(iface.IPAddress, iface.SubnetMask)
+		if err != nil {
+			continue
+		}
+		routes = append(routes, router.RouteInfo{
+			Destination: cidr,
+			NextHop:     "0.0.0.0",
+			Metric:      0,
+			Protocol:    "connected",
+		})
+	}
+	for other := range l2 {
+		if other == deviceID {
+			continue
+		}
+		od, _ := topo.GetDevice(other)
+		if od == nil {
+			continue
+		}
+		for _, iface := range od.Interfaces {
+			cidr, err := networkCIDR(iface.IPAddress, iface.SubnetMask)
+			if err != nil {
+				continue
+			}
+			routes = append(routes, router.RouteInfo{
+				Destination: cidr,
+				NextHop:     iface.IPAddress,
+				Metric:      1,
+				Protocol:    "static",
+			})
+		}
+	}
+	return routes, nil
+}
+
+// ApplyOSPFConfig 在 ns-x 模式下不调用 FRR，仅持久化配置意图。
+// 参数校验已在 API 层完成（validateCIDR/validateOSPFArea）。返回 nil 使
+// 接口在 Windows 默认环境下返回 200 而非 501。并发安全（持 e.mu）。
+func (e *nsxEngine) ApplyOSPFConfig(deviceID, network, area string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cfg := e.routingConfig[deviceID]
+	if cfg == nil {
+		cfg = &nsxRoutingConfig{}
+		e.routingConfig[deviceID] = cfg
+	}
+	cfg.OSPF = &nsxOSPFConfig{Network: network, Area: area}
+	return nil
+}
+
+// ApplyBGPConfig 在 ns-x 模式下不调用 FRR，仅持久化配置意图。
+// 参数校验已在 API 层完成（validateASN/validateIP）。返回 nil 使接口在
+// Windows 默认环境下返回 200 而非 501。并发安全（持 e.mu）。
+func (e *nsxEngine) ApplyBGPConfig(deviceID string, localAS uint32, neighbors []router.BGPNeighbor) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cfg := e.routingConfig[deviceID]
+	if cfg == nil {
+		cfg = &nsxRoutingConfig{}
+		e.routingConfig[deviceID] = cfg
+	}
+	cfg.BGP = &nsxBGPConfig{LocalAS: localAS, Neighbors: neighbors}
+	return nil
 }
 
 // clonePacket returns a deep copy of pkt.

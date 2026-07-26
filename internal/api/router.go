@@ -239,6 +239,11 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 	r.POST("/api/topology", router.createTopologySimple)
 	r.GET("/api/topology/:id/pcap", router.streamPCAP)
 
+	// 拓扑导入/导出：import 复用简易创建 handler（与 USE.md 的 12 个实验
+	// JSON 同格式），export 返回存储拓扑 JSON 供备份/复用。
+	r.POST("/api/topologies/import", router.createTopologySimple)
+	r.GET("/api/topologies/:id/export", router.exportTopology)
+
 	r.POST("/api/topology/:id/router/:device/ospf", router.applyOSPFConfig)
 	r.POST("/api/topology/:id/router/:device/bgp", router.applyBGPConfig)
 	r.GET("/api/topology/:id/router/:device/routes", router.getRoutes)
@@ -768,6 +773,23 @@ func (r *Router) getRoutes(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "Route query not supported by current engine"})
 	}
+}
+
+// exportTopology 以 JSON 形式导出指定拓扑（与存储结构一致），供备份或
+// 通过 POST /api/topologies/import 重新导入。含 404/500 错误处理。
+func (r *Router) exportTopology(c *gin.Context) {
+	topoID := c.Param("id")
+	t, err := r.store.GetTopology(topoID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if t == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", topoID+".json"))
+	c.JSON(http.StatusOK, t)
 }
 
 func (r *Router) pingTopology(c *gin.Context) {

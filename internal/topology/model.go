@@ -2,6 +2,8 @@ package topology
 
 import (
 	"encoding/json"
+	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -494,6 +496,149 @@ func (d *Device) InitializeDefaults() {
 				Bandwidth: 1000,
 			}
 		}
+	}
+}
+
+// NeedsAutoLayout reports whether this topology's devices are stacked at the
+// origin (0,0) — i.e. they were never given real coordinates. Such topologies
+// render as a single overlapping clump in the canvas and should be laid out.
+func (t *Topology) NeedsAutoLayout() bool {
+	if len(t.Devices) == 0 {
+		return false
+	}
+	for _, d := range t.Devices {
+		if d == nil {
+			continue
+		}
+		if math.Abs(d.PositionX) > 1e-6 || math.Abs(d.PositionY) > 1e-6 {
+			return false
+		}
+	}
+	return true
+}
+
+// AutoLayout assigns non-overlapping, evenly distributed coordinates to every
+// device using a deterministic force-directed simulation (Fruchterman-Reingold
+// style). Connected devices attract along their links; every device pair
+// repels, which spreads the graph out and prevents overlap or clustering. The
+// result is centered at (500, 320) in canvas coordinates, matching the
+// hand-authored VXLAN reference topology. No randomness is used, so layouts
+// are fully reproducible.
+func (t *Topology) AutoLayout() {
+	ids := make([]string, 0, len(t.Devices))
+	for id := range t.Devices {
+		ids = append(ids, id)
+	}
+	n := len(ids)
+	if n == 0 {
+		return
+	}
+	sort.Strings(ids)
+
+	// Ideal edge length. Slightly larger for bigger graphs to keep density
+	// readable; tuned to the ~200px spacing seen in the VXLAN reference.
+	k := 200.0
+	switch {
+	case n > 12:
+		k = 240.0
+	case n > 6:
+		k = 220.0
+	}
+	repulse := k * k
+
+	// Deterministic circular initialization (sorted ids => stable layout).
+	pos := make(map[string]*[2]float64, n)
+	radius := k * math.Sqrt(float64(n)) * 1.3
+	for i, id := range ids {
+		ang := 2*math.Pi*float64(i)/float64(n) - math.Pi/2
+		pos[id] = &[2]float64{radius * math.Cos(ang), radius * math.Sin(ang)}
+	}
+
+	const (
+		iterations = 400
+		cooling    = 0.97
+	)
+	temp := 2.0 * k
+	for step := 0; step < iterations; step++ {
+		disp := make(map[string]*[2]float64, n)
+		for _, id := range ids {
+			disp[id] = &[2]float64{0, 0}
+		}
+		// Repulsive force between every pair.
+		for i := 0; i < n; i++ {
+			a := ids[i]
+			for j := i + 1; j < n; j++ {
+				b := ids[j]
+				dx := pos[a][0] - pos[b][0]
+				dy := pos[a][1] - pos[b][1]
+				dist := math.Hypot(dx, dy)
+				if dist < 0.01 {
+					// Deterministic symmetry break based on indices.
+					dx = 0.01 * (float64((i*7+j)%5) - 2)
+					dy = 0.01 * (float64((i*3+j)%5) - 2)
+					dist = math.Hypot(dx, dy)
+					if dist < 0.01 {
+						dist = 0.01
+					}
+				}
+				f := repulse / dist
+				ux, uy := dx/dist, dy/dist
+				disp[a][0] += ux * f
+				disp[a][1] += uy * f
+				disp[b][0] -= ux * f
+				disp[b][1] -= uy * f
+			}
+		}
+		// Attractive force along edges.
+		for _, l := range t.Links {
+			a, b := l.SourceDevice, l.TargetDevice
+			pa, okA := pos[a]
+			pb, okB := pos[b]
+			if !okA || !okB {
+				continue
+			}
+			dx := pa[0] - pb[0]
+			dy := pa[1] - pb[1]
+			dist := math.Hypot(dx, dy)
+			if dist < 0.01 {
+				dist = 0.01
+			}
+			f := (dist * dist) / k
+			ux, uy := dx/dist, dy/dist
+			disp[a][0] -= ux * f
+			disp[a][1] -= uy * f
+			disp[b][0] += ux * f
+			disp[b][1] += uy * f
+		}
+		// Apply displacement capped by temperature, then cool.
+		for _, id := range ids {
+			d := math.Hypot(disp[id][0], disp[id][1])
+			if d > temp {
+				disp[id][0] = disp[id][0] / d * temp
+				disp[id][1] = disp[id][1] / d * temp
+			}
+			pos[id][0] += disp[id][0]
+			pos[id][1] += disp[id][1]
+		}
+		temp *= cooling
+	}
+
+	// Center the result at (500, 320).
+	const centerX, centerY = 500.0, 320.0
+	cx, cy := 0.0, 0.0
+	for _, id := range ids {
+		cx += pos[id][0]
+		cy += pos[id][1]
+	}
+	cx /= float64(n)
+	cy /= float64(n)
+	for _, id := range ids {
+		dev := t.Devices[id]
+		if dev == nil {
+			continue
+		}
+		dev.PositionX = pos[id][0] - cx + centerX
+		dev.PositionY = pos[id][1] - cy + centerY
 	}
 }
 

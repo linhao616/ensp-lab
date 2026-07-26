@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"strings"
 	"testing"
 
 	"ensp-lab/internal/topology"
@@ -123,4 +124,71 @@ func TestEngineStopRestart(t *testing.T) {
 	eng.Start() // 不应 panic
 	eng.Stop()
 	eng.Stop() // 幂等，第二次 Stop 应安全返回
+}
+
+// newRoutedTopo 构造 r1—sw1—r2 拓扑，用于验证 ns-x 的 GetRoutes：
+// r1 与 r2 经交换机 sw1 处于同一二层广播域。
+func newRoutedTopo() *topology.Topology {
+	t := topology.NewTopology("rt", "routed")
+	r1 := &topology.Device{ID: "r1", Name: "R1", Type: topology.DeviceRouter, Status: topology.StatusRunning}
+	r1.InitializeDefaults()
+	r1.Interfaces["GigabitEthernet0/0/0"].IPAddress = "192.168.2.1"
+	r1.Interfaces["GigabitEthernet0/0/0"].SubnetMask = "255.255.255.0"
+	r1.Interfaces["GigabitEthernet0/0/0"].Status = "up"
+
+	r2 := &topology.Device{ID: "r2", Name: "R2", Type: topology.DeviceRouter, Status: topology.StatusRunning}
+	r2.InitializeDefaults()
+	r2.Interfaces["GigabitEthernet0/0/0"].IPAddress = "192.168.3.1"
+	r2.Interfaces["GigabitEthernet0/0/0"].SubnetMask = "255.255.255.0"
+	r2.Interfaces["GigabitEthernet0/0/0"].Status = "up"
+
+	sw := &topology.Device{ID: "sw1", Name: "SW1", Type: topology.DeviceSwitch, Status: topology.StatusRunning}
+	sw.InitializeDefaults()
+
+	t.AddDevice(r1)
+	t.AddDevice(r2)
+	t.AddDevice(sw)
+	t.AddLink(&topology.Link{ID: "l1", SourceDevice: "r1", SourcePort: "GigabitEthernet0/0/0", TargetDevice: "sw1", TargetPort: "GigabitEthernet0/0/1", LinkType: topology.LinkTypeBusiness})
+	t.AddLink(&topology.Link{ID: "l2", SourceDevice: "r2", SourcePort: "GigabitEthernet0/0/0", TargetDevice: "sw1", TargetPort: "GigabitEthernet0/0/2", LinkType: topology.LinkTypeBusiness})
+	return t
+}
+
+// TestNSxGetRoutes 验证 F4：ns-x 引擎 GetRoutes 返回直连路由与同广播域
+// 静态路由，不再返回 501。
+func TestNSxGetRoutes(t *testing.T) {
+	eng, err := NewNSxEngine(newRoutedTopo())
+	if err != nil {
+		t.Fatalf("NewNSxEngine: %v", err)
+	}
+	nsx, ok := eng.(*nsxEngine)
+	if !ok {
+		t.Fatalf("expected *nsxEngine, got %T", eng)
+	}
+	routes, err := nsx.GetRoutes("r1")
+	if err != nil {
+		t.Fatalf("GetRoutes(r1): %v", err)
+	}
+
+	wantConnected := "192.168.2.0/24"
+	wantStatic := "192.168.3.0/24"
+	gotConnected, gotStatic := false, false
+	for _, r := range routes {
+		if r.Destination == wantConnected && r.Protocol == "connected" {
+			gotConnected = true
+		}
+		if r.Destination == wantStatic && r.Protocol == "static" && r.NextHop == "192.168.3.1" {
+			gotStatic = true
+		}
+	}
+	if !gotConnected {
+		t.Errorf("missing connected route %s in %+v", wantConnected, routes)
+	}
+	if !gotStatic {
+		t.Errorf("missing static route %s (via 192.168.3.1) in %+v", wantStatic, routes)
+	}
+
+	// 未知设备应返回明确错误（异常处理）
+	if _, err := nsx.GetRoutes("nope"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected not-found error for unknown device, got %v", err)
+	}
 }
