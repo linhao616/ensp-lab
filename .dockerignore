@@ -1,0 +1,23 @@
+# Git
+.git
+.gitattributes
+.gitignore
+.github
+
+# WorkBuddy
+.workbuddy
+
+# Frontend build artifacts (built inside Docker)
+frontend/dist
+frontend/node_modules
+
+# Go artifacts
+*.exe
+ensp-lab
+
+# Temp & docs
+tmp/
+archive/
+docs/
+*.md
+!README.md

@@ -42,3 +42,31 @@ jobs:
 
       - name: Test
         run: go test -timeout 120s -parallel 4 ./...
+
+  docker-verify:
+    name: Verify Docker build
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t ensp-lab:ci .
+
+      - name: Verify entrypoint
+        run: docker run --rm ensp-lab:ci -help
+
+      - name: Smoke test (start + health check)
+        run: |
+          docker run -d --name ensp-ci -p 8080:8080 ensp-lab:ci
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/health; then
+              echo "Health check passed"
+              break
+            fi
+            echo "Waiting... ($i/15)"
+            sleep 2
+          done
+          curl -sf http://localhost:8080/health || (docker logs ensp-ci && exit 1)
+          docker stop ensp-ci

@@ -8,6 +8,8 @@ BIN           := ensp-lab
 FRONTEND_DIR  := frontend
 TEST_TIMEOUT  ?= 120s
 TEST_PARALLEL ?= 4
+DOCKER_IMAGE  ?= ensp-lab
+DOCKER_TAG    ?= latest
 
 .PHONY: all
 all: build
@@ -55,3 +57,18 @@ vet:
 clean:
 	go clean ./...
 	rm -rf $(BIN) $(FRONTEND_DIR)/dist
+
+# ---- Docker ----
+.PHONY: docker-build
+docker-build:
+	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+.PHONY: docker-run
+docker-run:
+	docker run --rm -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)
+
+.PHONY: docker-test
+docker-test:
+	docker build -t $(DOCKER_IMAGE):test .
+	docker run --rm --entrypoint "" $(DOCKER_IMAGE):test ensp-lab -help
+	$(info Docker image verified successfully)
