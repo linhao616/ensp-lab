@@ -81,11 +81,42 @@ type PacketEvent struct {
 type PacketListener func(event *PacketEvent)
 
 // PingResult summarises a ping operation.
+//
+// RTTMs holds per-reply round-trip time in milliseconds (len == Received).
+// A nil/empty slice indicates no RTT samples (e.g. total loss); callers
+// must not index it without checking Received first.
 type PingResult struct {
 	Sent     int
 	Received int
 	Lost     int
+	RTTMs    []float64
 	Details  []string
+}
+
+// TracerouteHop is a single hop in a traceroute result.
+//
+// DeviceID is the device that answered (or "timeout" when the hop
+// exceeded the max TTL without a reply). IP is the hop's responding
+// address; for the final destination DeviceID equals the target device.
+// DelayMs is the simulated one-way latency to reach this hop from the
+// previous one (0 when unknown).
+type TracerouteHop struct {
+	Hop      int
+	DeviceID string
+	IP       string
+	DelayMs  float64
+}
+
+// TracerouteResult summarises a traceroute operation.
+//
+// Hops contains one entry per TTL probed. Reached indicates the final
+// destination answered within maxTTL; if false, the path is
+// inconclusive (no reply before TTL expired).
+type TracerouteResult struct {
+	TargetIP string
+	MaxTTL   int
+	Hops     []TracerouteHop
+	Reached  bool
 }
 
 // ProtocolName returns a human-readable name for the packet's protocol.

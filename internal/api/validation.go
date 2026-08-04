@@ -177,3 +177,17 @@ func validateTopologyPayload(t *topology.Topology) error {
 	}
 	return nil
 }
+
+// sanitizeForFilename 仅保留 [A-Za-z0-9_-]，用于把拓扑 ID 派生为安全的导出
+// 文件名（F5）。其余字符（含 / \ . 空格等）一律丢弃，避免产生异常/路径型文件名。
+// 结果可能为空串——调用方需用回退名（如 "topology"）。
+func sanitizeForFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}

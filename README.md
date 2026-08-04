@@ -13,7 +13,7 @@ cd src/ensp-lab
 go run cmd/server/main.go
 ```
 
-服务启动后监听 `http://localhost:8080`。
+服务启动后默认监听 `http://localhost:8080`（端口可经 `-port` 参数或 `PORT` 环境变量修改，详见下文「配置项说明」）。
 
 > 项目使用 `go build -a -o ensp-lab.exe ./cmd/server` 构建，前端 `frontend/dist` 通过 `embed.go` 一并嵌入二进制；Windows 下直接运行 `ensp-lab.exe` 即可，无需额外依赖。
 
@@ -33,7 +33,7 @@ go build -a -o ensp-lab.exe ./cmd/server     # Windows
 # go build -a -o ensp-lab      ./cmd/server   # Linux / macOS
 
 # 3. 运行
-./ensp-lab.exe        # 监听 http://localhost:8080
+./ensp-lab.exe        # 默认监听 http://localhost:8080（可用 -port 9090 改端口）
 ```
 
 > 本地调试也可直接 `go run cmd/server/main.go`——同样会触发前端嵌入，但每次运行都重新编译，速度较慢。
@@ -158,6 +158,37 @@ Invoke-RestMethod -Uri "http://localhost:8080/api/topologies/demo/devices/r1/cli
 Invoke-RestMethod -Uri "http://localhost:8080/api/topologies/demo/devices/r1/cli" -Method Post -ContentType "application/json" -Body '{"command":"display bfd"}'
 Invoke-RestMethod -Uri "http://localhost:8080/api/topologies/demo/devices/r1/cli" -Method Post -ContentType "application/json" -Body '{"command":"display ospf"}'
 ```
+
+## 配置项说明
+
+服务支持通过**命令行参数**或**环境变量**配置，二者等价（命令行优先于环境变量）。所有配置项均有默认值，开箱即用。
+
+| 配置项 | 命令行参数 | 环境变量 | 默认值 | 说明 |
+|--------|-----------|----------|--------|------|
+| 绑定地址 | `-bind` | `BIND_ADDR` | `127.0.0.1` | HTTP 监听绑定地址；**默认仅本地**（安全默认）。设为 `0.0.0.0` 暴露到所有网卡（仅限可信网络 / 反代之后） |
+| 服务端口 | `-port` | `PORT` | `8080` | HTTP 监听端口；前端 API 使用相对路径，改端口后无需改动前端 |
+| 存储目录 | `-data-dir` | `DATA_DIR` | `./data` | 拓扑 JSON 持久化目录 |
+| 日志级别 | `-log-level` | — | `info` | `debug` / `info` / `warn` / `error` |
+| 日志格式 | `-log-format` | — | `console` | `console` / `json` |
+| 演示拓扑 | `-demo-vxlan` | — | `false` | 启动时自动创建 VXLAN Spine-Leaf 演示拓扑 |
+
+> 端口配置示例：
+> ```bash
+> ./ensp-lab -port 9090          # 或
+> PORT=9090 ./ensp-lab
+> ```
+> 之后在 `http://localhost:9090` 访问前端即可，功能不受影响。
+
+### 安全相关环境变量
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `ENS_ACCESS_LOG` | 未设置 | 设置任意值即开启每个请求的访问日志（默认关闭以降低开销） |
+| `ENS_CORS_ORIGINS` | 空 | 逗号分隔的可信 CORS 源白名单补充项（默认仅放行 `127.0.0.1` / `localhost` 同源源）。CORS `AllowHeaders` 仅含 `Origin` / `Content-Type`（**不含 `Authorization`**：本应用无鉴权，F8 已移除该冗余头）。前端同源 `localhost` 默认放行；跨源可信前端用逗号分隔追加 |
+| `ENS_DIAG_ALLOW_EXTERNAL` | 未设置 | 设置 `1` 才允许对「拓扑外」目标诊断（外部 IP 的 ping/traceroute、公网 DNS 解析）；默认禁止，防止服务端被用作网络侦察 / DoS 放大跳板 |
+| `ENSP_PPROF` | 未设置 | 设置任意值挂载 `net/http/pprof` 调试端点（默认关闭）。**开启时强制 token 守卫（F10）**：需携带 `ENSP_PPROF_TOKEN`（或启动时自动生成并写入日志的 token），通过 `?token=` 查询参数或 `X-Pprof-Token` 请求头校验；校验失败返回 403。该端点**仅应在 `-bind 127.0.0.1` 时使用**，切勿在 `0.0.0.0` 暴露下开启 |
+
+> **安全默认说明**：本工具定位为「本地单用户实验工具」，服务端**默认仅绑定 `127.0.0.1`**，所有 API 端点无独立鉴权。请勿在不可信网络中以 `-bind 0.0.0.0` 暴露服务；如确需远程访问，应置于带鉴权的反向代理之后，并仅对可信前端源配置 `ENS_CORS_ORIGINS`。外部诊断需显式开启 `ENS_DIAG_ALLOW_EXTERNAL=1`。性能剖析端点（`ENSP_PPROF`）仅限回环绑定并须配 token（F10），绝不可在暴露网络下启用。
 
 ## 支持的设备类型
 
@@ -638,6 +669,8 @@ POST   /api/topologies                  # 创建拓扑（完整，含 devices/li
 PUT    /api/topologies/:id              # 更新拓扑
 DELETE /api/topologies/:id              # 删除拓扑（自动释放引擎资源）
 POST   /api/topology                    # 快速创建拓扑（含 nodes/links）
+POST   /api/topologies/import           # 导入拓扑（JSON 体，同快速创建）
+GET    /api/topologies/:id/export       # 导出拓扑 JSON
 GET    /api/topology/:id/ping           # Ping 测试（?src=&dst=，首次调用自动启动引擎）
 GET    /api/topology/:id/pcap           # 实时抓包（SSE，?device=&interface=）
 GET    /api/topology/:id/vxlan-status   # VXLAN 隧道状态
@@ -652,6 +685,8 @@ PUT    /api/topologies/:id/devices/:deviceId     # 更新设备
 DELETE /api/topologies/:id/devices/:deviceId     # 删除设备
 POST   /api/topologies/:id/devices/:deviceId/power # 电源控制
 POST   /api/topologies/:id/devices/:deviceId/cli    # 执行 VRP CLI 命令
+GET    /api/topologies/:id/devices/:deviceId/ip-config    # 读取接口 IP 配置（?interface= 可选）
+POST   /api/topologies/:id/devices/:deviceId/ip-config    # 设置接口 IP 配置
 GET    /api/devices/types                         # 获取支持的设备类型列表
 ```
 
@@ -720,9 +755,43 @@ GET    /api/sim/queue-depth  # 事件队列深度（?topology=）
 ### 系统接口
 
 ```
-GET    /health    # 健康检查（status / platform / engine_count / timestamp）
+GET    /health    # 健康检查（status / platform / engine_count / 资源读数 / timestamp）
 GET    /version   # 版本与构建信息（version / build_time）
+GET    /api/system/status    # 后端全局状态（engine_mode: full/lite、platform、资源读数）
+GET    /api/system/metrics   # 进程资源使用率与引擎活动计数（CPU%/goroutine/heap/GC + 业务计数 + 尖峰诊断）
 GET    /          # 前端入口（embed 静态资源）
+```
+
+### 诊断网关（真实仿真引擎）
+
+统一诊断网关把「真实仿真引擎 / 系统能力」以结构化 JSON 暴露，前端只渲染、不解析 CLI 文本、不编造数据。三个端点均要求 `src` 设备已开机，否则返回 `400`；目标地址 `/` 域名非法返回 `400`，DNS 解析失败返回 `404`（绝不返回假 IP）。
+
+```
+POST /api/diagnostic/:id/ping        # 真实 ping（默认 4 次探测），返回 RTT 统计
+POST /api/diagnostic/:id/traceroute  # 真实拓扑路径发现，返回逐跳列表
+POST /api/diagnostic/:id/dns         # 系统 DNS 解析（失败如实返回 404，不编造 IP）
+```
+
+**请求 / 响应示例：**
+
+```bash
+# Ping：src 为设备ID，dst 可为设备ID 或 IP，count 可选（默认 4，最大 100）
+curl -X POST http://localhost:8080/api/diagnostic/abc123/ping \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","dst":"192.168.1.2","count":4}'
+# → {"success":true,"output":"...","rtt":{"min":4.83,"avg":5.06,"max":5.44,"loss":0}}
+
+# Traceroute
+curl -X POST http://localhost:8080/api/diagnostic/abc123/traceroute \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","dst":"192.168.1.2"}'
+# → {"reachable":true,"hops":[{"hop":1,"ip":"10.0.10.1","device":"r1","rtt":0}]}
+
+# DNS
+curl -X POST http://localhost:8080/api/diagnostic/abc123/dns \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","domain":"www.baidu.com"}'
+# → {"ip":"110.242.69.21","ips":["110.242.69.21",...]}
 ```
 
 SPA 路由兜底：未匹配的路径回退到 `index.html`。
@@ -943,9 +1012,34 @@ src/ensp-lab/
 - **并发控制**: sync.RWMutex
 - **CLI解析**: 正则表达式 + 状态机
 
+## 依赖项
+
+**后端（Go 模块，详见 `go.mod`）：**
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| `github.com/gin-gonic/gin` | v1.12.0 | HTTP Web 框架与路由 |
+| `github.com/gin-contrib/cors` | v1.7.7 | 跨域（CORS）中间件，严格白名单：默认仅 `127.0.0.1` / `localhost` 同源源 + `ENS_CORS_ORIGINS` 追加的可信源；`AllowHeaders` 仅含 `Origin` / `Content-Type`（不含 `Authorization`，因无鉴权，F8） |
+| `github.com/bytedance/ns-x/v2` | v2.4.5 | 跨平台事件驱动网络仿真引擎 |
+| `github.com/stv0g/gont/v2` | v2.3.6 | Linux 真实网络命名空间（gont + FRR，构建 tag `linux && gont` 生效） |
+| `github.com/google/gopacket` | v1.1.19 | 数据包构造 / 解析 |
+| `go.uber.org/zap` | — | 结构化日志 |
+| `golang.org/x/sys` | — | 系统调用 |
+
+**前端（npm 包，详见 `frontend/package.json`）：**
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| `react` / `react-dom` | ^18.3.1 | UI 框架 |
+| `typescript` | ^5.6.3 | 类型系统 |
+| `vite` | ^5.4.10 | 构建与开发服务器 |
+| `@vitejs/plugin-react` | — | React 集成插件 |
+
+> 运行环境要求：Go 1.26+、Node 22（构建前端）、npm。Windows 直接运行 ns-x 引擎无需额外依赖；Linux 真实网络模式需 root 权限、Open vSwitch 与 FRRouting。
+
 ## Web 前端界面
 
-启动服务后访问 `http://localhost:8080` 即为 React 单页前端。核心交互如下（详细说明见 `docs/ensp-lab_manual.md`）：
+启动服务后访问 `http://localhost:8080`（默认端口，可用 `-port` 修改）即为 React 单页前端。核心交互如下（详细说明见 `docs/ensp-lab_manual.md`）：
 
 ### 拓扑画布
 - Canvas 渲染设备与连线，单击设备选中并高亮；连线清单中点击某条连线可高亮该链路并自动平移视口居中。
@@ -1036,7 +1130,7 @@ curl http://localhost:8080/health
 
 ### Q: 前端界面在哪里访问？
 
-A: 启动服务后，浏览器访问 `http://localhost:8080` 即可看到 React 前端界面。
+A: 启动服务后，浏览器访问 `http://localhost:8080`（默认端口，可用 `-port` 或 `PORT` 修改）即可看到 React 前端界面。
 
 ## 开发计划
 

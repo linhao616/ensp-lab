@@ -34,6 +34,9 @@ func (s *stubEngine) SendPacket(*Packet, string, string) {}
 func (s *stubEngine) Ping(string, string) (*PingResult, error) {
 	return nil, fmt.Errorf("stub engine: ping not implemented")
 }
+func (s *stubEngine) Traceroute(string, string, int) (*TracerouteResult, error) {
+	return nil, fmt.Errorf("stub engine: traceroute not implemented")
+}
 func (s *stubEngine) AddPacketListener(listener PacketListener) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

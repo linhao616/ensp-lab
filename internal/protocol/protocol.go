@@ -633,11 +633,10 @@ func (p *ProtocolSimulator) FindRoute(deviceID, destIP string) *RouteEntry {
 // 修复：此前为 `return true` 桩，任何调用都恒为真，会向诊断/可达性判定
 // 返回错误结果（例如把本不连通的两台设备判为可达）。现改为真实图遍历，
 // 并处理参数/边界：空/未知设备、同设备、空拓扑均返回确定结果。
-func (p *ProtocolSimulator) CheckReachability(srcDevice, dstDevice, srcIP, dstIP string) bool {
-	if p == nil || p.topology == nil {
+func (p *ProtocolSimulator) CheckReachability(srcDevice, dstDevice, srcIP, dstIP string, topo *topology.Topology) bool {
+	if topo == nil {
 		return false
 	}
-	topo := p.topology
 	if srcDevice == "" || dstDevice == "" {
 		return false
 	}

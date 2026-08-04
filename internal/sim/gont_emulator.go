@@ -256,6 +256,13 @@ func (e *GontEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 	}, nil
 }
 
+// Traceroute is not yet implemented for the gont backend (Linux + FRR).
+// Returns an error so callers fall back gracefully (the API layer falls
+// back to the topology-graph path discovery or a clear "not supported").
+func (e *GontEngine) Traceroute(srcDeviceID, dstIP string, maxTTL int) (*TracerouteResult, error) {
+	return nil, fmt.Errorf("gont engine: traceroute not implemented")
+}
+
 // AddPacketListener registers a listener.
 func (e *GontEngine) AddPacketListener(listener PacketListener) {
 	e.mu.Lock()

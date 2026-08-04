@@ -1,9 +1,9 @@
-// DiagnosticPing - 网络诊断工具集 · Ping Tab
-// 复用后端 api.pingTopology。源设备为"支持 ICMP 的设备"（含 IP 接口），目标为所有设备。
-// 双击历史记录可将目标设备联动填入 Traceroute（onPickTarget）。
+// DiagnosticPing - 网络诊断工具集 · Ping Tab（P1-D 统一诊断网关）
+// 改用后端统一诊断网关 api.diagnosticPing，渲染结构化 rtt.min/avg/max/loss，
+// 不再依赖旧 /api/topology/:id/ping 的 rtt_ms 单值。
 import { useRef, useState } from 'react';
 import { type Device } from '../types';
-import { api, type PingResult } from '../api';
+import { api, type DiagnosticPingResult } from '../api';
 import { deviceLabel } from './diagnosticUtils';
 
 export interface DiagPingHistoryItem {
@@ -41,7 +41,7 @@ export default function DiagnosticPing(props: Props) {
   const [continuous, setContinuous] = useState<boolean>(false);
   const [running, setRunning] = useState<boolean>(false);
   const [output, setOutput] = useState<string[]>([]);
-  const [stats, setStats] = useState<{ sent: number; received: number; lost: number; rttMs?: number } | null>(null);
+  const [stats, setStats] = useState<{ min: number; avg: number; max: number; loss: number } | null>(null);
   const [history, setHistory] = useState<DiagPingHistoryItem[]>([]);
   const abortRef = useRef(false);
   const runningRef = useRef(false);
@@ -64,23 +64,24 @@ export default function DiagnosticPing(props: Props) {
     dst: string,
     c: number,
     append: boolean,
-  ): Promise<PingResult | null> => {
+  ): Promise<DiagnosticPingResult | null> => {
     if (!topologyId) return null;
+    const targetName = devices[dst]?.name || dst;
     try {
-      const res = await api.pingTopology(topologyId, src, dst, c);
-      const header = `PING ${res.dst_ip} (${res.dst_ip}) ${c * 56} bytes of data`;
+      const res = await api.diagnosticPing(topologyId, src, dst, c);
+      const header = `PING ${targetName} (${targetName}) ${c * 56} bytes of data`;
       setOutput((prev) => {
         const next = append ? [...prev] : [];
-        if (!append || next.length === 0 || !next[next.length - 1].startsWith('PING')) next.push(header);
-        for (const d of res.details) next.push(d);
+        if (next.length === 0 || !next[next.length - 1].startsWith('PING')) next.push(header);
+        for (const line of res.output.split('\n')) next.push(line);
         return next;
       });
-      setStats({ sent: res.sent, received: res.received, lost: res.lost, rttMs: res.rtt_ms });
+      setStats({ min: res.rtt.min, avg: res.rtt.avg, max: res.rtt.max, loss: res.rtt.loss });
       return res;
     } catch (e) {
       const msg = `Ping 失败: ${e instanceof Error ? e.message : String(e)}`;
       setOutput((prev) => (append ? [...prev, msg] : [msg]));
-      setStats({ sent: 0, received: 0, lost: 0 });
+      setStats({ min: 0, avg: 0, max: 0, loss: 100 });
       return null;
     }
   };
@@ -115,7 +116,7 @@ export default function DiagnosticPing(props: Props) {
       const loop = async () => {
         if (abortRef.current || !runningRef.current) return;
         const r = await runOne(srcDevice, dstId, 1, round > 0);
-        if (round === 0) addHistory((r?.received ?? 0) > 0, r?.rtt_ms, '连续 Ping 开始');
+        if (round === 0) addHistory((r?.rtt.loss ?? 100) < 100, r?.rtt.avg, '连续 Ping 开始');
         round++;
         if (abortRef.current || !runningRef.current) {
           setRunning(false);
@@ -127,8 +128,8 @@ export default function DiagnosticPing(props: Props) {
       void loop();
     } else {
       void runOne(srcDevice, dstId, count, false).then((r) => {
-        const ok = (r?.received ?? 0) > 0;
-        addHistory(ok, r?.rtt_ms, `${count} 包 / ${r?.received ?? 0} 通`);
+        const ok = (r?.rtt.loss ?? 100) < 100;
+        addHistory(ok, r?.rtt.avg, `${count} 包 / 丢失 ${r?.rtt.loss ?? 100}%`);
         setRunning(false);
         runningRef.current = false;
       });
@@ -231,9 +232,9 @@ export default function DiagnosticPing(props: Props) {
         <div className="diag-output-header">
           <span>实时输出</span>
           {stats && (
-            <span className={`diag-summary ${stats.received > 0 ? 'diag-success' : 'diag-fail'}`}>
-              {stats.received > 0 ? '✅ 成功' : '❌ 失败'}
-              {stats.rttMs !== undefined ? ` (${stats.rttMs.toFixed(2)}ms)` : ''}
+            <span className={`diag-summary ${stats.loss < 100 ? 'diag-success' : 'diag-fail'}`}>
+              {stats.loss < 100 ? '✅ 成功' : '❌ 失败'}
+              {` (min ${stats.min.toFixed(2)} / avg ${stats.avg.toFixed(2)} / max ${stats.max.toFixed(2)} ms, loss ${stats.loss.toFixed(0)}%)`}
             </span>
           )}
         </div>
@@ -253,22 +254,20 @@ export default function DiagnosticPing(props: Props) {
       {stats && (
         <div className="diag-stats">
           <div className="diag-stat">
-            <span className="diag-stat-label">发送</span>
-            <span className="diag-stat-value">{stats.sent}</span>
+            <span className="diag-stat-label">最小</span>
+            <span className="diag-stat-value">{stats.min.toFixed(2)}ms</span>
           </div>
           <div className="diag-stat">
-            <span className="diag-stat-label">接收</span>
-            <span className="diag-stat-value">{stats.received}</span>
+            <span className="diag-stat-label">平均</span>
+            <span className="diag-stat-value">{stats.avg.toFixed(2)}ms</span>
           </div>
           <div className="diag-stat">
-            <span className="diag-stat-label">丢失</span>
-            <span className="diag-stat-value">{stats.lost}</span>
+            <span className="diag-stat-label">最大</span>
+            <span className="diag-stat-value">{stats.max.toFixed(2)}ms</span>
           </div>
           <div className="diag-stat">
             <span className="diag-stat-label">丢包率</span>
-            <span className="diag-stat-value">
-              {stats.sent > 0 ? `${Math.round((stats.lost / stats.sent) * 100)}%` : '-'}
-            </span>
+            <span className="diag-stat-value">{stats.loss.toFixed(0)}%</span>
           </div>
         </div>
       )}

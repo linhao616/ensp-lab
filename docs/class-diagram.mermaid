@@ -1,0 +1,65 @@
+%% protoSim per-topology 重构 — 类/接口关系（方案 A）
+%% 仅展示与本次重构相关的类型与关系。
+
+classDiagram
+    direction LR
+
+    class Topology {
+        <<package: ensp-lab/internal/topology>>
+        +GetDevice(id string) (*Device, bool)
+        +GetDevices() map~string,*Device~
+        +GetLinks() []*Link
+    }
+
+    class ProtocolSimulator {
+        <<package: ensp-lab/internal/protocol>>
+        -topology *topology.Topology
+        -routers map~string~*RouterState
+        -mu sync.RWMutex
+        +NewProtocolSimulator(t *topology.Topology) *ProtocolSimulator
+        +InitRouter(deviceID string) *RouterState
+        +RemoveRouter(deviceID string)
+        +FindRoute(deviceID, destIP string) *RouteEntry
+        +CheckReachability(srcDevice, dstDevice, srcIP, dstIP string, topo *topology.Topology) bool
+        -getRouter(deviceID string) (*RouterState, bool)
+    }
+
+    class RouterState {
+        <<package: ensp-lab/internal/protocol>>
+        +DeviceID string
+        +RoutingTable []RouteEntry
+        +OSPF *OSPFState
+        +BGP *BGPConfig
+        +ICMP *ICMPProtocol
+        +...(其余协议状态)
+    }
+
+    class RouteEntry {
+        +Destination string
+        +Mask string
+        +NextHop string
+        +Interface string
+        +Protocol string
+        +Metric int
+    }
+
+    class Router {
+        <<package: ensp-lab/internal/api>>
+        -store storage.Storage
+        -protoSim *protocol.ProtocolSimulator
+        -engines map~string~sim.Engine
+        +NewRouter(store, staticFS, cfg) *gin.Engine
+        +getTopology(c)
+        +updateTopology(c)
+        +deleteTopology(c)
+        +exportTopology(c)
+    }
+
+    RouterState *-- RouteEntry : 含多条
+    ProtocolSimulator "1" o-- "0..*" RouterState : routers[deviceID]
+    ProtocolSimulator ..> Topology : CheckReachability 入参(方案A: 调用方传入)
+    Router --> ProtocolSimulator : 持有单例(protoSim 字段)
+    Router --> Topology : 经 store.GetTopology 获取
+
+    note for ProtocolSimulator "方案 A 关键变更：\nCheckReachability 新增 topo *topology.Topology 入参，\n不再读取内部 p.topology 字段（避免多拓扑下惰性失效）。\nFindRoute 保持按 deviceID 查 routers 表，不需 topo。"
+    note for Router "protoSim 仍为全局单例（*ProtocolSimulator），\nNewProtocolSimulator(nil) 调用约定不变，\nNewRouter(store, staticFS, cfg) 签名不变。"

@@ -10,6 +10,7 @@ TEST_TIMEOUT  ?= 120s
 TEST_PARALLEL ?= 4
 DOCKER_IMAGE  ?= ensp-lab
 DOCKER_TAG    ?= latest
+PORT          ?= 8080
 
 .PHONY: all
 all: build
@@ -65,7 +66,7 @@ docker-build:
 
 .PHONY: docker-run
 docker-run:
-	docker run --rm -p 8080:8080 $(DOCKER_IMAGE):$(DOCKER_TAG)
+	docker run --rm -p $(PORT):$(PORT) -e ENS_PORT=$(PORT) $(DOCKER_IMAGE):$(DOCKER_TAG)
 
 .PHONY: docker-test
 docker-test:

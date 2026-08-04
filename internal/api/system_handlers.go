@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ensp-lab/internal/metrics"
+	"ensp-lab/internal/sim"
 
 	"github.com/gin-gonic/gin"
 )
@@ -66,6 +67,30 @@ func (r *Router) version(c *gin.Context) {
 // 响应中的 diagnosis 字段会直接给出最可能的尖峰成因（R1–R5）。
 func (r *Router) metrics(c *gin.Context) {
 	c.JSON(http.StatusOK, metrics.Default.Snapshot())
+}
+
+// systemStatus 返回后端全局状态，含引擎能力级别（full/lite）。
+//
+//	GET /api/system/status
+//
+// engine_mode 由 build tag 决定：启用 gont 的 Linux 构建为 "full"（真实协议栈），
+// 其余（含 Windows 的 ns-x 仿真子集）为 "lite"。前端据此展示"真实引擎/仿真子集"
+// 标签，并据实在 lite 模式下提示"部分结果基于拓扑模拟"。
+func (r *Router) systemStatus(c *gin.Context) {
+	r.engMu.Lock()
+	engineCount := len(r.engines)
+	r.engMu.Unlock()
+
+	s := metrics.Default.Snapshot()
+	c.JSON(http.StatusOK, gin.H{
+		"engine_mode":    sim.EngineModeName(),
+		"platform":       runtime.GOOS,
+		"engine_count":   engineCount,
+		"goroutines":     s.Goroutines,
+		"cpu_percent":    round1(s.CPUPercent),
+		"heap_alloc_mb":  round1(s.HeapAllocMB),
+		"timestamp":      time.Now().Format(time.RFC3339),
+	})
 }
 
 func round1(v float64) float64 {

@@ -1,61 +1,69 @@
-// DiagnosticDNS - 网络诊断工具集 · DNS 查询 Tab
-// 输入域名，模拟 DNS 解析返回 IP；可选择指定 DNS 服务器。
+// DiagnosticDNS - 网络诊断工具集 · DNS 查询 Tab（P1-D 真实化）
+// 调用后端统一诊断网关 api.diagnosticDNS 执行系统 DNS 解析；解析失败如实显示
+// 错误信息，不再使用 dnsResolve 的硬编码 DNS_MAP / 哈希回退编造 IP。
 import { useState } from 'react';
 import { type Device } from '../types';
-import { dnsResolve } from './diagnosticUtils';
+import { api } from '../api';
 
 interface Props {
   devices: Record<string, Device>;
+  topologyId: string | null;
+  srcDevice: string;
+  engineMode?: 'full' | 'lite';
 }
 
-const DEFAULT_SERVERS = ['8.8.8.8', '114.114.114.114', '223.5.5.5'];
-
 export default function DiagnosticDNS(props: Props) {
-  const { devices } = props;
+  const { topologyId, srcDevice, engineMode } = props;
   const [domain, setDomain] = useState<string>('www.example.com');
-  const [server, setServer] = useState<string>('8.8.8.8');
   const [running, setRunning] = useState<boolean>(false);
-  const [output, setOutput] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [ip, setIp] = useState<string | null>(null);
 
-  // 收集拓扑中设备声明的 DNS 作为可选服务器
-  const deviceDnsList = Array.from(
-    new Set(
-      Object.values(devices)
-        .flatMap((d) => Object.values(d.interfaces || {}).map((i) => (i ? i.dns : '')))
-        .filter((s) => !!s && s !== '0.0.0.0'),
-    ),
-  );
-  const serverOptions = Array.from(new Set([...deviceDnsList, ...DEFAULT_SERVERS]));
-
-  const resolve = () => {
+  const resolve = async () => {
     const d = (domain || '').trim();
     if (!d) {
-      setOutput(['错误：请输入域名，例如 www.example.com']);
+      setError('错误：请输入域名，例如 www.example.com');
+      return;
+    }
+    if (!topologyId) {
+      setError('错误：当前拓扑未加载，无法解析。');
+      return;
+    }
+    if (!srcDevice) {
+      setError('错误：请先在拓扑中选择源设备（用于开机校验）。');
       return;
     }
     setRunning(true);
-    setOutput([]);
-    setTimeout(() => {
-      const { ip } = dnsResolve(d);
-      const lines: string[] = [];
-      lines.push(`服务器:  UnKnown`);
-      lines.push(`Address:  ${server}`);
-      lines.push('');
-      if (ip) {
-        lines.push(`非权威应答:`);
-        lines.push(`名称:    ${d}`);
-        lines.push(`Addresses:  ${ip}`);
-        lines.push('');
-        lines.push(`解析成功：${d} → ${ip}`);
+    setError(null);
+    setIp(null);
+    try {
+      const data = await api.diagnosticDNS(topologyId, srcDevice, d);
+      if (data && data.ip) {
+        setIp(data.ip);
+      } else if (data && data.error) {
+        setError(`❌ DNS 解析失败：${data.error}`);
       } else {
-        lines.push(`*** 无法找到 ${d} 的地址：$ Non-existent domain`);
-        lines.push(''); 
-        lines.push(`解析失败：${d} 不存在 (NXDOMAIN)`);
+        setError('❌ DNS 解析失败');
       }
-      setOutput(lines);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 后端在 sandbox 无网时返回含"DNS 解析失败"的 404，前端如实展示。
+      setError(`❌ ${msg}`);
+    } finally {
       setRunning(false);
-    }, 300);
+    }
   };
+
+  const lines: string[] = [];
+  if (ip) {
+    lines.push(`服务器:  系统 DNS`);
+    lines.push('');
+    lines.push(`非权威应答:`);
+    lines.push(`名称:    ${domain}`);
+    lines.push(`Addresses:  ${ip}`);
+    lines.push('');
+    lines.push(`解析成功：${domain} → ${ip}`);
+  }
 
   return (
     <div className="diag-dns">
@@ -71,21 +79,6 @@ export default function DiagnosticDNS(props: Props) {
             disabled={running}
           />
         </div>
-        <div className="diag-row">
-          <label className="diag-label">DNS 服务器</label>
-          <select
-            className="diag-select"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-            disabled={running}
-          >
-            {serverOptions.map((s) => (
-              <option key={`dns-${s}`} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
         <div className="diag-actions">
           <button type="button" className="diag-btn diag-btn-start" onClick={resolve} disabled={running}>
             {running ? '解析中…' : '▶ 解析'}
@@ -98,16 +91,25 @@ export default function DiagnosticDNS(props: Props) {
           <span>DNS 解析结果</span>
         </div>
         <div className="diag-output-body diag-mono">
-          {output.length === 0 ? (
-            <div className="diag-output-empty">输入域名后点击「解析」</div>
-          ) : (
-            output.map((line, idx) => (
+          {running ? (
+            <div className="diag-line">⏳ 解析中...</div>
+          ) : error ? (
+            <div className="diag-line">{error}</div>
+          ) : ip ? (
+            lines.map((line, idx) => (
               <div key={`dns-${idx}`} className="diag-line">
                 {line || ' '}
               </div>
             ))
+          ) : (
+            <div className="diag-output-empty">输入域名后点击「解析」</div>
           )}
         </div>
+        {engineMode === 'lite' && (
+          <div className="diag-engine-note">
+            部分诊断结果基于拓扑模拟（非真实协议栈）
+          </div>
+        )}
       </div>
     </div>
   );

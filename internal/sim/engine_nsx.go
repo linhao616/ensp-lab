@@ -1026,6 +1026,11 @@ func (e *nsxEngine) SendPacket(pkt *Packet, fromDeviceID, _ string) {
 }
 
 // Ping initiates an ICMP echo from srcDeviceID to dstIP.
+//
+// P0-B 改造：每调用探测 count=4 个 echo 包（每次独立 pktID、独立短超时），
+// 用 wall-clock 往返耗时作为真实 RTT 样本，汇总成含 min/avg/max 的统计。
+// 引擎网络为同步转发，单次 ping 的真实耗时即真实网络延迟的上界，比前端
+// 此前硬编码的随机 RTT 更可信。RTTMs 长度等于 Received。
 func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 	select {
 	case e.pingSemaphore <- struct{}{}:
@@ -1062,12 +1067,38 @@ func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 	if dst == nil {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidDestination, dstIP)
 	}
+
+	const count = 4
+	const perTimeout = 3 * time.Second
+	res := &PingResult{Sent: count, Received: 0, Lost: 0, RTTMs: make([]float64, 0, count)}
+	for i := 0; i < count; i++ {
+		rtt, got := e.pingOnce(srcDeviceID, srcIface, srcIP, dst, perTimeout)
+		if got {
+			res.Received++
+			res.RTTMs = append(res.RTTMs, rtt)
+			res.Details = append(res.Details,
+				fmt.Sprintf("64 bytes from %s: icmp_seq=%d ttl=64 time=%.2f ms", dstIP, i+1, rtt))
+			metrics.IncrPing(false)
+		} else {
+			res.Lost++
+			res.Details = append(res.Details,
+				fmt.Sprintf("Request timeout for icmp_seq %d", i+1))
+			metrics.IncrPing(true)
+		}
+	}
+	return res, nil
+}
+
+// pingOnce 发送单个 echo 请求并等待回显或超时，返回 (RTT毫秒, 是否收到)。
+// 与原有单包机制一致：使用独立 pktID 注册到 pingResults，makeReact 收到
+// EchoReply 时通过通道回传。wall-clock 耗时作为 RTT 样本。
+func (e *nsxEngine) pingOnce(srcDeviceID, srcIface string, srcIP, dst net.IP, timeout time.Duration) (float64, bool) {
 	payload := make([]byte, 8)
 	payload[0] = ICMPTypeEchoRequest
 	pktID := fmt.Sprintf("pkt-%d", time.Now().UnixNano())
 	pkt := &Packet{
 		ID:        pktID,
-		SrcMAC:    GenerateMAC(dev.ID),
+		SrcMAC:    GenerateMAC(srcDeviceID),
 		DstMAC:    []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 		SrcIP:     srcIP,
 		DstIP:     dst,
@@ -1090,21 +1121,159 @@ func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 		e.mu.Unlock()
 	}()
 
+	start := time.Now()
 	e.SendPacket(pkt, srcDeviceID, srcIface)
 
 	select {
-	case result := <-resultCh:
-		metrics.IncrPing(false)
-		return result, nil
-	case <-time.After(3 * time.Second):
-		metrics.IncrPing(true)
-		return &PingResult{
-			Sent:     1,
-			Received: 0,
-			Lost:     1,
-			Details:  []string{"Ping timeout"},
-		}, nil
+	case <-resultCh:
+		return time.Since(start).Seconds() * 1000, true
+	case <-time.After(timeout):
+		return 0, false
 	}
+}
+
+// Traceroute 在真实拓扑图上做路径发现，替代前端/parser 的硬编码跳数。
+//
+// 算法：目标 IP -> 目标设备，BFS 最短路（含 VXLAN 链路以保证 overlay
+// 跨子网可达），逐跳输出设备与链路延迟；maxTTL 限制最大跳数。ping 自身
+// 接口时直接返回 1 跳。不可达（目标不在拓扑/不连通）时返回空 Hops、
+// Reached=false，由 CLI 渲染为 "* * *"，不再伪造 2 跳。
+func (e *nsxEngine) Traceroute(srcDeviceID, dstIP string, maxTTL int) (*TracerouteResult, error) {
+	if maxTTL <= 0 {
+		maxTTL = 30
+	}
+	if _, ok := e.snap().topo.Devices[srcDeviceID]; !ok {
+		return nil, fmt.Errorf("%w: %s", ErrDeviceNotFound, srcDeviceID)
+	}
+	dst := net.ParseIP(dstIP)
+	if dst == nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidDestination, dstIP)
+	}
+
+	// ping 自身接口：直接返回 1 跳到自身。
+	if dev, ok := e.snap().topo.Devices[srcDeviceID]; ok {
+		for _, iface := range dev.Interfaces {
+			if iface.IPAddress == dstIP {
+				return &TracerouteResult{
+					TargetIP: dstIP,
+					MaxTTL:   maxTTL,
+					Hops:     []TracerouteHop{{Hop: 1, DeviceID: srcDeviceID, IP: dstIP, DelayMs: 0}},
+					Reached:  true,
+				}, nil
+			}
+		}
+	}
+
+	res := &TracerouteResult{TargetIP: dstIP, MaxTTL: maxTTL, Hops: []TracerouteHop{}, Reached: false}
+	dstDeviceID, _ := e.findDeviceByIP(dst)
+	if dstDeviceID == "" {
+		return res, nil
+	}
+	path, delays, connected := e.tracePath(srcDeviceID, dstDeviceID)
+	if !connected {
+		return res, nil
+	}
+	for i := range path {
+		if i+1 > maxTTL {
+			break
+		}
+		hop := TracerouteHop{
+			Hop:      i + 1,
+			DeviceID: path[i],
+			IP:       e.devicePrimaryIP(path[i]),
+			DelayMs:  float64(delays[i]),
+		}
+		res.Hops = append(res.Hops, hop)
+		if path[i] == dstDeviceID {
+			res.Reached = true
+			break
+		}
+	}
+	return res, nil
+}
+
+// tracePath 在拓扑图上做 BFS 最短路发现（含 VXLAN 链路以保证 overlay
+// 跨子网可达），返回从 src 到 dstDevice 的设备序列（不含 src，含 dstDevice）
+// 以及到达每一跳的链路延迟（delays[i] 对应 path[i]，path[0] 的延迟为 0）。
+// 不连通时返回 (nil, nil, false)。
+func (e *nsxEngine) tracePath(src, dstDevice string) (path []string, delays []int, ok bool) {
+	g := e.snap()
+	adj := make(map[string]map[string]int) // a -> b -> delay
+	for _, l := range g.topo.Links {
+		d := l.Delay
+		if _, exists := adj[l.SourceDevice]; !exists {
+			adj[l.SourceDevice] = make(map[string]int)
+		}
+		if _, exists := adj[l.TargetDevice]; !exists {
+			adj[l.TargetDevice] = make(map[string]int)
+		}
+		adj[l.SourceDevice][l.TargetDevice] = d
+		adj[l.TargetDevice][l.SourceDevice] = d
+	}
+	if src == dstDevice {
+		return []string{}, []int{0}, true
+	}
+	prev := make(map[string]string)
+	visited := map[string]bool{src: true}
+	q := []string{src}
+	found := false
+	for len(q) > 0 {
+		cur := q[0]
+		q = q[1:]
+		for nb := range adj[cur] {
+			if visited[nb] {
+				continue
+			}
+			visited[nb] = true
+			prev[nb] = cur
+			if nb == dstDevice {
+				found = true
+				break
+			}
+			q = append(q, nb)
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return nil, nil, false
+	}
+	// 回溯路径
+	rev := []string{}
+	for cur := dstDevice; cur != src; cur = prev[cur] {
+		rev = append([]string{cur}, rev...)
+	}
+	path = rev
+	delays = make([]int, len(path))
+	for i := range path {
+		if i == 0 {
+			delays[i] = 0
+			continue
+		}
+		delays[i] = adj[path[i-1]][path[i]]
+	}
+	return path, delays, true
+}
+
+// devicePrimaryIP 返回设备的首选 IP（优先 up 且有 IP 的接口，否则任意有 IP 接口）。
+func (e *nsxEngine) devicePrimaryIP(devID string) string {
+	g := e.snap()
+	dev, ok := g.topo.Devices[devID]
+	if !ok {
+		return ""
+	}
+	for _, iface := range dev.Interfaces {
+		if iface.Status == "up" && iface.IPAddress != "" {
+			return iface.IPAddress
+		}
+	}
+	for _, iface := range dev.Interfaces {
+		if iface.IPAddress != "" {
+			return iface.IPAddress
+		}
+	}
+	return ""
 }
 
 // AddPacketListener registers a listener invoked on every PacketEvent.

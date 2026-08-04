@@ -45,6 +45,38 @@ export interface PingResult {
   details: string[];
 }
 
+// 统一诊断网关（P1-D）的结构化响应类型：前端只渲染，不解析 CLI / 造假。
+export interface DiagnosticPingResult {
+  success: boolean;
+  output: string;
+  rtt: { min: number; avg: number; max: number; loss: number };
+}
+
+export interface DiagnosticTracerouteHop {
+  hop: number;
+  ip: string;
+  device: string;
+  rtt: number;
+}
+
+export interface DiagnosticTracerouteResult {
+  reachable: boolean;
+  hops: DiagnosticTracerouteHop[];
+}
+
+export interface DiagnosticDNSResult {
+  ip?: string;
+  ips?: string[];
+  error?: string;
+}
+
+export interface SystemStatus {
+  engine_mode: 'full' | 'lite';
+  platform: string;
+  engine_count: number;
+  [key: string]: unknown;
+}
+
 export const api = {
   listTopologies: () => request<Topology[]>('GET', '/api/topologies'),
   getTopology: (id: string) => request<Topology>('GET', `/api/topologies/${encodeURIComponent(id)}`),
@@ -105,4 +137,13 @@ export const api = {
     request<{ id: string; name: string; device_count: number; link_count: number; created_at: string }>('POST', '/api/topology', data),
   pingTopology: (id: string, src: string, dst: string, count = 4) =>
     request<PingResult>('GET', `/api/topology/${encodeURIComponent(id)}/ping?src=${encodeURIComponent(src)}&dst=${encodeURIComponent(dst)}&count=${count}`),
+
+  // 统一诊断网关（P1-D）：结构化返回真实引擎/系统结果，前端只渲染不解析/造假。
+  diagnosticPing: (topologyId: string, src: string, dst: string, count = 4) =>
+    request<DiagnosticPingResult>('POST', `/api/diagnostic/${encodeURIComponent(topologyId)}/ping`, { src, dst, count }),
+  diagnosticTraceroute: (topologyId: string, src: string, dst: string) =>
+    request<DiagnosticTracerouteResult>('POST', `/api/diagnostic/${encodeURIComponent(topologyId)}/traceroute`, { src, dst }),
+  diagnosticDNS: (topologyId: string, src: string, domain: string) =>
+    request<DiagnosticDNSResult>('POST', `/api/diagnostic/${encodeURIComponent(topologyId)}/dns`, { src, domain }),
+  systemStatus: () => request<SystemStatus>('GET', '/api/system/status'),
 };

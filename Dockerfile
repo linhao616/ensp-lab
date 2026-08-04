@@ -9,6 +9,9 @@
 # Usage:
 #   docker build -t ensp-lab .
 #   docker run --rm -p 8080:8080 ensp-lab
+#   # 使用非默认端口（如 9090）：
+#   docker build --build-arg ENS_PORT=9090 -t ensp-lab .
+#   docker run --rm -p 9090:9090 -e ENS_PORT=9090 ensp-lab
 # ==========================================================
 
 # ---- Frontend build ----
@@ -32,8 +35,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o ensp-lab ./cmd/server
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
 ENV TZ=Asia/Shanghai
+ARG ENS_PORT=8080
+ENV ENS_PORT=${ENS_PORT}
 COPY --from=go-builder /app/ensp-lab /usr/local/bin/
-EXPOSE 8080
+EXPOSE ${ENS_PORT}
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:8080/health || exit 1
-ENTRYPOINT ["ensp-lab"]
+  CMD wget -qO- http://localhost:${ENS_PORT}/health || exit 1
+ENTRYPOINT ["sh", "-c", "ensp-lab -port ${ENS_PORT}"]

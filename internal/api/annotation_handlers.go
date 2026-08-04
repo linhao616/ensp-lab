@@ -43,6 +43,9 @@ func (r *Router) addAnnotation(c *gin.Context) {
 		return
 	}
 	anno.CreatedAt = time.Now()
+	// 安全/并发：先深拷贝再追加，避免直接改写 store 中存活的共享 *Topology
+	// （被并发读 / 仿真引擎快照共享），造成数据竞争。
+	t = t.Clone()
 	t.Annotations = append(t.Annotations, &anno)
 	r.store.UpdateTopology(t)
 	c.JSON(http.StatusCreated, anno)
@@ -56,6 +59,8 @@ func (r *Router) updateAnnotation(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
+	// 安全/并发：先深拷贝，再在副本上定位并修改标注，避免直接改写共享对象。
+	t = t.Clone()
 	var found *topology.TextAnnotation
 	for _, anno := range t.Annotations {
 		if anno.ID == annotationId {
@@ -131,6 +136,8 @@ func (r *Router) deleteAnnotation(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
+	// 安全/并发：先深拷贝再重建标注切片，避免直接改写共享对象。
+	t = t.Clone()
 	var filtered []*topology.TextAnnotation
 	for _, anno := range t.Annotations {
 		if anno.ID != annotationId {

@@ -2644,3 +2644,80 @@ body.resizing-nwse {
 body.resizing-nwse * {
   cursor: nwse-resize !important;
 }
+
+/* ===== P1-D 统一诊断网关：引擎模式标签 & 真实路径表格 ===== */
+
+.diag-engine-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 14px;
+  background: #eef1f5;
+  border-bottom: 1px solid #e0e4e8;
+  flex-shrink: 0;
+}
+
+.diag-engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.diag-engine-full {
+  background: #e3f2fd;
+  color: #0b66c3;
+  border: 1px solid #b6dcfb;
+}
+
+.diag-engine-lite {
+  background: #fff4e0;
+  color: #b9770e;
+  border: 1px solid #ffe0a3;
+}
+
+.diag-engine-hint {
+  font-size: 11px;
+  color: #8a6d3b;
+}
+
+.diag-engine-note {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: #8a6d3b;
+  background: #fff8ec;
+  border-top: 1px solid #f3e3c3;
+  flex-shrink: 0;
+}
+
+.diag-hop-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.diag-hop-table th,
+.diag-hop-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e3e6ea;
+  white-space: nowrap;
+}
+
+.diag-hop-table th {
+  background: #eef1f5;
+  color: #495057;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.diag-hop-table tbody tr:hover {
+  background: #f1f5f9;
+}

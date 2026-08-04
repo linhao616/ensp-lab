@@ -145,6 +145,14 @@ func (r *Router) setIPConfig(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
 		return
 	}
+	// 安全/并发：先深拷贝，再在副本设备上写 ConfigData/接口，避免直接改写
+	// store 中存活的共享 *Device（被并发读 / 仿真引擎快照共享），造成数据竞争。
+	t = t.Clone()
+	device, exists = t.GetDevice(deviceId)
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "device not found"})
+		return
+	}
 	dt := device.Type
 
 	var req SetIPConfigRequest
@@ -248,7 +256,7 @@ func (r *Router) setIPConfig(c *gin.Context) {
 	device.ConfigData = state.SerializeToDeviceConfigData()
 	updateDeviceInterfaces(device, state)
 	if err := r.store.UpdateTopology(t); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 

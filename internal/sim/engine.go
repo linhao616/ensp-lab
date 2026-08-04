@@ -31,6 +31,11 @@ type Engine interface {
 	// Ping initiates an ICMP echo from srcDeviceID to dstIP and
 	// returns the aggregated result.
 	Ping(srcDeviceID, dstIP string) (*PingResult, error)
+	// Traceroute performs a hop-by-hop path discovery from srcDeviceID
+	// to dstIP by increasing the TTL of probe packets, returning the
+	// ordered list of devices traversed. Unreachable hops yield a
+	// synthetic "timeout" entry rather than aborting the whole trace.
+	Traceroute(srcDeviceID, dstIP string, maxTTL int) (*TracerouteResult, error)
 	// AddPacketListener registers a listener invoked on every
 	// PacketEvent produced by the engine.
 	AddPacketListener(listener PacketListener)

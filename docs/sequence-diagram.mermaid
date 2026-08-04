@@ -1,0 +1,29 @@
+%% protoSim CheckReachability 调用时序：重构前 vs 重构后（方案 A）
+
+sequenceDiagram
+    autonumber
+    participant Caller as 调用方(未来 handler / 测试)
+    participant PS as ProtocolSimulator
+    participant Store as storage.Storage
+    participant Topo as topology.Topology
+
+    rect rgb(250,235,235)
+    note over Caller,Topo: 重构前（当前代码，存在设计错配）
+    Caller->>PS: NewProtocolSimulator(nil)  // Router 全局单例
+    Note over PS: 内部 topology 字段 = nil
+    Caller->>PS: CheckReachability(src, dst, srcIP, dstIP)
+    PS->>PS: if p.topology == nil return false
+    Note over PS: 多拓扑下恒返回 false，惰性失效\n（且当前仅 protocol_test 调用，生产未接线）
+    PS-->>Caller: false
+    end
+
+    rect rgb(232,245,233)
+    note over Caller,Topo: 重构后（方案 A：拓扑由调用方传入）
+    Caller->>Store: GetTopology(topoID)  // 调用方本就持有拓扑
+    Store-->>Caller: topo *Topology
+    Caller->>PS: CheckReachability(src, dst, srcIP, dstIP, topo)
+    PS->>Topo: GetDevice(src) / GetDevice(dst)
+    PS->>Topo: GetLinks()  // 基于真实拓扑做无向 BFS
+    Note over PS: 以传入 topo 为准，多拓扑互不影响
+    PS-->>Caller: bool (真实可达性)
+    end

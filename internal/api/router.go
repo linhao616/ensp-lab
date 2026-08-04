@@ -162,7 +162,13 @@ func (r *Router) runSync(topoID string) {
 	}
 }
 
-func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
+// ServerConfig 承载运行期安全相关配置，供 NewRouter 构造 CORS 白名单使用。
+type ServerConfig struct {
+	BindAddr string // 监听绑定地址，如 127.0.0.1 / 0.0.0.0
+	Port     string // 监听端口
+}
+
+func NewRouter(store storage.Storage, staticFS fs.FS, cfg ServerConfig) *gin.Engine {
 	// 默认使用最小中间件栈：仅 Recovery（防止 panic 拖垮服务）。
 	// gin.Default() 额外挂的 gin.Logger() 会为每个请求写一行 stdout 访问日志，
 	// 属于持续的 I/O 与内存分配开销；在轻量/嵌入式场景下默认关闭，
@@ -173,12 +179,32 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 		r.Use(gin.Logger())
 	}
 
+	// 安全（V-02）：CORS 严格白名单（默认拒绝），仅放行与服务自身同源的
+	// localhost / 127.0.0.1 源，外加运维通过 ENS_CORS_ORIGINS 显式追加的可信源。
+	// 取代原先「反射任意 localhost 源 + 凭据」的宽松策略，避免被本地恶意页面
+	// 以凭据方式跨源调用 API。
+	allowedOrigins := buildAllowedOrigins(cfg.BindAddr, cfg.Port)
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:8080"},
+		AllowOriginFunc: func(origin string) bool {
+			return allowedOrigins[origin]
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type"},
 		AllowCredentials: true,
 	}))
+
+	// 安全（F9）：统一安全响应头（纵深防御）。localhost 单用户场景主要加固前端
+	// HTML 的反点击劫持 / MIME 嗅探 / Referrer 泄露；HSTS 仅在经 TLS 反代时生效。
+	r.Use(securityHeadersMiddleware())
+
+	// 安全（F3）：限制请求体大小为 10 MiB，阻止超大 JSON 载荷导致 OOM（拒绝服务）。
+	r.Use(maxBytesReaderMiddleware(10 << 20))
+
+	// 安全（V-04）：对高成本 / 可被滥用的端点施加每客户端固定窗口限流，
+	// 纯标准库实现，无需额外依赖。限流宽松（本地单用户足够），主要用于
+	// 防资源耗尽 DoS 与诊断网关放大。
+	diagLimiter := newRateLimiter(120, time.Minute)   // 诊断网关：120 次/分/IP
+	metricsLimiter := newRateLimiter(300, time.Minute) // 指标轮询：300 次/分/IP
 
 	router := &Router{
 		store:      store,
@@ -227,13 +253,42 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 
 	r.GET("/health", router.health)
 	r.GET("/version", router.version)
-	r.GET("/api/system/metrics", router.metrics)
+	r.GET("/api/system/metrics", metricsLimiter.middleware(), router.metrics)
+	r.GET("/api/system/status", router.systemStatus)
 
 	// 低资源稳定性测试：当 ENSP_PPROF 环境变量非空时，把标准 net/http/pprof
 	// 端点挂到 gin，便于 `go tool pprof http://localhost:<port>/debug/pprof/...`
 	// 采集 heap/goroutine 等 profile（默认关闭，不影响生产环境）。
+	//
+	// 安全（F10）：pprof 会暴露 goroutine/heap 等运行时信息，必须加 token 守卫，
+	// 且仅应在 127.0.0.1 绑定时启用（见 README）。token 取自 ENSP_PPROF_TOKEN，
+	// 若为空则自动生成并经日志输出（仅本地调试可见，绝不回显到响应）。
 	if os.Getenv("ENSP_PPROF") != "" {
-		r.Any("/debug/pprof/*pprof", gin.WrapF(http.DefaultServeMux.ServeHTTP))
+		pprofToken := os.Getenv("ENSP_PPROF_TOKEN")
+		if pprofToken == "" {
+			buf := make([]byte, 16)
+			if _, rerr := rand.Read(buf); rerr == nil {
+				pprofToken = hex.EncodeToString(buf)
+			} else {
+				pprofToken = fmt.Sprintf("%d", time.Now().UnixNano())
+			}
+			logging.Warn("pprof enabled without ENSP_PPROF_TOKEN; auto-generated token (use ?token= or X-Pprof-Token header)",
+				zap.String("token", pprofToken))
+		}
+		// pprofGuard 校验请求 ?token= 查询参数或 X-Pprof-Token 头，与 token 不符返回 403。
+		pprofGuard := func(c *gin.Context) {
+			provided := c.Query("token")
+			if provided == "" {
+				provided = c.GetHeader("X-Pprof-Token")
+			}
+			if provided != pprofToken {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+				return
+			}
+			c.Next()
+		}
+		pprofGroup := r.Group("/debug/pprof", pprofGuard)
+		pprofGroup.Any("/*pprof", gin.WrapF(http.DefaultServeMux.ServeHTTP))
 	}
 
 	r.POST("/api/topology", router.createTopologySimple)
@@ -250,6 +305,12 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 
 	r.GET("/api/topology/:id/ping", router.pingTopology)
 	r.GET("/api/topology/:id/vxlan-status", router.vxlanStatus)
+
+	// 统一诊断网关（P1-D）：结构化返回真实引擎/系统结果，前端只渲染不解析/造假。
+	// 诊断端点叠加限流（V-04），防止被用作网络侦察/DoS 放大跳板。
+	r.POST("/api/diagnostic/:id/ping", diagLimiter.middleware(), router.diagnosticPing)
+	r.POST("/api/diagnostic/:id/traceroute", diagLimiter.middleware(), router.diagnosticTraceroute)
+	r.POST("/api/diagnostic/:id/dns", diagLimiter.middleware(), router.diagnosticDNS)
 
 	if staticFS != nil {
 		distFS, err := fs.Sub(staticFS, "frontend/dist")
@@ -284,6 +345,130 @@ func NewRouter(store storage.Storage, staticFS fs.FS) *gin.Engine {
 	}
 
 	return r
+}
+
+// ----- 安全辅助：CORS 白名单 / 限流 / 诊断外部目标开关（V-02 / V-04 / V-03） -----
+
+// buildAllowedOrigins 构造 CORS 允许的源白名单（默认拒绝）。
+//
+// 默认仅放行与服务自身同源的 localhost / 127.0.0.1 源（http 与 https），
+// 外加运维通过 ENS_CORS_ORIGINS 显式追加的可信源（逗号分隔）。当绑定地址
+// 为通配 0.0.0.0 / :: 时，不把通配地址当作源（无法构成三角形源），此时若需
+// 从其他机器浏览器跨源访问，必须显式追加对应 ENS_CORS_ORIGINS。
+func buildAllowedOrigins(bind, port string) map[string]bool {
+	set := make(map[string]bool)
+	hosts := []string{"127.0.0.1", "localhost"}
+	if bind != "" && bind != "0.0.0.0" && bind != "::" && bind != "[::]" {
+		hosts = append(hosts, bind) // 特定绑定 IP 也允许（如内网 IP）
+	}
+	for _, h := range hosts {
+		for _, scheme := range []string{"http", "https"} {
+			set[scheme+"://"+h+":"+port] = true
+		}
+	}
+	// 外部扩展：允许运维显式追加可信源（如局域网 IP、前端 dev server）。
+	if extra := os.Getenv("ENS_CORS_ORIGINS"); extra != "" {
+		for _, o := range strings.Split(extra, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				set[o] = true
+			}
+		}
+	}
+	return set
+}
+
+// clientWindow 是固定窗口限流的单客户端计数。
+type clientWindow struct {
+	count   int
+	resetAt time.Time
+}
+
+// rateLimiter 是纯标准库实现的「固定窗口」每客户端限流器（无外部依赖）。
+// 用于在不引入 golang.org/x/time 的前提下，对高成本端点做基础防滥用。
+type rateLimiter struct {
+	mu      sync.Mutex
+	windows map[string]*clientWindow
+	limit   int
+	window  time.Duration
+}
+
+// securityHeadersMiddleware 为所有响应统一附加安全响应头（纵深防御）。
+// 不依赖 TLS 的头部（nosniff / X-Frame-Options / Referrer-Policy / CSP）始终生效；
+// HSTS 仅在请求为 HTTPS 时下发，避免纯 HTTP 本地访问场景下无效声明。
+func securityHeadersMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		// 前端为本地单页应用：CSP 限制为同源脚本/样式，禁止内联脚本与外部连接。
+		c.Header("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		if c.Request.TLS != nil {
+			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		c.Next()
+	}
+}
+
+// maxBytesReaderMiddleware 限制请求体不超过 max 字节，超限直接 413。
+// 防止超大 JSON 载荷在 json 解码前即占满内存（拒绝服务）。
+func maxBytesReaderMiddleware(max int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil && c.Request.ContentLength > max {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error": "请求体过大（request entity too large）",
+			})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max)
+		c.Next()
+	}
+}
+
+func newRateLimiter(limit int, w time.Duration) *rateLimiter {
+	return &rateLimiter{
+		windows: make(map[string]*clientWindow),
+		limit:   limit,
+		window:  w,
+	}
+}
+
+// allow 判断 key（通常为客户端 IP）在当前窗口内是否仍允许通过。
+func (rl *rateLimiter) allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	w, ok := rl.windows[key]
+	if !ok || now.After(w.resetAt) {
+		rl.windows[key] = &clientWindow{count: 1, resetAt: now.Add(rl.window)}
+		return true
+	}
+	if w.count >= rl.limit {
+		return false
+	}
+	w.count++
+	return true
+}
+
+// middleware 返回 gin 限流中间件；超限返回 429。
+func (rl *rateLimiter) middleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !rl.allow(c.ClientIP()) {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "请求过于频繁，已被限流（rate limit exceeded）",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// externalDiagnosticsAllowed 报告是否允许对「拓扑外」目标/IP 发起诊断
+// （ping/traceroute 外部地址、DNS 外网解析）。默认禁止，防止服务端被用作
+// 网络侦察或 DoS 放大跳板；仅当显式设置 ENS_DIAG_ALLOW_EXTERNAL=1 时放行
+// （仅应在可信网络下开启）。
+func externalDiagnosticsAllowed() bool {
+	return os.Getenv("ENS_DIAG_ALLOW_EXTERNAL") == "1"
 }
 
 // simulatePacket 请求体：
@@ -444,7 +629,7 @@ func (r *Router) streamSimEvents(c *gin.Context) {
 	}
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		clientError(c, http.StatusNotFound, "resource not found", err)
 		return
 	}
 
@@ -458,8 +643,13 @@ func (r *Router) streamSimEvents(c *gin.Context) {
 	events := eng.Events()
 	flusher, _ := c.Writer.(http.Flusher)
 
-	// 发送初始连接确认事件
-	fmt.Fprintf(c.Writer, "event: connected\ndata: {\"topology\":\"%s\"}\n\n", topoID)
+	// 发送初始连接确认事件。topoID 经 json.Marshal 转义，杜绝任何控制字符 /
+	// 引号破坏 SSE 帧结构（即便上游校验被绕过，这里仍是最后一道防线）。
+	connData, err := json.Marshal(gin.H{"topology": topoID})
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(c.Writer, "event: connected\ndata: %s\n\n", connData)
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -527,7 +717,7 @@ func (r *Router) getQueueDepth(c *gin.Context) {
 	}
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -560,7 +750,7 @@ func (r *Router) streamPCAP(c *gin.Context) {
 
 	eng, err := r.getOrCreateEngine(id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 
@@ -569,7 +759,7 @@ func (r *Router) streamPCAP(c *gin.Context) {
 
 	stop, err := eng.CapturePCAP(ctx, deviceID, ifaceName, pktChan)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 	defer stop()
@@ -629,7 +819,7 @@ func (r *Router) applyOSPFConfig(c *gin.Context) {
 
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 
@@ -639,7 +829,7 @@ func (r *Router) applyOSPFConfig(c *gin.Context) {
 
 	if conf, ok := eng.(ospfConfigurer); ok {
 		if err := conf.ApplyOSPFConfig(deviceID, req.Network, req.Area); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", err)
 			return
 		}
 		c.JSON(http.StatusOK, ApplyOSPFConfigResponse{
@@ -693,7 +883,7 @@ func (r *Router) applyBGPConfig(c *gin.Context) {
 
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 
@@ -710,7 +900,7 @@ func (r *Router) applyBGPConfig(c *gin.Context) {
 			}
 		}
 		if err := conf.ApplyBGPConfig(deviceID, req.LocalAS, neighbors); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", err)
 			return
 		}
 		c.JSON(http.StatusOK, ApplyBGPConfigResponse{
@@ -741,7 +931,7 @@ func (r *Router) getRoutes(c *gin.Context) {
 
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 
@@ -752,7 +942,7 @@ func (r *Router) getRoutes(c *gin.Context) {
 	if getter, ok := eng.(routeGetter); ok {
 		routes, err := getter.GetRoutes(deviceID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", err)
 			return
 		}
 
@@ -779,16 +969,28 @@ func (r *Router) getRoutes(c *gin.Context) {
 // 通过 POST /api/topologies/import 重新导入。含 404/500 错误处理。
 func (r *Router) exportTopology(c *gin.Context) {
 	topoID := c.Param("id")
+	// 安全（F4）：拓扑级 :id 入口统一校验形态，非法（含穿越字符）直接 400，
+	// 不依赖存储层兜底；同时作为 F5 文件名硬化的前置。
+	if err := validateTopoID(topoID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	t, err := r.store.GetTopology(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 	if t == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", topoID+".json"))
+	// 安全（F5）：基于已校验的 topoID 派生安全文件名，仅保留 [A-Za-z0-9_-]，
+	// 避免使用原始/边界 id 产生异常文件名；约定 %q 双重转义换行/引号（纵深防御）。
+	safeName := sanitizeForFilename(topoID)
+	if safeName == "" {
+		safeName = "topology"
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeName+".json"))
 	c.JSON(http.StatusOK, t)
 }
 
@@ -836,12 +1038,21 @@ func (r *Router) pingTopology(c *gin.Context) {
 			return
 		}
 	} else {
+		// 安全（F2 / V-03 收敛）：对拓扑外目标地址复用外部诊断门控，防止本端点被
+		// 用作对任意公网 IP 的服务器侧 ping 侦察/放大跳板（diagnostic* 端点已约束，
+		// pingTopology 此前遗漏，导致 V-03 加固被绕过）。
+		if !externalDiagnosticsAllowed() {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "外部目标诊断已禁用（拓扑外地址）。如需开启请设置环境变量 ENS_DIAG_ALLOW_EXTERNAL=1",
+			})
+			return
+		}
 		dstIP = dst
 	}
 
 	eng, err := r.getOrCreateEngine(topoID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 
@@ -853,7 +1064,7 @@ func (r *Router) pingTopology(c *gin.Context) {
 		result, perr := eng.Ping(src, dstIP)
 		elapsed := time.Since(start).Seconds() * 1000
 		if perr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": perr.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", perr)
 			return
 		}
 		seq := i + 1

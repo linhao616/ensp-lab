@@ -34,7 +34,7 @@ func TestAPIEndToEnd(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	t.Cleanup(func() {
 		runtime.GC()
@@ -109,7 +109,7 @@ func TestAPIConcurrentTopologyOperations(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	t.Cleanup(func() {
 		runtime.GC()
@@ -302,7 +302,7 @@ func TestAPITopologyNotFound(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/topologies/nonexistent", nil)
@@ -326,7 +326,7 @@ func TestAPIInvalidRequests(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/api/topology", bytes.NewReader([]byte(`{invalid json}`)))
@@ -351,7 +351,7 @@ func TestAPISimStatus(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/sim/status", nil)
@@ -378,7 +378,7 @@ func TestCLIConcurrentSameDevice(t *testing.T) {
 
 	store := storage.NewMemoryStorage()
 	var staticFS fs.FS
-	r := NewRouter(store, staticFS)
+	r := NewRouter(store, staticFS, ServerConfig{})
 
 	// 建一个含 router 设备的拓扑（createTopologySimple 接受 nodes/links）。
 	createBody := []byte(`{

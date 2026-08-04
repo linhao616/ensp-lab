@@ -33,6 +33,11 @@ func (r *Router) listTopologies(c *gin.Context) {
 
 func (r *Router) getTopology(c *gin.Context) {
 	id := c.Param("id")
+	// 安全（F4）：拓扑级 :id 入口统一校验形态，非法直接 400。
+	if err := validateTopoID(id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	t, err := r.store.GetTopology(id)
 	if err != nil || t == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
@@ -68,12 +73,20 @@ func (r *Router) createTopology(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// 安全（F1）：禁止覆写已有拓扑（含内置 "default"），防止客户端指定已知 ID
+	// 投毒/覆写他人或内置拓扑。已存在则返回 409，由调用方换 ID 或不指定 ID 自动生成。
+	if existing, _ := r.store.GetTopology(t.ID); existing != nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "拓扑 ID 已存在，请使用其他 ID 或不指定 ID 自动生成",
+		})
+		return
+	}
 	if err := r.store.CreateTopology(&t); err != nil {
 		// 非法 IP 配置 / 非法拓扑 ID 属客户端错误，返回 400；其余归为 500。
 		if errors.Is(err, topology.ErrInvalidIPConfig) || errors.Is(err, storage.ErrInvalidTopoID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", err)
 		}
 		return
 	}
@@ -112,7 +125,7 @@ func (r *Router) updateTopology(c *gin.Context) {
 		if errors.Is(err, topology.ErrInvalidIPConfig) || errors.Is(err, storage.ErrInvalidTopoID) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			clientError(c, http.StatusInternalServerError, "internal server error", err)
 		}
 		return
 	}
@@ -128,6 +141,11 @@ func (r *Router) updateTopology(c *gin.Context) {
 
 func (r *Router) deleteTopology(c *gin.Context) {
 	id := c.Param("id")
+	// 安全（F4）：拓扑级 :id 入口统一校验形态，非法直接 400。
+	if err := validateTopoID(id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	t, err := r.store.GetTopology(id)
 	if err == nil && t != nil {
@@ -204,6 +222,25 @@ func (r *Router) createTopologySimple(c *gin.Context) {
 		}
 		if _, ok := devices[link.TargetDevice]; !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("link references unknown target device %q", link.TargetDevice)})
+			return
+		}
+		// 端口名合法性：非空、长度受限、不含控制字符，避免后续引擎在
+		// 转发/BFS 时取到非法端口导致接口匹配失败或状态异常。
+		if err := validateIdent(link.SourcePort, maxIdentLen); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("link %q: invalid source port: %v", link.SourceDevice, err)})
+			return
+		}
+		if err := validateIdent(link.TargetPort, maxIdentLen); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("link %q: invalid target port: %v", link.TargetDevice, err)})
+			return
+		}
+		// 端口必须真实存在于对应设备，拒绝悬空端口导致引擎取到 nil 接口。
+		if _, ok := devices[link.SourceDevice].Interfaces[link.SourcePort]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("source device %q has no port %q", link.SourceDevice, link.SourcePort)})
+			return
+		}
+		if _, ok := devices[link.TargetDevice].Interfaces[link.TargetPort]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("target device %q has no port %q", link.TargetDevice, link.TargetPort)})
 			return
 		}
 	}
@@ -313,7 +350,7 @@ func (r *Router) createTopologySimple(c *gin.Context) {
 	}
 
 	if err := r.store.CreateTopology(t); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		clientError(c, http.StatusInternalServerError, "internal server error", err)
 		return
 	}
 

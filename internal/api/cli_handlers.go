@@ -13,12 +13,11 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"ensp-lab/internal/cli"
 	"ensp-lab/internal/logging"
+	"ensp-lab/internal/sim"
 	"ensp-lab/internal/topology"
 
 	"github.com/gin-gonic/gin"
@@ -64,37 +63,27 @@ func (r *Router) executeCLI(c *gin.Context) {
 	var output string
 	t, err := r.store.GetTopology(id)
 
-	if err == nil && t != nil && strings.ToLower(cmd.Command) == "ping" && len(cmd.Args) > 0 {
+	// P0-B：ping / tracert / traceroute 走真实仿真引擎（sim.Engine），
+	// 取代此前 parser.go 的硬编码成功/固定 2 跳结果。引擎不可用时
+	//（拓扑未加载、设备缺失等）回退到 parser 原逻辑，保证健壮性。
+	lowerCmd := strings.ToLower(cmd.Command)
+	isPing := lowerCmd == "ping"
+	isTraceroute := lowerCmd == "tracert" || lowerCmd == "traceroute"
+	if err == nil && t != nil && (isPing || isTraceroute) && len(cmd.Args) > 0 {
 		targetIP := cmd.Args[0]
-		count := 4
-		size := 56
-		if len(cmd.Args) >= 2 {
-			if n, err := strconv.Atoi(cmd.Args[1]); err == nil && n > 0 {
-				count = n
+
+		eng, engErr := r.getOrCreateEngine(id)
+		if engErr == nil && eng != nil {
+			if isPing {
+				output = r.renderEnginePing(eng, deviceId, targetIP, t)
+			} else {
+				output = r.renderEngineTraceroute(eng, deviceId, targetIP, t)
 			}
-		}
-
-		// checker 先检查是否为本机接口 IP，再做拓扑可达性检查
-		checker := func(ip string) bool {
-			// 本机接口 IP 直接可达
-			hostIfaces := cli.GetHostInterfaces(state)
-			for _, iface := range hostIfaces {
-				ifaceIP := iface["ip"]
-				if idx := strings.Index(ifaceIP, "/"); idx > 0 {
-					ifaceIP = ifaceIP[:idx]
-				}
-				if ifaceIP == ip {
-					return true
-				}
-			}
-			return cli.CheckReachability(state, ip, t)
-		}
-
-		results := r.protoSim.Ping(deviceId, targetIP, 2*time.Second, count, size, checker)
-
-		if router, ok := r.protoSim.GetRouter(deviceId); ok && router.ICMP != nil {
-			output = router.ICMP.FormatPingResults(results)
 		} else {
+			// 引擎不可用：回退到 parser.go 兜底（恒成功/硬编码 2 跳），
+			// 避免在极端路径下命令无输出。
+			logging.Warn("getOrCreateEngine failed, fallback to parser",
+				zap.String("id", id), zap.String("command", lowerCmd), zap.Error(engErr))
 			output = cli.ExecuteCommandWithContext(state, cmd, dt, t)
 		}
 
@@ -105,24 +94,6 @@ func (r *Router) executeCLI(c *gin.Context) {
 				targetDeviceID = dev.ID
 				break
 			}
-		}
-
-		// 额外触发 sim.Engine 的事件流，用于 SSE 推送。
-		// 返回的 PingResult 不影响 CLI 输出（CLI 输出仍走 protoSim）。
-		// 任何失败仅记录日志，不影响原有逻辑。
-		if eng, engErr := r.getOrCreateEngine(id); engErr == nil {
-			if _, pingErr := eng.Ping(deviceId, targetIP); pingErr != nil {
-				logging.Warn("engine.Ping failed",
-					zap.String("deviceId", deviceId),
-					zap.String("targetIP", targetIP),
-					zap.Error(pingErr),
-				)
-			}
-		} else {
-			logging.Warn("getOrCreateEngine failed",
-				zap.String("id", id),
-				zap.Error(engErr),
-			)
 		}
 
 		// 保存配置到拓扑
@@ -310,4 +281,41 @@ func updateDeviceInterfaces(device *topology.Device, state *cli.CLIState) {
 	if state.HostDNS != "" {
 		iface.DNS = state.HostDNS
 	}
+}
+
+// renderEnginePing 调用真实引擎执行 ping 并渲染结果。
+//
+// 引擎返回真实的逐包 RTT 与丢包统计（nsxEngine 在 P0-B 中改为多次探测采集
+// wall-clock RTT），不可达时如实报告 100% loss。任何引擎层错误都降级为
+// parser 兜底输出，避免命令无结果。
+func (r *Router) renderEnginePing(eng sim.Engine, deviceId, targetIP string, t *topology.Topology) string {
+	res, perr := eng.Ping(deviceId, targetIP)
+	if perr != nil {
+		logging.Warn("engine.Ping failed, fallback to parser",
+			zap.String("deviceId", deviceId),
+			zap.String("targetIP", targetIP),
+			zap.Error(perr))
+		// 借用 parser 的 CLIState 兜底渲染：先构造一个临时状态。
+		state := cli.NewCLIStateWithType(r.lookupDeviceType(t.ID, deviceId))
+		return cli.ExecuteCommandWithContext(state, cli.ParseCommand("ping "+targetIP), state.DeviceType, t)
+	}
+	return cli.FormatEnginePing(res, targetIP)
+}
+
+// renderEngineTraceroute 调用真实引擎执行 tracert 并渲染逐跳结果。
+//
+// 引擎在真实拓扑图上做 BFS 路径发现（含 VXLAN overlay 链路），替代此前
+// parser.go:1139 硬编码的 2 跳。不可达时渲染 "* * *" 而非伪造路径。
+func (r *Router) renderEngineTraceroute(eng sim.Engine, deviceId, targetIP string, t *topology.Topology) string {
+	const maxTTL = 30
+	res, terr := eng.Traceroute(deviceId, targetIP, maxTTL)
+	if terr != nil {
+		logging.Warn("engine.Traceroute failed, fallback to parser",
+			zap.String("deviceId", deviceId),
+			zap.String("targetIP", targetIP),
+			zap.Error(terr))
+		state := cli.NewCLIStateWithType(r.lookupDeviceType(t.ID, deviceId))
+		return cli.ExecuteCommandWithContext(state, cli.ParseCommand("tracert "+targetIP), state.DeviceType, t)
+	}
+	return cli.FormatEngineTraceroute(res, maxTTL)
 }

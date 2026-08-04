@@ -140,6 +140,8 @@ func (r *Router) powerDevice(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Topology not found"})
 		return
 	}
+	// 安全/并发：先深拷贝，再在副本上改设备电源状态，避免直接改写共享对象。
+	t = t.Clone()
 	device, ok := t.GetDevice(deviceId)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})

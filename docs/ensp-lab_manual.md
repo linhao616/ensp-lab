@@ -139,7 +139,7 @@ go run cmd/server/main.go
 
 ### 3.2 访问前端 UI
 
-打开浏览器访问：`http://localhost:8080`
+打开浏览器访问：`http://localhost:8080`（默认端口 8080，可用 `-port` 或 `PORT` 修改，详见第六章）。前端采用相对路径访问 API，故改端口后无需任何前端改动。
 
 ### 3.3 创建第一个拓扑
 
@@ -581,15 +581,57 @@ Save the configuration successfully.
 - 约束逻辑：`frontend/src/types.ts` 的 `isLinkAllowed(srcType, dstType)` + `LINK_TYPE_MODES`（单一数据源，前后端共用角色映射）。
 - 样式：`styles.css` 的 `.lp-*`、`.link-types*`、`.lt-*`、`.panel-resizer`、`.lp-connlist` 等系列类。
 
+### 4.10 诊断网关（真实仿真引擎）
+
+统一诊断网关（`diagnostic_handlers.go`）把「真实仿真引擎 / 系统能力」以结构化 JSON 暴露给前端，前端只负责渲染、不再解析 CLI 文本或编造数据。三个端点共用同一套校验：
+
+- `src` 设备必须**已开机**，否则返回 `400`（信息含「未开机」供前端识别）；
+- `dst` 可为**设备 ID 或 IP 字面量**，非法地址返回 `400`；
+- DNS 解析失败时如实返回 `404` + 原始错误，**绝不返回假 IP**。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/diagnostic/:id/ping` | POST | 真实 ping（默认 4 次探测），返回 RTT 统计 |
+| `/api/diagnostic/:id/traceroute` | POST | 真实拓扑路径发现，返回逐跳列表 |
+| `/api/diagnostic/:id/dns` | POST | 系统 DNS 解析（失败如实 404） |
+
+> 早期前端曾用 `Math.random` 编造带宽 / 抓包数据，已在「消除前端假数据」工作中移除——`DiagnosticBandwidth` 与 `DiagnosticPCAP` 面板改为**诚实占位提示**（真实数据源未接入时显示「未接入」，不返回编造数值）。诊断网关的所有结果均来自真实引擎。
+
+**请求 / 响应示例：**
+
+```bash
+# Ping：src 设备ID，dst 设备ID 或 IP，count 可选（默认 4，最大 100）
+curl -X POST http://localhost:8080/api/diagnostic/abc123/ping \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","dst":"192.168.1.2","count":4}'
+# → {"success":true,"output":"...","rtt":{"min":4.83,"avg":5.06,"max":5.44,"loss":0}}
+
+# Traceroute
+curl -X POST http://localhost:8080/api/diagnostic/abc123/traceroute \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","dst":"192.168.1.2"}'
+# → {"reachable":true,"hops":[{"hop":1,"ip":"10.0.10.1","device":"r1","rtt":0}]}
+
+# DNS
+curl -X POST http://localhost:8080/api/diagnostic/abc123/dns \
+  -H "Content-Type: application/json" \
+  -d '{"src":"pc1","domain":"www.baidu.com"}'
+# → {"ip":"110.242.69.21","ips":["110.242.69.21",...]}
+```
+
+**前端联动**：`DiagnosticTools.tsx` 顶部根据 `GET /api/system/status` 的 `engine_mode`（见 5.2）渲染 🔵/🟡 标签——`full` 表示真实协议栈（Linux + gont），`lite` 表示仿真子集（如 Windows 的 ns-x），lite 模式下会提示「部分结果基于拓扑模拟」。
+
+---
+
 ## 五、API 参考手册
 
 ### 5.1 基础信息
 
 | 项目 | 说明 |
 |------|------|
-| **Base URL** | `http://localhost:8080` |
-| **认证** | 无需认证（开发环境） |
-| **CORS** | 允许 localhost:5173 和 localhost:8080 |
+| **Base URL** | `http://localhost:8080`（默认端口 8080，可经 `-port` 参数或 `PORT` 环境变量修改，详见第六章） |
+| **认证** | 无需认证（本地单用户实验工具，非远程多租户服务） |
+| **CORS** | 允许任意 `localhost` / `127.0.0.1` 源（端口无关，放行所有本地端口）；跨域仅用于本地开发（如 Vite dev server） |
 
 ### 5.2 API 端点列表
 
@@ -806,7 +848,11 @@ evtSource.addEventListener('packet', function(e) {
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | /api/topologies/:id/devices/:deviceId/cli | 执行 VRP CLI 命令（状态记录型，仅 `ping` 真实仿真） |
+| GET | /api/topologies/:id/devices/:deviceId/ip-config | 读取接口 IP 配置（?interface= 可选） |
+| POST | /api/topologies/:id/devices/:deviceId/ip-config | 设置接口 IP 配置（IP / 网关 / DNS 经 IPv4 校验） |
 | GET | /api/devices/types | 获取支持的设备类型列表 |
+| POST | /api/topologies/import | 导入拓扑（JSON 体，同快速创建） |
+| GET | /api/topologies/:id/export | 导出拓扑 JSON |
 | GET | /version | 版本与构建信息 |
 | GET | /api/topology/:id/pcap | 实时抓包数据流（SSE，?device=&interface=） |
 | POST | /api/topologies/:id/simulate-packet | 包路径模拟（BFS 计算） |
@@ -815,8 +861,76 @@ evtSource.addEventListener('packet', function(e) {
 | POST | /api/topology/:id/router/:device/ospf | 下发 OSPF 配置（FRR/Linux） |
 | POST | /api/topology/:id/router/:device/bgp | 下发 BGP 配置（FRR/Linux） |
 | GET | /api/topology/:id/router/:device/routes | 读取路由表（FRR/Linux） |
+| POST | /api/diagnostic/:id/ping | 诊断网关：真实 ping，返回 RTT 统计 |
+| POST | /api/diagnostic/:id/traceroute | 诊断网关：真实路径发现，返回逐跳 |
+| POST | /api/diagnostic/:id/dns | 诊断网关：系统 DNS 解析（失败如实 404） |
+| GET | /api/system/status | 后端全局状态（engine_mode: full/lite、资源读数） |
+| GET | /api/system/metrics | 进程资源使用率与引擎活动计数（含尖峰诊断） |
 
 > FRR 相关端点在非 Linux 平台或未使用 gont 引擎时返回 `501 Not Implemented`。
+
+#### POST /api/diagnostic/:id/{ping,traceroute,dns}
+
+统一诊断网关（详见 4.10），返回结构化 JSON，前端据此渲染，不编造数据。
+
+**Ping 请求体：**
+
+```json
+{ "src": "pc1", "dst": "192.168.1.2", "count": 4 }
+```
+
+**Ping 响应（200 OK）：**
+
+```json
+{ "success": true, "output": "64 bytes from ...", "rtt": { "min": 4.83, "avg": 5.06, "max": 5.44, "loss": 0 } }
+```
+
+**Traceroute 请求体：** `{ "src": "pc1", "dst": "192.168.1.2" }`
+**Traceroute 响应：** `{ "reachable": true, "hops": [{ "hop": 1, "ip": "10.0.10.1", "device": "r1", "rtt": 0 }] }`
+
+**DNS 请求体：** `{ "src": "pc1", "domain": "www.baidu.com" }`
+**DNS 响应（成功）：** `{ "ip": "110.242.69.21", "ips": ["110.242.69.21"] }`
+**DNS 响应（失败）：** `404 { "error": "DNS 解析失败：..." }`
+
+> 所有诊断端点均要求 `src` 已开机（否则 `400`），`dst`/`domain` 非法返回 `400`。
+
+#### GET /api/system/status
+
+返回后端全局状态，前端据此展示引擎能力标签（🔵 full / 🟡 lite）。
+
+**响应（200 OK）：**
+
+```json
+{
+  "engine_mode": "lite",
+  "platform": "windows",
+  "engine_count": 1,
+  "goroutines": 12,
+  "cpu_percent": 0.3,
+  "heap_alloc_mb": 8.1,
+  "timestamp": "2026-07-28T10:00:00Z"
+}
+```
+
+> `engine_mode` 由构建 tag 决定：启用 gont 的 Linux 构建为 `full`（真实协议栈），其余（含 Windows 的 ns-x 仿真子集）为 `lite`。
+
+#### GET /api/system/metrics
+
+返回进程资源使用率与引擎活动计数的完整快照，用于实时观测与尖峰归因。轮询此端点即可看到 CPU%、goroutine、heap、GC，以及 `rebuilds_last_10s` / `pings_active` 等业务计数；`diagnosis` 字段会直接给出最可能的尖峰成因（R1–R5）。
+
+**响应（200 OK，节选）：**
+
+```json
+{
+  "goroutines": 12,
+  "cpu_percent": 0.3,
+  "heap_alloc_mb": 8.1,
+  "gc_count": 3,
+  "rebuilds_last_10s": 0,
+  "pings_active": 0,
+  "diagnosis": "nominal"
+}
+```
 
 ---
 
