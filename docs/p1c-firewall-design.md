@@ -19,7 +19,7 @@
 
 ### 1.2 为什么是纯函数
 
-评估器签名形如 `EvaluateDeviceACL(state *CLIState, deviceID string, dir Direction, flow PacketTuple) Decision`：
+评估器签名形如 `EvaluateDeviceACL(states map[string]*CLIState, deviceID string, dir Direction, flow PacketTuple) Decision`：
 
 - 无副作用：只读 `state`（不写 ACLs / DeviceConfig），不碰引擎，可单测、可回归。
 - 单次调用只评估「一台设备在某方向上的 traffic-filter ACL」，组合由上层（路径遍历）负责 → 易测、易定位。
@@ -65,7 +65,7 @@
 |---|---|---|
 | `internal/cli/acl_eval.go` | **新增** | ACL 评估器核心：类型 `PacketTuple`/`Direction`/`Decision`、纯函数 `EvaluateDeviceACL`/`EvaluatePathACL`/`ComputeL3Path`/`ResolveSourceIP`、通配符匹配 `wildcardToMask`/`matchACLRule`、诚实占位 `aclSimNote`、P2 预留 hook `evaluateNATACL`（空桩，注释说明）。 |
 | `internal/cli/acl_eval_test.go` | **新增** | 评估器单测：通配符匹配、协议号匹配（ip/icmp/tcp/udp）、多规则顺序、未命中默认动作、路径取交集首 deny、方向模型。 |
-| `internal/cli/traceroute.go` | **修改** | 新增 `RenderTracerouteWithACL(state, res, target, maxTTL)` 与 `RenderPingWithACL(state, res, target, t)`：在 `FormatEngineTraceroute`/`FormatEnginePing` 之上叠加 ACL 判定与「不可达(ACL 拦截)」渲染（沿用现有如实渲染风格 `traceroute.go:24-32,76-83`）。 |
+| `internal/cli/traceroute.go` | **修改** | 新增 `RenderTracerouteWithACL(states, res, target, maxTTL)` 与 `RenderPingWithACL(states, res, target, t)`：在 `FormatEngineTraceroute`/`FormatEnginePing` 之上叠加 ACL 判定与「不可达(ACL 拦截)」渲染（沿用现有如实渲染风格 `traceroute.go:24-32,76-83`）；`states` 为各设备 CLIState 注册表。 |
 | `internal/cli/parser.go` | **修改** | ① `tracert` 分支（`parser.go:1129-1131`）改调 `RenderTracerouteWithACL`；② `executePingWithContext`（`parser.go:83`）做 ACL 预判；③ `CheckReachability`（`parser.go:93-131`）BFS 逐跳注入 `EvaluateDeviceACL`。 |
 | `internal/api/cli_handlers.go` | **修改** | `renderEnginePing`（`cli_handlers.go:293-305`）/`renderEngineTraceroute`（`cli_handlers.go:311-323`）在拿到引擎结果后，取源设备 `state := r.getOrInitCLIState(...)` 并改调 `RenderPingWithACL`/`RenderTracerouteWithACL`，携带 ACL 拦截原因。 |
 | `internal/api/diagnostic_handlers.go` | **修改（P1）** | `diagnosticPing`（`diagnostic_handlers.go:108-209`）/`diagnosticTraceroute`（`diagnostic_handlers.go:218-283`）响应体新增 `blockedBy` 字段，统一体现「ACL 拦截」原因（开放项 #5 / P1-2）。 |
@@ -121,17 +121,18 @@ classDiagram
         +Direction Direction
     }
     class ACLEvaluator {
-        +EvaluateDeviceACL(state, deviceID, dir, flow) Decision
-        +EvaluatePathACL(state, path, flow) Decision
-        +ComputeL3Path(state, targetIP, t) []string
-        +ResolveSourceIP(state, dstIP, t) string
+        +EvaluateDeviceACL(states, deviceID, dir, flow) Decision
+        +EvaluatePathACL(states, path, flow) Decision
+        +ComputeL3Path(srcState, targetIP, t) []string
+        +ResolveSourceIP(srcState, dstIP, t) string
+        -deviceStateFor(states, deviceID) *CLIState
         -matchACLRule(rule, flow) bool
         -wildcardToMask(wildcard) int
         -aclSimNote() string
-        -evaluateNATACL(state, deviceID, flow) Decision
+        -evaluateNATACL(states, deviceID, flow) Decision
     }
     CLIState "1" o-- "*" ACLRule : ACLs
-    ACLEvaluator ..> CLIState : 只读(单一事实源)
+    ACLEvaluator ..> CLIState : 只读（states 注册表：deviceID→*CLIState，逐设备取自身 ACL/DeviceConfig）
     ACLEvaluator ..> ACLRule : 匹配基础层字段
     ACLEvaluator ..> PacketTuple : 输入五元组
     ACLEvaluator ..> Decision : 输出
@@ -173,28 +174,35 @@ type Decision struct {
 const DefaultACLTerminalAction = "deny"
 
 // EvaluateDeviceACL 评估单台设备在某方向上的 traffic-filter ACL。
-// 读取 state.ACLs 与 state.DeviceConfig["traffic-filter:<dir>:<acl>"]；无绑定→permit；
+// 经 deviceStateFor(states, deviceID) 取「该设备自身」的 CLIState，读取其 ACLs 与
+// DeviceConfig["traffic-filter:<dir>:<acl>"]；设备不在注册表/无状态→视为无绑定→permit；
 // 命中 deny→deny；遍历完未命中→DefaultACLTerminalAction。无副作用（纯函数）。
-func EvaluateDeviceACL(state *CLIState, deviceID string, dir Direction, flow PacketTuple) Decision
+// 注意：必须传 states 注册表而非单一 state——每台设备评估的是「自己的」ACL（Round 1 bug 修复点）。
+func EvaluateDeviceACL(states map[string]*CLIState, deviceID string, dir Direction, flow PacketTuple) Decision
 
 // EvaluatePathACL 沿「源→目的」有序设备路径逐跳评估，返回首个 deny（或全 permit）。
 // 方向规则：src=outbound；中转=inbound+outbound；dst=inbound。仅对 L3 设备评估，L2 跳过。首 deny 即停。
-func EvaluatePathACL(state *CLIState, path []string, flow PacketTuple) Decision
+// 遍历每台设备时调用 EvaluateDeviceACL(states, dev, dir, flow)——每台设备读取自身 ACL（非源设备）。
+func EvaluatePathACL(states map[string]*CLIState, path []string, flow PacketTuple) Decision
 
 // ComputeL3Path 由拓扑 BFS 计算 src→dst 的有序设备路径（含 src、dst），供 ping 无路径结果时复用评估。
-func ComputeL3Path(state *CLIState, targetIP string, t *topology.Topology) []string
+// 仅依赖源设备 ID（srcState.DeviceID）与拓扑，不读 ACL。
+func ComputeL3Path(srcState *CLIState, targetIP string, t *topology.Topology) []string
 
-// ResolveSourceIP 推导本机（state 所属设备）作为 ping 源的出接口 IP（终端取 HostIP；L3 取最长前缀路由出口 IP）。
-func ResolveSourceIP(state *CLIState, dstIP string, t *topology.Topology) string
+// ResolveSourceIP 推导「源设备自身」（srcState 所属）作为 ping 源的出接口 IP
+// （终端取 HostIP；L3 取最长前缀路由出口 IP）。仅作用于源设备，不读其他设备 ACL。
+func ResolveSourceIP(srcState *CLIState, dstIP string, t *topology.Topology) string
 
 // 内部纯函数：
+func deviceStateFor(states map[string]*CLIState, deviceID string) *CLIState // 取设备自身 state；缺失→nil（视为无绑定）
 func matchACLRule(rule *ACLRule, flow PacketTuple) bool          // 基础层：src/dst IP 通配符 + 协议号
 func wildcardToMask(wildcard string) int                         // 通配符→掩码位数，位级对齐 protocol.wildcardToMask
 func aclSimNote() string                                         // 诚实占位注记：lite 引擎标注「模拟过滤，非内核级真实过滤」
-func evaluateNATACL(state *CLIState, deviceID string, flow PacketTuple) Decision // P2 预留空桩 hook
+func evaluateNATACL(states map[string]*CLIState, deviceID string, flow PacketTuple) Decision // P2 预留空桩 hook
 ```
 
 > 评估器**只用** `cli.ACLRule` 的基础字段 `SrcIP/SrcWildcard/DstIP/DstWildcard/Protocol/Action`（`state.go:164-167`），**不读** `DstPort/SourcePort` 等 advanced 字段（本期排除，定调开放项 #3）。
+> 调用方须先行构建 `states map[string]*CLIState`（各设备 CLIState 注册表，通常由 api 层 `getOrInitCLIState` 逐设备填充），评估器**逐设备读取各自状态**——这是 Round 1 bug 修复后的契约，禁止把单一源 `state` 当作全路径共用状态。
 
 ---
 
@@ -209,15 +217,16 @@ sequenceDiagram
     participant E as sim.Engine
     participant A as ACLEvaluator
     participant R as FormatEnginePing
+    Note over P,A: states=注册表(deviceID→*CLIState)，srcState=states[srcDeviceID]
     U->>P: ping <dst>
-    P->>A: ComputeL3Path(state, dst, t)
+    P->>A: ComputeL3Path(srcState, dst, t)
     A-->>P: [src, h1, ..., dst]
-    P->>A: ResolveSourceIP(state, dst, t)
+    P->>A: ResolveSourceIP(srcState, dst, t)
     A-->>P: srcIP
     P->>E: eng.Ping(srcDevice, dst)
     E-->>P: PingResult
-    P->>A: EvaluatePathACL(state, path, {srcIP, dst, icmp})
-    A->>A: 逐设备 EvaluateDeviceACL(outbound@src, inbound+outbound@中转, inbound@dst)
+    P->>A: EvaluatePathACL(states, path, {srcIP, dst, icmp})
+    A->>A: 逐设备 deviceStateFor(states, dev) 后 EvaluateDeviceACL（读该设备自身 ACL）
     alt 命中 deny
         A-->>P: Decision{deny, device, acl, rule}
         P-->>U: "unreachable（ACL 拦截：<device> acl<N> rule<M>）" + aclSimNote()
@@ -227,8 +236,8 @@ sequenceDiagram
     end
 ```
 
-- **CLI 文本入口**：`parser.go:83`（`executePingWithContext`）在 `CheckReachability` 之前先 `EvaluatePathACL`，命中 deny 直接返回不可达(ACL)。
-- **API 入口**：`cli_handlers.go:293-305`（`renderEnginePing`）拿到 `PingResult` 后，取 `state := r.getOrInitCLIState(topoID, deviceId, dt)` 并改调 `RenderPingWithACL(state, res, targetIP, t)`。
+- **CLI 文本入口**：`parser.go:83`（`executePingWithContext`）在 `CheckReachability` 之前先 `EvaluatePathACL(states, ...)`，命中 deny 直接返回不可达(ACL)。`states` 由调用方构建（含源设备及路径上各设备的 CLIState）。
+- **API 入口**：`cli_handlers.go:293-305`（`renderEnginePing`）拿到 `PingResult` 后，构建 `states` 注册表（源设备 `state := r.getOrInitCLIState(topoID, deviceId, dt)`，并补齐路径设备 state），改调 `RenderPingWithACL(states, res, targetIP, t)`。
 
 ### 4.2 tracert 路径（路径来自 `TracerouteResult.Hops`）
 
@@ -239,11 +248,12 @@ sequenceDiagram
     participant E as sim.Engine
     participant A as ACLEvaluator
     participant R as FormatEngineTraceroute
+    Note over P,A: states=注册表(deviceID→*CLIState)，srcState=states[srcDeviceID]
     U->>P: tracert <dst>
     P->>E: eng.Traceroute(srcDevice, dst, 30)
     E-->>P: TracerouteResult{Hops:[{DeviceID,IP}...], Reached}
     P->>A: path = res.Hops[].DeviceID
-    P->>A: EvaluatePathACL(state, path, {srcIP, dst, icmp})
+    P->>A: EvaluatePathACL(states, path, {srcIP, dst, icmp})
     A-->>P: Decision
     alt 命中 deny @ 第 k 跳
         P-->>U: 前 k-1 跳正常渲染，第 k 跳起 "* * *" + "ACL 拦截：<device> acl<N>" + aclSimNote()
@@ -253,8 +263,8 @@ sequenceDiagram
     end
 ```
 
-- **CLI 文本入口**：`parser.go:1129-1131` 将 `FormatEngineTraceroute(res, 30)` 改为 `RenderTracerouteWithACL(state, res, target, 30)`。
-- **API 入口**：`cli_handlers.go:311-323`（`renderEngineTraceroute`）改调 `RenderTracerouteWithACL(state, res, targetIP, 30)`，`state` 来自 `getOrInitCLIState`。
+- **CLI 文本入口**：`parser.go:1129-1131` 将 `FormatEngineTraceroute(res, 30)` 改为 `RenderTracerouteWithACL(states, res, target, 30)`（`states` 含源设备 state）。
+- **API 入口**：`cli_handlers.go:311-323`（`renderEngineTraceroute`）改调 `RenderTracerouteWithACL(states, res, targetIP, 30)`，`states` 由调用方构建（源设备 `getOrInitCLIState` + 路径设备 state）。
 
 ### 4.3 `cli.CheckReachability` 路径（BFS 逐跳注入）
 
@@ -264,12 +274,13 @@ sequenceDiagram
     participant CR as cli.CheckReachability
     participant A as ACLEvaluator
     P->>CR: CheckReachability(state, targetIP, t)
-    CR->>A: EvaluateDeviceACL(state, src, outbound, flow)  // 源出向先判
+    Note over CR,A: states=注册表(deviceID→*CLIState)，每台设备取自身 state
+    CR->>A: EvaluateDeviceACL(states, src, outbound, flow)  // 源出向先判（读 src 自身 ACL）
     alt deny
         A-->>CR: deny → return false
     end
     loop BFS 每访问一台设备 next
-        CR->>A: EvaluateDeviceACL(state, next, inbound, flow)
+        CR->>A: EvaluateDeviceACL(states, next, inbound, flow)  // deviceStateFor(states, next) 取 next 自身 ACL
         alt deny
             A-->>CR: deny → return false（可达性视为不可达）
         end
@@ -277,11 +288,11 @@ sequenceDiagram
     CR-->>P: reachable bool
 ```
 
-- 切入点：`parser.go:93` 函数体，在 `visited[next]=true` 之后、`queue=append` 之前插入 inbound 评估；函数开头插源 outbound 评估。`flow` 的 `SrcIP` 由 `ResolveSourceIP(state, targetIP, t)` 推导，`Proto="icmp"`。
+- 切入点：`parser.go:93` 函数体，在 `visited[next]=true` 之后、`queue=append` 之前插入 inbound 评估（调用 `EvaluateDeviceACL(states, next, inbound, flow)`，内部 `deviceStateFor` 取 `next` 自身 ACL）；函数开头插源 outbound 评估。`flow` 的 `SrcIP` 由 `ResolveSourceIP(srcState, targetIP, t)` 推导（`srcState` 为源设备自身 state），`Proto="icmp"`。`states` 注册表由调用方构建并传入。
 
 ### 4.4 跨跳方向语义落点（呼应 §1.4）
 
-`EvaluatePathACL` 内部按索引应用方向（`src→outbound`；`0<i<末→inbound+outbound`；`末→inbound`），任一 `deny` 立即返回——即「沿途所有设备取交集，任一 deny 即丢」。评估仅在 L3 设备执行（对照 `capabilities.go:91-94`）。
+`EvaluatePathACL` 内部按索引应用方向（`src→outbound`；`0<i<末→inbound+outbound`；`末→inbound`），逐设备经 `deviceStateFor(states, dev)` 读取**自身** ACL 后评估，任一 `deny` 立即返回——即「沿途所有设备取交集，任一 deny 即丢」。评估仅在 L3 设备执行（对照 `capabilities.go:91-94`）。
 
 ---
 
@@ -298,13 +309,13 @@ sequenceDiagram
 ### P0-路径：T02 介入 tracert 路径
 - **涉及文件**：`internal/cli/parser.go`（`parser.go:1129-1131` 改调）、`internal/cli/traceroute.go`（新增 `RenderTracerouteWithACL`）、`internal/api/cli_handlers.go`（`cli_handlers.go:322` 改调）、`internal/cli/acl_eval.go`（依赖 T01）。
 - **依赖**：T01。
-- **内容**：在 `parser.go:1130` 拿到 `res` 后改调 `RenderTracerouteWithACL(state, res, target, 30)`；`RenderTracerouteWithACL` 用 `res.Hops[].DeviceID` 组路径 → `EvaluatePathACL` → 命中 deny 渲染「前 k-1 跳 + 第 k 跳起 * * * + ACL 拦截注记」；API 侧 `renderEngineTraceroute` 取 `state := r.getOrInitCLIState(...)` 后改调同一函数。
+- **内容**：在 `parser.go:1130` 拿到 `res` 后改调 `RenderTracerouteWithACL(states, res, target, 30)`；`RenderTracerouteWithACL` 用 `res.Hops[].DeviceID` 组路径 → `EvaluatePathACL(states, ...)`（逐设备读自身 ACL）→ 命中 deny 渲染「前 k-1 跳 + 第 k 跳起 * * * + ACL 拦截注记」；API 侧 `renderEngineTraceroute` 构建 `states` 注册表（`getOrInitCLIState` 取源设备 + 路径设备）后改调同一函数。
 - **优先级**：P0。
 
 ### P0-路径：T03 介入 ping 路径
 - **涉及文件**：`internal/cli/parser.go`（`parser.go:83` 改判）、`internal/cli/traceroute.go`（新增 `RenderPingWithACL`）、`internal/api/cli_handlers.go`（`cli_handlers.go:304` 改调）、`internal/cli/acl_eval.go`（依赖 T01）。
 - **依赖**：T01。
-- **内容**：`executePingWithContext`（`parser.go:83`）先 `ComputeL3Path`+`ResolveSourceIP`+`EvaluatePathACL`，命中 deny → 返回不可达(ACL)；否则回落 `CheckReachability`。API 侧 `renderEnginePing` 拿 `PingResult` 后取源 `state` 改调 `RenderPingWithACL(state, res, targetIP, t)`。
+- **内容**：`executePingWithContext`（`parser.go:83`）先 `ComputeL3Path`+`ResolveSourceIP`+`EvaluatePathACL(states, ...)`，命中 deny → 返回不可达(ACL)；否则回落 `CheckReachability`。API 侧 `renderEnginePing` 拿 `PingResult` 后构建 `states` 注册表并改调 `RenderPingWithACL(states, res, targetIP, t)`。
 - **优先级**：P0。
 
 ### P0-路径：T04 介入 `cli.CheckReachability` + 诚实占位落地
@@ -320,7 +331,7 @@ sequenceDiagram
 - **优先级**：P1。
 
 ### P2（下期，仅接口预留，不单列任务）
-- **hook 位置**：`acl_eval.go` 的 `evaluateNATACL(state, deviceID, flow) Decision` 空桩；在 `EvaluatePathACL` 对「带 NAT 出向的设备」调用点预留 `// TODO(P2): 接入 NAT 顺序与转换前/后 IP 语义`。
+- **hook 位置**：`acl_eval.go` 的 `evaluateNATACL(states map[string]*CLIState, deviceID string, flow PacketTuple) Decision` 空桩；在 `EvaluatePathACL` 对「带 NAT 出向的设备」调用点预留 `// TODO(P2): 接入 NAT 顺序与转换前/后 IP 语义`。
 - **范围**：先 ACL 后 NAT / 先 NAT 后 ACL、源/目的 IP 转换前/后参与匹配——待主理人拍板（开放项 #2，见 §8）。
 
 ---
