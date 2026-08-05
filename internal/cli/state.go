@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"ensp-lab/internal/sim"
 	"ensp-lab/internal/topology"
 )
 
@@ -24,6 +25,7 @@ const (
 	ViewBGP       ViewType = "bgp"
 	ViewVTY       ViewType = "vty"
 	ViewDHCPPool  ViewType = "dhcp-pool"
+	ViewISIS      ViewType = "isis" // IS-IS 协议视图（P1-F）
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -63,6 +65,7 @@ type CLIState struct {
 	LocalUsers     map[string]*LocalUser
 	VXLAN          *VXLANConfig
 	BGP            *BGPConfig
+	ISIS           *ISISConfig // IS-IS 配置（P1-F，最小启用 + 真实 network/import-route）
 	BFD            *BFDConfig
 	VRF            map[string]*VRFConfig
 	PBR            map[string][]*PBRRule
@@ -86,6 +89,12 @@ type CLIState struct {
 	SaveTime    string `json:"save_time"`     // 最近一次 save 时间
 	SavedConfig string `json:"saved_config"`  // 已保存配置的 VRP 风格快照
 	PendingSave bool   `json:"pending_save"`  // save  awaiting Y/N 确认
+
+	// ResolveTraceroute 是可选的真实引擎解析钩子（P1-F，风险1）。
+	// 直连 ExecuteCommandOn 执行 tracert/traceroute 时若已注入，则通过它走
+	// sim.Engine 真实路径；为 nil 时 parser 返回合理的"无引擎"提示，不 panic、
+	// 不硬编码假路径。由 api 层在构造 CLIState 时注入，parser 不直接 import 引擎实例。
+	ResolveTraceroute func(target string) *sim.TracerouteResult
 }
 
 type ARPEntry struct {
@@ -205,6 +214,17 @@ type OSPFConfig struct {
 	Enabled   bool
 	ProcessID int
 	AreaID    int
+}
+
+// ISISConfig 描述 IS-IS 协议配置（P1-F）。
+// P0 仅置 Enabled/ProcessID 完成"最小启用"（进视图），P1 真实化补充
+// NetworkType 与 ImportRoutes。同时镜像到 state.DeviceConfig 的 isis:* 键，
+// 以便随拓扑 save/reload 落盘（见 SerializeToDeviceConfigData/LoadFromDeviceConfigData）。
+type ISISConfig struct {
+	Enabled      bool
+	ProcessID    int
+	NetworkType  string   // "level-1" / "level-2" / "level-1-2"，默认 "level-2"
+	ImportRoutes []string // import-route 引入的协议列表，如 ["static","ospf"]
 }
 
 type MLAGConfig struct {
@@ -520,6 +540,10 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 		},
 		BGP: &BGPConfig{
 			Neighbors: make(map[string]*BGPNeighbor),
+		},
+		ISIS: &ISISConfig{
+			Enabled:     false,
+			NetworkType: "level-2",
 		},
 		BFD: &BFDConfig{
 			Enabled:  false,

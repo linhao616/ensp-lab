@@ -359,3 +359,32 @@ func executeNetsh(state *CLIState, args []string) string {
 	}
 	return "Error: unsupported netsh subcommand '" + sub + "'"
 }
+
+// buildHostNslookup 渲染终端 nslookup 的输出（P1-F，T02）。
+// 复用 state.HostDNS：已配置 DNS 时返回模拟解析（RFC 5737 TEST-NET-1 段地址，
+// 避免与现实网络冲突）；未配置时返回 "DNS server not configured" 提示。
+func buildHostNslookup(state *CLIState, host string) string {
+	dns := state.HostDNS
+	if dns == "" {
+		dns = state.DeviceConfig["ip:dns"]
+	}
+	if dns == "" {
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("*** Can't find server name for address ... : DNS server not configured.\n"))
+		b.WriteString("Server:  Unknown\n")
+		b.WriteString("Address:  ::1#53\n\n")
+		b.WriteString(fmt.Sprintf("*** %s: Non-existent domain\n", host))
+		return b.String()
+	}
+	// 模拟解析：根据主机名哈希出一个确定的 A 记录地址（TEST-NET-1 段）。
+	ip := fmt.Sprintf("192.0.2.%d", (hashString(host)%250)+1)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%s?\n", host))
+	b.WriteString(fmt.Sprintf("Server:  %s\n", dns))
+	b.WriteString(fmt.Sprintf("Address:  %s#53\n", dns))
+	b.WriteString("\n")
+	b.WriteString("Non-authoritative answer:\n")
+	b.WriteString(fmt.Sprintf("Name:    %s\n", host))
+	b.WriteString(fmt.Sprintf("Address:  %s\n", ip))
+	return b.String()
+}

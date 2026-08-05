@@ -670,35 +670,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			state.DeviceConfig[fmt.Sprintf("interface:%s:link-mode", state.CurrentSub)] = cmd.Args[1]
 			return fmt.Sprintf("Port link-mode set to %s", cmd.Args[1])
 		case portCmd == "security":
-			// port-security enable / port-security max-mac-num / port-security mac-address sticky
-			if len(cmd.Args) < 2 {
-				return "Error: usage: port-security <enable|disable|max-mac-num|mac-address>"
-			}
-			subCmd := strings.ToLower(cmd.Args[1])
-			switch subCmd {
-			case "enable":
-				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "enable"
-				return "Port security enabled"
-			case "disable":
-				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "disable"
-				return "Port security disabled"
-			case "max-mac-num":
-				if len(cmd.Args) >= 3 {
-					maxNum, err := parseNum(cmd.Args[2])
-					if err == nil {
-						state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-max-mac", state.CurrentSub)] = fmt.Sprintf("%d", maxNum)
-						return fmt.Sprintf("Port security max-mac-num set to %d", maxNum)
-					}
-				}
-				return "Error: usage: port-security max-mac-num <number>"
-			case "mac-address":
-				if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "sticky" {
-					state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-sticky", state.CurrentSub)] = "enable"
-					return "Port security sticky MAC enabled"
-				}
-				return "Error: usage: port-security mac-address sticky"
-			}
-			return "Error: invalid port-security subcommand"
+			// 复用顶层 port-security 逻辑的 helper（保证行为一致）：
+			// port security <sub> 中 cmd.Args[0]=="security"，子命令从 cmd.Args[1:] 取。
+			return applyPortSecurity(state, cmd.Args[1:])
 		default:
 			return fmt.Sprintf("Error: unknown port command '%s'", portCmd)
 		}
@@ -821,44 +795,52 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return "Interface is shutdown"
 	case "undo":
-		// 华为 VRP 风格 undo 命令体系：对已进入的接口执行反向操作。
-		// 支持 undo shutdown / undo ip address / undo description；
-		// 其它子命令按"未支持"处理，避免静默吞掉未知 undo。
-		if state.CurrentView != ViewInterface {
-			return "Error: must be in interface view"
-		}
-		if len(cmd.Args) == 0 {
-			return "Error: incomplete command"
-		}
-		sub := strings.ToLower(strings.Join(cmd.Args, " "))
-		switch sub {
-		case "shutdown":
-			// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
-			state.DeviceConfig[fmt.Sprintf("interface:%s:status", state.CurrentSub)] = "Up"
-			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
-				iface.Status = "Up"
+		// 华为 VRP 风格 undo 命令体系。按当前视图分发：
+		//   - 接口视图：反向操作 shutdown / ip address / description（既有行为不变）；
+		//   - 系统视图：反向清理各协议/特性 state（P1-F，T04 扩展）；
+		//   - 其它视图：维持原 "must be in interface view" 提示，避免静默吞掉未知 undo。
+		switch state.CurrentView {
+		case ViewInterface:
+			if len(cmd.Args) == 0 {
+				return "Error: incomplete command"
 			}
-			return "Interface is up"
-		case "ip address":
-			// 删除接口 IP：同时清 DeviceConfig 与 Interfaces map，
-			// 保证 display ip interface 立即回显 unassigned。
-			key := fmt.Sprintf("interface:%s:ip", state.CurrentSub)
-			delete(state.DeviceConfig, key)
-			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
-				iface.IP = ""
-				iface.Mask = ""
+			sub := strings.ToLower(strings.Join(cmd.Args, " "))
+			switch sub {
+			case "shutdown":
+				// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
+				state.DeviceConfig[fmt.Sprintf("interface:%s:status", state.CurrentSub)] = "Up"
+				if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+					iface.Status = "Up"
+				}
+				return "Interface is up"
+			case "ip address":
+				// 删除接口 IP：同时清 DeviceConfig 与 Interfaces map，
+				// 保证 display ip interface 立即回显 unassigned。
+				key := fmt.Sprintf("interface:%s:ip", state.CurrentSub)
+				delete(state.DeviceConfig, key)
+				if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+					iface.IP = ""
+					iface.Mask = ""
+				}
+				return fmt.Sprintf("Interface %s IP address deleted", state.CurrentSub)
+			case "description":
+				// 删除接口描述
+				key := fmt.Sprintf("interface:%s:description", state.CurrentSub)
+				delete(state.DeviceConfig, key)
+				if iface, ok := state.Interfaces[state.CurrentSub]; ok {
+					iface.Description = ""
+				}
+				return fmt.Sprintf("Description of %s deleted", state.CurrentSub)
+			default:
+				return fmt.Sprintf("Error: undo '%s' is not supported", sub)
 			}
-			return fmt.Sprintf("Interface %s IP address deleted", state.CurrentSub)
-		case "description":
-			// 删除接口描述
-			key := fmt.Sprintf("interface:%s:description", state.CurrentSub)
-			delete(state.DeviceConfig, key)
-			if iface, ok := state.Interfaces[state.CurrentSub]; ok {
-				iface.Description = ""
+		case ViewSystem:
+			if len(cmd.Args) == 0 {
+				return "Error: incomplete command"
 			}
-			return fmt.Sprintf("Description of %s deleted", state.CurrentSub)
+			return applyUndoSystemFeature(state, cmd.Args)
 		default:
-			return fmt.Sprintf("Error: undo '%s' is not supported", sub)
+			return "Error: must be in interface view"
 		}
 	case "speed":
 		// 设置接口速率
@@ -1137,10 +1119,18 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return fmt.Sprintf("Ping %s: success", target)
 	case "tracert", "traceroute":
+		// P1-F，T07（风险1）：优先通过 CLIState 引擎钩子走真实路径；
+		// 无引擎上下文时返回与 FormatEngineTraceroute(nil,...) 一致的提示，
+		// 不再硬编码固定 2 跳，也不 panic（真实路径仍由 API 主路径承担）。
 		if len(cmd.Args) == 0 {
 			return "Error: need target"
 		}
-		return fmt.Sprintf("Tracing route to %s over a maximum of 30 hops:\n  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n  2    <1 ms    <1 ms    <1 ms  %s\n\nTrace complete.", cmd.Args[0], cmd.Args[0])
+		target := cmd.Args[0]
+		if state.ResolveTraceroute != nil {
+			res := state.ResolveTraceroute(target)
+			return FormatEngineTraceroute(res, 30)
+		}
+		return FormatEngineTraceroute(nil, 30)
 	case "ipconfig":
 		if len(cmd.Args) >= 1 {
 			sub := strings.ToLower(cmd.Args[0])
@@ -2198,6 +2188,103 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return "SMTP service enabled"
 		}
 		return "SMTP configuration"
+
+	// ===== P1-F 顶层命令补齐（一致性 9 条）=====
+
+	case "isis":
+		// IS-IS 协议视图：P0 最小启用（进视图） + P1 真实配置（network/import-route）。
+		if state.CurrentView == ViewSystem {
+			if len(cmd.Args) < 1 {
+				return "Error: need process-id"
+			}
+			pid, err := parseNum(cmd.Args[0])
+			if err != nil {
+				return "Error: invalid IS-IS process-id"
+			}
+			state.ISIS.Enabled = true
+			state.ISIS.ProcessID = pid
+			state.DeviceConfig["isis:enabled"] = "true"
+			state.DeviceConfig["isis:process-id"] = fmt.Sprintf("%d", pid)
+			state.CurrentView = ViewISIS
+			state.CurrentSub = fmt.Sprintf("isis-%d", pid)
+			return fmt.Sprintf("Enter ISIS view, process %d", pid)
+		}
+		return "Error: must be in system view"
+
+	case "network":
+		// IS-IS 视图下的 network 命令（P1-F，T03）。
+		// VRP 中进入 isis 视图后直接敲 `network <type>`，首个 token 为 network，
+		// 故在顶层按 ViewISIS 守卫分发（非 isis 子参数）。
+		if state.CurrentView != ViewISIS {
+			return "Error: must be in ISIS view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: network <level-1|level-2|level-1-2>"
+		}
+		nt := strings.ToLower(cmd.Args[0])
+		switch nt {
+		case "level-1", "level-2", "level-1-2":
+			state.ISIS.NetworkType = nt
+			state.DeviceConfig["isis:network-type"] = nt
+			return fmt.Sprintf("IS-IS network type set to %s", nt)
+		default:
+			return "Error: usage: network <level-1|level-2|level-1-2>"
+		}
+
+	case "import-route":
+		// IS-IS 视图下的 import-route 命令（P1-F，T03）。同上，顶层按 ViewISIS 守卫。
+		if state.CurrentView != ViewISIS {
+			return "Error: must be in ISIS view"
+		}
+		if len(cmd.Args) < 1 {
+			return "Error: usage: import-route <protocol>"
+		}
+		proto := strings.ToLower(cmd.Args[0])
+		found := false
+		for _, r := range state.ISIS.ImportRoutes {
+			if r == proto {
+				found = true
+				break
+			}
+		}
+		if !found {
+			state.ISIS.ImportRoutes = append(state.ISIS.ImportRoutes, proto)
+		}
+		state.DeviceConfig["isis:import-route"] = strings.Join(state.ISIS.ImportRoutes, ",")
+		return fmt.Sprintf("IS-IS import-route %s added", proto)
+
+	case "quit-cli":
+		// 会话关闭提示（语义等同退出 CLI，前端透传）。
+		return "Session closed."
+
+	case "vlanif":
+		// 引导分支（决策 #4 方案 A）：建 Vlanif 应走 interface Vlanif <id>。
+		if len(cmd.Args) == 0 {
+			return "Error: need vlan-id"
+		}
+		return fmt.Sprintf("Use 'interface Vlanif %s' to create the Layer 3 interface.", cmd.Args[0])
+
+	case "port-security":
+		// 顶层端口安全分支：委托既有 port security 逻辑（需接口视图）。
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: port-security <enable|disable|max-mac-num|mac-address>"
+		}
+		return applyPortSecurity(state, cmd.Args)
+
+	case "nslookup":
+		// 终端 DNS 查询（复用 state.HostDNS）。
+		if len(cmd.Args) == 0 {
+			return "Error: need hostname"
+		}
+		return buildHostNslookup(state, cmd.Args[0])
+
+	case "http", "https", "dns", "ftp":
+		// 服务器应用层服务启用（对齐 smtp 回显风格）。
+		return executeServerService(state, command, cmd.Args)
+
 	case "bfd":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2547,18 +2634,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "current-configuration":
-			var out strings.Builder
-			out.WriteString("Current config:\n")
-			for k, v := range state.DeviceConfig {
-				out.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
-			}
-			if state.OSPF.Enabled {
-				out.WriteString(fmt.Sprintf("  OSPF: process %d, area %d\n", state.OSPF.ProcessID, state.OSPF.AreaID))
-			}
-			if state.BGP.Enabled {
-				out.WriteString(fmt.Sprintf("  BGP: AS %d, Router ID %s\n", state.BGP.ASNumber, state.BGP.RouterID))
-			}
-			return out.String()
+			// 复用 VRP 风格配置快照生成器（与 display saved-configuration / save 一致），
+			// 并追加 OSPF/BGP/ISIS 等协议启用摘要块，避免较旧版直排 key-value 而丢失协议信息
+			//（P1-F，决策 #6 + 风险3）。
+			return state.buildSavedConfigSnapshot() + formatProtocolBlocks(state)
 		case "eth-trunk":
 			if isHost || isCloudHub {
 				return fmt.Sprintf("Error: Eth-Trunk is not supported on %s", state.DeviceType)
@@ -3194,6 +3273,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				out.WriteString("OSPF: Not configured\n")
 			}
 			return out.String()
+		case "isis":
+			if !isRouter && !isL3Switch && !isFirewall && state.DeviceType != topology.DeviceVTEP {
+				return fmt.Sprintf("Error: ISIS is not supported on %s", state.DeviceType)
+			}
+			return buildIsisDisplay(state)
 		case "acl":
 			if isHost || isCloudHub || isAC {
 				return fmt.Sprintf("Error: ACL is not supported on %s", state.DeviceType)
@@ -3612,6 +3696,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "bgp":
+			// display bgp peer：逐邻居明细表（P1-F，T06）
+			if arg1 == "peer" {
+				return buildBGPPeerDisplay(state)
+			}
 			var out strings.Builder
 			if state.BGP.Enabled {
 				out.WriteString(fmt.Sprintf("BGP Configuration:\n"))
@@ -3630,6 +3718,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				out.WriteString("BGP: Not configured\n")
 			}
 			return out.String()
+		case "diagnostic-information":
+			// 单命令设备体检报告（P1-F，T06）
+			return buildDiagnosticInfo(state)
 		case "bfd":
 			var out strings.Builder
 			out.WriteString(fmt.Sprintf("BFD: %s\n", func() string {
@@ -3906,6 +3997,261 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
 }
 
+// applyPortSecurity 实现端口安全命令（enable/disable/max-mac-num/mac-address sticky）。
+// 顶层 case "port-security" 与既有 "port security" 子命令共用，避免逻辑分裂。
+// args[0] 为子命令（enable/disable/max-mac-num/mac-address），调用方需已确保接口视图。
+func applyPortSecurity(state *CLIState, args []string) string {
+	if len(args) < 1 {
+		return "Error: usage: port-security <enable|disable|max-mac-num|mac-address>"
+	}
+	subCmd := strings.ToLower(args[0])
+	switch subCmd {
+	case "enable":
+		state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "enable"
+		return "Port security enabled"
+	case "disable":
+		state.DeviceConfig[fmt.Sprintf("interface:%s:port-security", state.CurrentSub)] = "disable"
+		return "Port security disabled"
+	case "max-mac-num":
+		if len(args) >= 2 {
+			if maxNum, err := parseNum(args[1]); err == nil {
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-max-mac", state.CurrentSub)] = fmt.Sprintf("%d", maxNum)
+				return fmt.Sprintf("Port security max-mac-num set to %d", maxNum)
+			}
+		}
+		return "Error: usage: port-security max-mac-num <number>"
+	case "mac-address":
+		if len(args) >= 2 && strings.ToLower(args[1]) == "sticky" {
+			state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-sticky", state.CurrentSub)] = "enable"
+			return "Port security sticky MAC enabled"
+		}
+		return "Error: usage: port-security mac-address sticky"
+	}
+	return "Error: invalid port-security subcommand"
+}
+
+// executeServerService 统一处理服务器应用层服务启用（http/https/dns/ftp）。
+// 对齐 smtp 回显风格：系统视图下 "enable" 写 DeviceConfig["<proto>:enabled"]="true"
+// 并返回 "<PROTO> service enabled"（如 "HTTP service enabled"）。
+func executeServerService(state *CLIState, proto string, args []string) string {
+	if state.CurrentView != ViewSystem {
+		return "Error: must be in system view"
+	}
+	if len(args) >= 1 && strings.ToLower(args[0]) == "enable" {
+		state.DeviceConfig[proto+":enabled"] = "true"
+		return fmt.Sprintf("%s service enabled", strings.ToUpper(proto))
+	}
+	return fmt.Sprintf("%s configuration", strings.ToUpper(proto))
+}
+
+// buildIsisDisplay 渲染 display isis 的输出（参照 display ospf 风格）。
+func buildIsisDisplay(state *CLIState) string {
+	var b strings.Builder
+	if state.ISIS == nil || !state.ISIS.Enabled {
+		b.WriteString("ISIS: Not configured\n")
+		return b.String()
+	}
+	b.WriteString(fmt.Sprintf("ISIS Process %d\n", state.ISIS.ProcessID))
+	b.WriteString(fmt.Sprintf("  Network Type: %s\n", state.ISIS.NetworkType))
+	b.WriteString("  State: Running\n")
+	b.WriteString("  Neighbors: 0\n")
+	imports := "none"
+	if len(state.ISIS.ImportRoutes) > 0 {
+		imports = strings.Join(state.ISIS.ImportRoutes, ", ")
+	}
+	b.WriteString(fmt.Sprintf("  Import Routes: %s\n", imports))
+	return b.String()
+}
+
+// buildBGPPeerDisplay 渲染 display bgp peer 的逐邻居明细表。
+func buildBGPPeerDisplay(state *CLIState) string {
+	var b strings.Builder
+	if !state.BGP.Enabled {
+		b.WriteString("BGP: Not configured\n")
+		return b.String()
+	}
+	b.WriteString(fmt.Sprintf("BGP Local Router ID : %s\n", state.BGP.RouterID))
+	b.WriteString(fmt.Sprintf("Local AS number : %d\n", state.BGP.ASNumber))
+	b.WriteString(fmt.Sprintf("Total number of peers : %d\n", len(state.BGP.Neighbors)))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("%-15s %-12s %-12s %s\n", "Peer", "RemoteAS", "State", "Type"))
+	for _, n := range state.BGP.Neighbors {
+		peerState := "Established"
+		peerType := "IBGP"
+		if n.EBGP {
+			peerType = "EBGP"
+		}
+		b.WriteString(fmt.Sprintf("%-15s %-12d %-12s %s\n", n.IPAddress, n.RemoteAS, peerState, peerType))
+	}
+	return b.String()
+}
+
+// buildDiagnosticInfo 聚合设备体检报告：version/device/cpu/memory + 关键协议状态小结。
+func buildDiagnosticInfo(state *CLIState) string {
+	var b strings.Builder
+	b.WriteString("===== Device Diagnostic Information =====\n")
+	deviceModel := "Unknown"
+	switch state.DeviceType {
+	case topology.DeviceRouter:
+		deviceModel = "Huawei Router NE40E"
+	case topology.DeviceL3Switch:
+		deviceModel = "Huawei Switch S12700"
+	case topology.DeviceSwitch:
+		deviceModel = "Huawei Switch S5700"
+	case topology.DeviceFirewall:
+		deviceModel = "Huawei Firewall USG6000"
+	case topology.DeviceVTEP:
+		deviceModel = "Huawei VTEP Switch"
+	case topology.DeviceServer:
+		deviceModel = "Huawei Server RH2288H"
+	case topology.DevicePC:
+		deviceModel = "PC"
+	case topology.DeviceClient:
+		deviceModel = "Client PC"
+	default:
+		deviceModel = string(state.DeviceType)
+	}
+	b.WriteString(deviceModel + "\n")
+	b.WriteString("VRP (R) software, Version 5.170 (V300R005C00)\n")
+	b.WriteString("CPU Usage:    5%\n")
+	b.WriteString("Memory utilization percentage: 15%\n")
+	b.WriteString("----- Protocol Status -----\n")
+	ospf := "Not configured"
+	if state.OSPF.Enabled {
+		ospf = "Running"
+	}
+	bgp := "Not configured"
+	if state.BGP.Enabled {
+		bgp = "Running"
+	}
+	isis := "Not configured"
+	if state.ISIS != nil && state.ISIS.Enabled {
+		isis = "Running"
+	}
+	stp := "Disabled"
+	if state.STP.Enabled {
+		stp = "Enabled"
+	}
+	dhcp := "Disabled"
+	if state.DHCP != nil && state.DHCP.Enabled {
+		dhcp = "Enabled"
+	}
+	b.WriteString(fmt.Sprintf("  OSPF: %s\n", ospf))
+	b.WriteString(fmt.Sprintf("  BGP : %s\n", bgp))
+	b.WriteString(fmt.Sprintf("  ISIS: %s\n", isis))
+	b.WriteString(fmt.Sprintf("  STP : %s\n", stp))
+	b.WriteString(fmt.Sprintf("  DHCP: %s\n", dhcp))
+	b.WriteString("========================================\n")
+	return b.String()
+}
+
+// formatProtocolBlocks 在 display current-configuration 的 VRP 快照后追加协议启用摘要块，
+// 保证 OSPF/BGP/ISIS/STP/DHCP/IPv6/SMTP 等启用状态不随快照改造而"回退"丢失（P1，决策 #6 + 风险3）。
+func formatProtocolBlocks(state *CLIState) string {
+	var b strings.Builder
+	b.WriteString("#\n")
+	b.WriteString("protocol-status\n")
+	if state.OSPF.Enabled {
+		b.WriteString(fmt.Sprintf(" ospf %d\n", state.OSPF.ProcessID))
+	}
+	if state.ISIS != nil && state.ISIS.Enabled {
+		b.WriteString(fmt.Sprintf(" isis %d\n", state.ISIS.ProcessID))
+		b.WriteString(fmt.Sprintf("  network %s\n", state.ISIS.NetworkType))
+	}
+	if state.BGP.Enabled {
+		b.WriteString(fmt.Sprintf(" bgp %d\n", state.BGP.ASNumber))
+	}
+	if state.STP.Enabled {
+		b.WriteString(fmt.Sprintf(" stp mode %s\n", state.STP.Mode))
+	}
+	if state.DHCP != nil && state.DHCP.Enabled {
+		b.WriteString(" dhcp enable\n")
+	}
+	if v, ok := state.DeviceConfig["ipv6:enabled"]; ok && v == "true" {
+		b.WriteString(" ipv6 enable\n")
+	}
+	if v, ok := state.DeviceConfig["smtp:enabled"]; ok && v == "true" {
+		b.WriteString(" smtp enable\n")
+	}
+	b.WriteString("#\n")
+	return b.String()
+}
+
+// applyUndoSystemFeature 处理系统视图下的 undo（反向清理协议/特性 state）。
+// 支持 undo ospf [<id>] / undo vlan <id> / undo acl <num|name> / undo stp /
+// undo dhcp / undo bgp [<as>] / undo ipv6；其它子命令返回 "not supported"。
+func applyUndoSystemFeature(state *CLIState, args []string) string {
+	if len(args) == 0 {
+		return "Error: incomplete command"
+	}
+	feature := strings.ToLower(args[0])
+	switch feature {
+	case "ospf":
+		state.OSPF.Enabled = false
+		state.OSPF.ProcessID = 0
+		state.OSPF.AreaID = 0
+		// 清理历史可能写盘的 ospf:* 键
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "ospf:") {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		if len(args) >= 2 {
+			return fmt.Sprintf("OSPF process %s removed", args[1])
+		}
+		return "OSPF process removed"
+	case "vlan":
+		if len(args) < 2 {
+			return "Error: usage: undo vlan <id>"
+		}
+		vid, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid VLAN id"
+		}
+		delete(state.VLANs, vid)
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "vlan:") {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		return fmt.Sprintf("VLAN %d removed", vid)
+	case "acl":
+		if len(args) < 2 {
+			return "Error: usage: undo acl <num|name>"
+		}
+		aclID := args[1]
+		delete(state.ACLs, aclID)
+		return fmt.Sprintf("ACL %s removed", aclID)
+	case "stp":
+		state.STP.Enabled = false
+		return "STP disabled"
+	case "dhcp":
+		if state.DHCP != nil {
+			state.DHCP.Enabled = false
+		}
+		return "DHCP disabled"
+	case "bgp":
+		state.BGP.Enabled = false
+		state.BGP.ASNumber = 0
+		state.BGP.RouterID = ""
+		state.BGP.Neighbors = make(map[string]*BGPNeighbor)
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "bgp:") {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		if len(args) >= 2 {
+			return fmt.Sprintf("BGP process %s removed", args[1])
+		}
+		return "BGP process removed"
+	case "ipv6":
+		delete(state.DeviceConfig, "ipv6:enabled")
+		return "IPv6 disabled"
+	default:
+		return fmt.Sprintf("Error: undo '%s' is not supported", feature)
+	}
+}
+
 func GetPrompt(state *CLIState, deviceName string) string {
 	if n, ok := state.DeviceConfig["sysname"]; ok {
 		deviceName = n
@@ -3926,6 +4272,8 @@ func GetPrompt(state *CLIState, deviceName string) string {
 		return fmt.Sprintf("[%s-m-lag-domain]", deviceName)
 	case ViewBGP:
 		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
+	case ViewISIS:
+		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
 	case ViewVTY:
 		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
 	case ViewDHCPPool:
@@ -3945,11 +4293,11 @@ func (state *CLIState) SerializeToDeviceConfigData() *topology.DeviceConfigData 
 		SaveTime:       state.SaveTime,
 		History:        state.History,
 	}
-	// 复制所有接口相关的配置
+	// 复制全部 DeviceConfig 键（含 interface:/isis:/ospf:/bgp: 等协议键），
+	// 使 IS-IS/OSPF/BGP 等配置可随拓扑 save/reload 落盘（P1-F，风险2）。
+	// 注：此前仅拷贝 interface: 前缀键，导致协议键在重载后丢失。
 	for k, v := range state.DeviceConfig {
-		if strings.HasPrefix(k, "interface:") {
-			cfg.Interfaces[k] = v
-		}
+		cfg.Interfaces[k] = v
 	}
 	// 存储主机网络配置
 	if state.HostIP != "" {
@@ -4006,6 +4354,27 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 		}
 		state.VXLAN.VTEPIP = cfg.Interfaces["vxlan:source"]
 		state.VXLAN.PeerVTEPIP = cfg.Interfaces["vxlan:peer"]
+	}
+
+	// 从 ConfigData 恢复 IS-IS 配置（P1-F，T01）。cfg.Interfaces 已包含 isis:* 键，
+	// 上面循环已写回 state.DeviceConfig；此处重建 state.ISIS 结构化字段，
+	// 保证 display isis / ISIS 视图状态在 reload 后保持一致。
+	if enabled, ok := cfg.Interfaces["isis:enabled"]; ok && enabled == "true" {
+		if state.ISIS == nil {
+			state.ISIS = &ISISConfig{NetworkType: "level-2"}
+		}
+		state.ISIS.Enabled = true
+		if pid, ok := cfg.Interfaces["isis:process-id"]; ok {
+			if n, err := strconv.Atoi(pid); err == nil {
+				state.ISIS.ProcessID = n
+			}
+		}
+		if nt, ok := cfg.Interfaces["isis:network-type"]; ok && nt != "" {
+			state.ISIS.NetworkType = nt
+		}
+		if ir, ok := cfg.Interfaces["isis:import-route"]; ok && ir != "" {
+			state.ISIS.ImportRoutes = strings.Split(ir, ",")
+		}
 	}
 }
 
