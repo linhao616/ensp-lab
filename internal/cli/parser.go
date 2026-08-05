@@ -54,20 +54,20 @@ func ExecuteCommand(state *CLIState, cmd *Command) string {
 	return ExecuteCommandOn(state, cmd, state.DeviceType)
 }
 
-func ExecuteCommandWithContext(state *CLIState, cmd *Command, dt topology.DeviceType, t *topology.Topology) string {
+func ExecuteCommandWithContext(states map[string]*CLIState, state *CLIState, cmd *Command, dt topology.DeviceType, t *topology.Topology) string {
 	if cmd == nil {
 		return ""
 	}
 	command := strings.ToLower(cmd.Command)
 
 	if command == "ping" && len(cmd.Args) > 0 {
-		return executePingWithContext(state, cmd.Args[0], t)
+		return executePingWithContext(states, state, cmd.Args[0], t)
 	}
 
 	return ExecuteCommandOn(state, cmd, dt)
 }
 
-func executePingWithContext(state *CLIState, target string, t *topology.Topology) string {
+func executePingWithContext(states map[string]*CLIState, state *CLIState, target string, t *topology.Topology) string {
 	ifaces := getHostInterfaces(state)
 	for _, iface := range ifaces {
 		ip := iface["ip"]
@@ -80,7 +80,19 @@ func executePingWithContext(state *CLIState, target string, t *topology.Topology
 	}
 
 	if t != nil {
-		if CheckReachability(state, target, t) {
+		// P1-C T03：先经 ACL 评估路径（ComputeL3Path + ResolveSourceIP + EvaluatePathACL）。
+		// 命中 deny → 返回不可达(ACL 拦截)；否则回落 CheckReachability（T04 亦注入 ACL）。
+		// states 为拓扑级 CLIState 注册表，使评估器能读取途径 L3/防火墙设备「自身」的 ACL
+		// （修复 P1-C Round 1 中转设备 ACL 未生效）。
+		if dec := aclPreCheck(states, state.DeviceID, target, t); dec.Action == "deny" {
+			ruleID := 0
+			if dec.Rule != nil {
+				ruleID = dec.Rule.ID
+			}
+			return fmt.Sprintf("Ping %s: unreachable (ACL 拦截: %s acl %s rule %d, %s) %s",
+				target, dec.DeviceID, dec.ACLNum, ruleID, dec.Direction, aclSimNote())
+		}
+		if CheckReachability(states, state, target, t) {
 			return fmt.Sprintf("Ping %s: success", target)
 		} else {
 			return fmt.Sprintf("Ping %s: unreachable", target)
@@ -90,9 +102,20 @@ func executePingWithContext(state *CLIState, target string, t *topology.Topology
 	return fmt.Sprintf("Ping %s: success", target)
 }
 
-func CheckReachability(state *CLIState, targetIP string, t *topology.Topology) bool {
+func CheckReachability(states map[string]*CLIState, state *CLIState, targetIP string, t *topology.Topology) bool {
 	if state.DeviceID == "" {
 		return true
+	}
+
+	// P1-C T04：源设备出向 ACL 评估。命中 deny → 可达性视为不可达。
+	// 源设备用其自身 state（恒正确）；途径设备按 deviceID 从注册表取「自身」state。
+	srcFlow := PacketTuple{
+		SrcIP: ResolveSourceIP(state, targetIP, t),
+		DstIP: targetIP,
+		Proto: "icmp",
+	}
+	if dec := EvaluateDeviceACL(state, state.DeviceID, DirOutbound, srcFlow); dec.Action == "deny" {
+		return false
 	}
 
 	visited := make(map[string]bool)
@@ -121,6 +144,11 @@ func CheckReachability(state *CLIState, targetIP string, t *topology.Topology) b
 
 			if visited[next] {
 				continue
+			}
+			// P1-C T04：报文进入 next 设备的入向 ACL 评估；命中 deny → 不可达。
+			// 按 deviceID 从注册表取 next 自身 state（缺省视为未绑定 → 放行）。
+			if dec := EvaluateDeviceACL(deviceStateFor(states, next), next, DirInbound, srcFlow); dec.Action == "deny" {
+				return false
 			}
 			visited[next] = true
 			queue = append(queue, next)
@@ -1128,9 +1156,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		target := cmd.Args[0]
 		if state.ResolveTraceroute != nil {
 			res := state.ResolveTraceroute(target)
-			return FormatEngineTraceroute(res, 30)
+			return RenderTracerouteWithACL(nil, state, res, target, 30)
 		}
-		return FormatEngineTraceroute(nil, 30)
+		return RenderTracerouteWithACL(nil, state, nil, target, 30)
 	case "ipconfig":
 		if len(cmd.Args) >= 1 {
 			sub := strings.ToLower(cmd.Args[0])
@@ -3685,6 +3713,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "vxlan":
+			if arg1 == "tunnel" {
+				return buildVXLANTunnelDisplay(state)
+			}
 			var out strings.Builder
 			if state.VXLAN.Enabled {
 				out.WriteString("VXLAN Configuration:\n")

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 
+	"ensp-lab/internal/cli"
 	"ensp-lab/internal/topology"
 
 	"github.com/gin-gonic/gin"
@@ -89,6 +90,25 @@ func (r *Router) resolveDstIP(topo *topology.Topology, dst string) (string, bool
 func isTopologyDevice(t *topology.Topology, dst string) bool {
 	_, ok := t.GetDevice(dst)
 	return ok
+}
+
+// aclBlockFromDecision 把 CLIState ACL 评估器的 deny 结果转换为诊断面板可见的
+// blockedBy 结构化字段（{device, acl, rule, direction}）；非 deny 返回 nil。
+// 设计 §5 T05 / 拍板 #5：仅用于 diagnosticPing/diagnosticTraceroute 响应体。
+func aclBlockFromDecision(dec cli.Decision) map[string]interface{} {
+	if dec.Action != "deny" {
+		return nil
+	}
+	ruleID := 0
+	if dec.Rule != nil {
+		ruleID = dec.Rule.ID
+	}
+	return map[string]interface{}{
+		"device":    dec.DeviceID,
+		"acl":       dec.ACLNum,
+		"rule":      ruleID,
+		"direction": string(dec.Direction),
+	}
 }
 
 // diagnosticPingRequest 是 POST /api/diagnostic/:id/ping 的请求体。
@@ -196,7 +216,24 @@ func (r *Router) diagnosticPing(c *gin.Context) {
 		min, avg, max = 0, 0, 0
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	// P1-C T05：ACL 拦截下游可见性。命中 deny 时统一在响应体暴露 blockedBy，
+	// 且 ACL 代表真实过滤 → 视为不可达（诚实占位，不伪造成功）。
+	srcDevType := topology.DeviceType("")
+	if sd, ok := t.GetDevice(req.Src); ok {
+		srcDevType = sd.Type
+	}
+	pingState := r.getOrInitCLIState(t.ID, req.Src, srcDevType)
+	registry := r.cliStateRegistry()
+	pingPath := cli.ComputeL3Path(pingState, dstIP, t)
+	pingFlow := cli.PacketTuple{SrcIP: cli.ResolveSourceIP(pingState, dstIP, t), DstIP: dstIP, Proto: "icmp"}
+	blockedBy := aclBlockFromDecision(cli.EvaluatePathACL(registry, pingPath, pingFlow))
+	if blockedBy != nil {
+		success = false
+		min, avg, max = 0, 0, 0
+		loss = 100.0
+	}
+
+	resp := gin.H{
 		"success": success,
 		"output":  strings.Join(res.Details, "\n"),
 		"rtt": gin.H{
@@ -205,7 +242,11 @@ func (r *Router) diagnosticPing(c *gin.Context) {
 			"max":  max,
 			"loss": loss,
 		},
-	})
+	}
+	if blockedBy != nil {
+		resp["blockedBy"] = blockedBy
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // diagnosticTraceroute 在真实拓扑图上做路径发现，逐跳返回设备与延迟。
@@ -282,10 +323,36 @@ func (r *Router) diagnosticTraceroute(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"reachable": res.Reached,
+	// P1-C T05：ACL 拦截下游可见性。命中 deny 时统一在响应体暴露 blockedBy，
+	// 且 ACL 代表真实过滤 → 视为不可达（诚实占位）。
+	srcDevType := topology.DeviceType("")
+	if sd, ok := t.GetDevice(req.Src); ok {
+		srcDevType = sd.Type
+	}
+	trState := r.getOrInitCLIState(t.ID, req.Src, srcDevType)
+	registry := r.cliStateRegistry()
+	trPath := make([]string, 0, len(res.Hops)+1)
+	trPath = append(trPath, req.Src)
+	for _, h := range res.Hops {
+		if h.DeviceID != "" {
+			trPath = append(trPath, h.DeviceID)
+		}
+	}
+	trFlow := cli.PacketTuple{SrcIP: cli.ResolveSourceIP(trState, dstIP, t), DstIP: dstIP, Proto: "icmp"}
+	blockedBy := aclBlockFromDecision(cli.EvaluatePathACL(registry, trPath, trFlow))
+	reachable := res.Reached
+	if blockedBy != nil {
+		reachable = false
+	}
+
+	resp := gin.H{
+		"reachable": reachable,
 		"hops":      hops,
-	})
+	}
+	if blockedBy != nil {
+		resp["blockedBy"] = blockedBy
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // diagnosticDNS 对指定域名执行系统 DNS 解析，返回真实公网 IP。

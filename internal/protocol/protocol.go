@@ -523,6 +523,9 @@ func (p *ProtocolSimulator) AddACL(deviceID, aclNum string, rules []*ACLRule) {
 	p.InitRouter(deviceID).ACLs[aclNum] = rules
 }
 
+// Deprecated: superseded by cli ACL evaluator
+// （internal/cli/acl_eval.go 的 EvaluateDeviceACL/EvaluatePathACL）。
+// 本期 CLIState 评估器为 ACL 判定的唯一消费方；请勿在新代码中调用本函数。
 func (p *ProtocolSimulator) MatchACL(deviceID, aclNum, srcIP, dstIP, protocol string, dstPort int) bool {
 	router, ok := p.getRouter(deviceID)
 	if !ok {

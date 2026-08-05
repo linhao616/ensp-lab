@@ -45,6 +45,8 @@ func (r *Router) executeCLI(c *gin.Context) {
 	}
 
 	state := r.getOrInitCLIState(id, deviceId, dt)
+	// 拓扑级 CLIState 注册表快照：供 P1-C ACL 跨设备评估（途径 L3/防火墙设备自身 ACL）。
+	registry := r.cliStateRegistry()
 
 	var req struct {
 		Command string `json:"command"`
@@ -84,7 +86,7 @@ func (r *Router) executeCLI(c *gin.Context) {
 			// 避免在极端路径下命令无输出。
 			logging.Warn("getOrCreateEngine failed, fallback to parser",
 				zap.String("id", id), zap.String("command", lowerCmd), zap.Error(engErr))
-			output = cli.ExecuteCommandWithContext(state, cmd, dt, t)
+			output = cli.ExecuteCommandWithContext(registry, state, cmd, dt, t)
 		}
 
 		// 查找目标设备 ID，供前端动画使用
@@ -111,7 +113,7 @@ func (r *Router) executeCLI(c *gin.Context) {
 		})
 		return
 	} else if err == nil && t != nil {
-		output = cli.ExecuteCommandWithContext(state, cmd, dt, t)
+		output = cli.ExecuteCommandWithContext(registry, state, cmd, dt, t)
 	} else {
 		output = cli.ExecuteCommandOn(state, cmd, dt)
 	}
@@ -188,6 +190,21 @@ func (r *Router) dropCLIState(deviceId string) {
 	r.cliMu.Unlock()
 }
 
+// cliStateRegistry 返回拓扑内各设备 CLIState 的快照（deviceID→*CLIState），
+// 供 ACL 跨设备评估使用（P1-C Round 1 修复：使评估器能读取途径 L3/防火墙设备
+// 「自身」的 traffic-filter ACL，而非仅源设备 state）。在 cliMu.RLock 下复制，
+// 返回的快照为只读，可安全跨 goroutine 传递给评估器（避免并发修改底层 map 触发
+// fatal；个别 *CLIState 字段的并发读写沿用既有共享状态模型，不在本次范围）。
+func (r *Router) cliStateRegistry() map[string]*cli.CLIState {
+	r.cliMu.RLock()
+	defer r.cliMu.RUnlock()
+	reg := make(map[string]*cli.CLIState, len(r.cliStates))
+	for k, v := range r.cliStates {
+		reg[k] = v
+	}
+	return reg
+}
+
 // buildCLIState 从拓扑模型构造一台设备的 CLIState（不含 cliStates map 的读写）。
 func (r *Router) buildCLIState(id, deviceId string, dt topology.DeviceType) *cli.CLIState {
 	var state *cli.CLIState
@@ -235,6 +252,8 @@ func (r *Router) buildCLIState(id, deviceId string, dt topology.DeviceType) *cli
 			state.Interfaces = realIfaces
 			state.ARPTable = []*cli.ARPEntry{}
 		}
+		// 注入拓扑引用，使 dis vxlan tunnel 等命令能读取 VXLAN 隧道链路。
+		state.Topology = t
 	} else {
 		state = cli.NewCLIStateWithType(dt)
 	}
@@ -289,6 +308,7 @@ func updateDeviceInterfaces(device *topology.Device, state *cli.CLIState) {
 // wall-clock RTT），不可达时如实报告 100% loss。任何引擎层错误都降级为
 // parser 兜底输出，避免命令无结果。
 func (r *Router) renderEnginePing(eng sim.Engine, deviceId, targetIP string, t *topology.Topology) string {
+	registry := r.cliStateRegistry()
 	res, perr := eng.Ping(deviceId, targetIP)
 	if perr != nil {
 		logging.Warn("engine.Ping failed, fallback to parser",
@@ -297,9 +317,12 @@ func (r *Router) renderEnginePing(eng sim.Engine, deviceId, targetIP string, t *
 			zap.Error(perr))
 		// 借用 parser 的 CLIState 兜底渲染：先构造一个临时状态。
 		state := cli.NewCLIStateWithType(r.lookupDeviceType(t.ID, deviceId))
-		return cli.ExecuteCommandWithContext(state, cli.ParseCommand("ping "+targetIP), state.DeviceType, t)
+		return cli.ExecuteCommandWithContext(registry, state, cli.ParseCommand("ping "+targetIP), state.DeviceType, t)
 	}
-	return cli.FormatEnginePing(res, targetIP)
+	// P1-C T03：经 CLIState ACL 评估器叠加真实过滤判定。
+	dt := r.lookupDeviceType(t.ID, deviceId)
+	state := r.getOrInitCLIState(t.ID, deviceId, dt)
+	return cli.RenderPingWithACL(registry, state, res, targetIP, t)
 }
 
 // renderEngineTraceroute 调用真实引擎执行 tracert 并渲染逐跳结果。
@@ -308,6 +331,7 @@ func (r *Router) renderEnginePing(eng sim.Engine, deviceId, targetIP string, t *
 // parser.go:1139 硬编码的 2 跳。不可达时渲染 "* * *" 而非伪造路径。
 func (r *Router) renderEngineTraceroute(eng sim.Engine, deviceId, targetIP string, t *topology.Topology) string {
 	const maxTTL = 30
+	registry := r.cliStateRegistry()
 	res, terr := eng.Traceroute(deviceId, targetIP, maxTTL)
 	if terr != nil {
 		logging.Warn("engine.Traceroute failed, fallback to parser",
@@ -315,7 +339,10 @@ func (r *Router) renderEngineTraceroute(eng sim.Engine, deviceId, targetIP strin
 			zap.String("targetIP", targetIP),
 			zap.Error(terr))
 		state := cli.NewCLIStateWithType(r.lookupDeviceType(t.ID, deviceId))
-		return cli.ExecuteCommandWithContext(state, cli.ParseCommand("tracert "+targetIP), state.DeviceType, t)
+		return cli.ExecuteCommandWithContext(registry, state, cli.ParseCommand("tracert "+targetIP), state.DeviceType, t)
 	}
-	return cli.FormatEngineTraceroute(res, maxTTL)
+	// P1-C T02：经 CLIState ACL 评估器叠加真实过滤判定。
+	dt := r.lookupDeviceType(t.ID, deviceId)
+	state := r.getOrInitCLIState(t.ID, deviceId, dt)
+	return cli.RenderTracerouteWithACL(registry, state, res, targetIP, maxTTL)
 }

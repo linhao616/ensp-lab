@@ -42,6 +42,7 @@ type CLIState struct {
 	DeviceType     topology.DeviceType
 	DeviceName     string            // 设备名称
 	DeviceID       string            // 设备ID
+	Topology       *topology.Topology // 拓扑引用（dis vxlan tunnel 等需读取拓扑链路时由 api 层注入；可为 nil）
 	DeviceConfig   map[string]string // 设备配置键值对
 	DefaultGateway string
 	HostIP         string // PC 主机 IP 地址

@@ -359,6 +359,9 @@ func (f *Firewall) GetSessions() map[string]*Session {
 // simulation pipeline, replace this with real handling logic that
 // consults f.ACLs / f.NATRules / f.PATRules and returns either the
 // (possibly rewritten) packet to forward or nil to drop.
+// Deprecated: superseded by cli ACL evaluator
+// （internal/cli/acl_eval.go 的 EvaluateDeviceACL/EvaluatePathACL）。
+// 本期 CLIState 评估器为 ACL 判定的唯一消费方；请勿在新代码中调用本方法。
 func (f *Firewall) HandlePacket(pkt *sim.Packet) []*sim.Packet {
 	return nil
 }
