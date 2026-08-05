@@ -1,65 +1,57 @@
-%% protoSim per-topology 重构 — 类/接口关系（方案 A）
-%% 仅展示与本次重构相关的类型与关系。
-
 classDiagram
-    direction LR
-
-    class Topology {
-        <<package: ensp-lab/internal/topology>>
-        +GetDevice(id string) (*Device, bool)
-        +GetDevices() map~string,*Device~
-        +GetLinks() []*Link
+    class CLIState {
+        +map~string~string~ DeviceConfig
+        +map~string~[]*ACLRule ACLs
+        +ResolveTraceroute func
     }
-
-    class ProtocolSimulator {
-        <<package: ensp-lab/internal/protocol>>
-        -topology *topology.Topology
-        -routers map~string~*RouterState
-        -mu sync.RWMutex
-        +NewProtocolSimulator(t *topology.Topology) *ProtocolSimulator
-        +InitRouter(deviceID string) *RouterState
-        +RemoveRouter(deviceID string)
-        +FindRoute(deviceID, destIP string) *RouteEntry
-        +CheckReachability(srcDevice, dstDevice, srcIP, dstIP string, topo *topology.Topology) bool
-        -getRouter(deviceID string) (*RouterState, bool)
+    class ACLRule {
+        +int ID
+        +string Name
+        +string Type
+        +string Action
+        +string Protocol
+        +string SrcIP
+        +string SrcWildcard
+        +string DstIP
+        +string DstWildcard
+        +string DstPort
+        +string DstPortOp
+        +string DstPortEnd
+        +string SourcePort
     }
-
-    class RouterState {
-        <<package: ensp-lab/internal/protocol>>
-        +DeviceID string
-        +RoutingTable []RouteEntry
-        +OSPF *OSPFState
-        +BGP *BGPConfig
-        +ICMP *ICMPProtocol
-        +...(其余协议状态)
+    class PacketTuple {
+        +string SrcIP
+        +string DstIP
+        +string Proto
+        +int SrcPort
+        +int DstPort
     }
-
-    class RouteEntry {
-        +Destination string
-        +Mask string
-        +NextHop string
-        +Interface string
-        +Protocol string
-        +Metric int
+    class Direction {
+        <<enumeration>>
+        inbound
+        outbound
     }
-
-    class Router {
-        <<package: ensp-lab/internal/api>>
-        -store storage.Storage
-        -protoSim *protocol.ProtocolSimulator
-        -engines map~string~sim.Engine
-        +NewRouter(store, staticFS, cfg) *gin.Engine
-        +getTopology(c)
-        +updateTopology(c)
-        +deleteTopology(c)
-        +exportTopology(c)
+    class Decision {
+        +string Action
+        +bool Matched
+        +*ACLRule Rule
+        +string ACLNum
+        +string DeviceID
+        +Direction Direction
     }
-
-    RouterState *-- RouteEntry : 含多条
-    ProtocolSimulator "1" o-- "0..*" RouterState : routers[deviceID]
-    ProtocolSimulator ..> Topology : CheckReachability 入参(方案A: 调用方传入)
-    Router --> ProtocolSimulator : 持有单例(protoSim 字段)
-    Router --> Topology : 经 store.GetTopology 获取
-
-    note for ProtocolSimulator "方案 A 关键变更：\nCheckReachability 新增 topo *topology.Topology 入参，\n不再读取内部 p.topology 字段（避免多拓扑下惰性失效）。\nFindRoute 保持按 deviceID 查 routers 表，不需 topo。"
-    note for Router "protoSim 仍为全局单例（*ProtocolSimulator），\nNewProtocolSimulator(nil) 调用约定不变，\nNewRouter(store, staticFS, cfg) 签名不变。"
+    class ACLEvaluator {
+        +EvaluateDeviceACL(state, deviceID, dir, flow) Decision
+        +EvaluatePathACL(state, path, flow) Decision
+        +ComputeL3Path(state, targetIP, t) []string
+        +ResolveSourceIP(state, dstIP, t) string
+        -matchACLRule(rule, flow) bool
+        -wildcardToMask(wildcard) int
+        -aclSimNote() string
+        -evaluateNATACL(state, deviceID, flow) Decision
+    }
+    CLIState "1" o-- "*" ACLRule : ACLs
+    ACLEvaluator ..> CLIState : 只读(单一事实源)
+    ACLEvaluator ..> ACLRule : 匹配基础层字段
+    ACLEvaluator ..> PacketTuple : 输入五元组
+    ACLEvaluator ..> Decision : 输出
+    PacketTuple ..> Direction : 逐设备方向由调用方指定
