@@ -2,6 +2,24 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.4.0] - 2026-08-05
+
+### Added
+- **VRP CLI 仿真广度（P1-F）**：新增 `isis` / `quit-cli` / `vlanif` 引导 / `port-security` / `nslookup` / `http` / `https` / `dns` / `ftp` 命令；ISIS 真实配置（`network` / `import-route`）与 `display isis`；系统视图 `undo`（ospf/vlan/acl/stp/dhcp/bgp/ipv6/**isis**）；`display current-configuration`（VR 风格）、`display bgp peer`、`display diagnostic-information`；`tracert` 真实引擎兜底（无引擎不 panic）。新增 `CLIState.ISISConfig` 及配置全量序列化落盘。
+- **P1-F 遗留修补**：`undo isis` 实现；OSPF/BGP 配置在拓扑 reload 后持久化（`ospf:*` / `bgp:*` DeviceConfig 键镜像 + 加载还原块）。
+- **真实诊断（P1-D）**：诊断网关 `POST /api/diagnostic/:id/{ping,traceroute,dns}` 与 `GET /api/system/status`；引擎模式按 build-tag 区分（`linux && gont` = full，否则 = lite）；前端诊断接真实 API，移除造假的随机 RTT / 路径 / DNS；Bandwidth / PCAP 改为诚实占位（数据源未接入时明确提示，不编造数字）。
+- **Firewall 真实过滤路线定调**：`docs/firewall-route-decision.md` 完成可行性调研与用户拍板（路线 B：CLIState 仿真 ACL 评估器，基础 IP / 协议语义，介入 ping / tracert / 可达性全路径）。本期仅含决策文档，真实过滤实现留待 P1-C。
+- **部署与数据**：Dockerfile + `.dockerignore` 单二进制容器部署，CI 新增 `docker-verify` job；新增 12 个实验拓扑 JSON 数据文件；MIT LICENSE。
+
+### Changed
+- **安全加固（P0）**：API 写类 handler 全量深拷贝（`Topology.Clone()`）消除数据竞争；CORS 收紧为严格白名单（默认仅 `127.0.0.1` / `localhost` 同源 + `ENS_CORS_ORIGINS` 追加可信源，`AllowHeaders` 仅含 `Origin` / `Content-Type`）；外部诊断接口增加门控；引擎轮询常量化（5ms，支持 `ENS_ENGINE_POLL_MS` 覆盖）并修复同步去抖（R1 / R4）。
+
+### Fixed
+- protoSim 多拓扑路由失效（`CheckReachability` 增加 `topo` 入参，零生命周期改动）；若干并发修正与 CLI 历史 / 资源监控稳定性修复；安全相关 5xx / 存储 404 统一为泛化错误响应（细节仅入日志）。
+
+### Security
+- 集中输入校验器 `internal/api/validation.go`（TopoID 正则 / 设备类型枚举 / 控制字符拒绝 / `net.ParseIP`·`ParseCIDR` / OSPF Area / ASN / Finite / TopologyPayload 校验）；路径穿越防护（topology id 与导出文件名 `sanitizeForFilename`）；统一错误响应 `clientError`（不向客户端泄露内部细节）；pprof token 守卫（空则自动生成并 Warn）；导出文件名安全转义；CI 安全门禁（SAST / 依赖扫描 / secrets 扫描）。
+
 ## [v0.3.0] - 2026-07-22
 
 ### Added

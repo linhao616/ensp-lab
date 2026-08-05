@@ -20,18 +20,19 @@
 - [x] 拓扑标注（Annotation）层 - API + 前端画布标注已完成
 - [x] 文件持久化存储 - `internal/storage/file_storage.go` 已完成
 - [x] API handler 拆分重构 - 已拆分到 topology_/device_/link_/cli_/annotation_/system_handlers.go，`router.go` 仅保留路由注册，构建通过
+- [x] 安全加固（P0） - 集中输入校验（`validation.go`）、CORS 严格白名单、外部诊断门控、API 限流、pprof token 守卫、路径穿越防护（topology id / 导出文件名）
 
 ### P1（高优先级）
 
-- [~] 设备 CLI 仿真 - VRP CLI 解析与状态记录已完成，WebSocket 终端交互待实现
+- [x] 设备 CLI 仿真 - VRP CLI 解析与状态记录 + 前端 CLI 终端（WebSocket/SSE 交互）已完成，覆盖 ISIS/BGP/OSPF/ACL 等命令与 display
 - [~] 数据包可视化 - SSE 事件流 + `PacketAnimator` 组件已完成，路径动画待完善
-- [ ] 拓扑导入/导出（JSON/YAML）- 支持拓扑配置文件的导入和导出
+- [x] 拓扑导入/导出（JSON）- 支持拓扑配置文件的导入和导出（API + 前端）
 
 ### P2（中优先级）
 
 - [x] OSPF/BGP 动态路由协议支持（基于 FRR）- Linux + gont 模式下通过 `internal/router` 真实下发
 - [ ] 链路质量模拟（延迟、丢包、带宽限制）- 支持网络质量参数配置
-- [ ] Docker 化部署 - 提供 Docker 镜像和 Docker Compose 配置
+- [x] Docker 化部署 - 提供 Dockerfile + `.dockerignore` 单二进制镜像与 CI `docker-verify` job
 
 ## 四、长期展望（6 个月以上）
 
@@ -47,8 +48,9 @@
 | v0.2.0 | ✅ 已完成 | 2026-07 | VXLAN Spine-Leaf + 模板引擎 + 拓扑标注 + 文件持久化 + 20+ 协议建模 |
 | v0.3.0 | ✅ 已完成 | 2026-07 | API handler 拆分重构（构建通过）+ 设备详情浮动窗口 + Ping 测试面板增强（任意源/目标 + 连续 Ping）+ 引擎懒启动（移除启动按钮） |
 | v0.3.1 | ✅ 已完成 | 2026-07 | 稳定性加固：IP 合法性校验（HTTP 400）+ dbgSim 限流 + 低资源测试报告 + 最小启动配置 |
-| v0.4.0 | 📅 下月目标 | 2026-09 | WebSocket 实时 CLI 终端 + 拓扑导入/导出 |
-| v1.0.0 | 📅 后续 | - | 完整功能发布 + Docker 部署 + 链路质量模拟 |
+| v0.4.0 | ✅ 已完成 | 2026-08 | 安全加固(P0: V-01~V-04 / F1-F10) + protoSim 多拓扑修复 + 真实诊断(P1-D) + VRP CLI 广度(P1-F) + Firewall 路线定调 |
+| v0.5.0 | 📅 后续 | - | P1-C Firewall 真实过滤（路线 B 仿真 ACL）+ P2 CLI 增强（Tab 补全 / 历史上下键 / EVPN 详细 display） |
+| v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（延迟 / 丢包 / 带宽） |
 
 ## 六、贡献指南
 
