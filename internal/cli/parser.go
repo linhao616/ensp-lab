@@ -1338,7 +1338,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "area" {
 					areaID, _ := parseNum(cmd.Args[2])
 					state.OSPF.AreaID = areaID
+					state.DeviceConfig["ospf:area-id"] = fmt.Sprintf("%d", areaID)
 				}
+				// 镜像到 DeviceConfig 以便随拓扑 save/reload 落盘（L2 修复，对齐 isis:* 键）。
+				state.DeviceConfig["ospf:enabled"] = "true"
+				state.DeviceConfig["ospf:process-id"] = fmt.Sprintf("%d", processID)
 				return fmt.Sprintf("OSPF process %d started", processID)
 			}
 		}
@@ -2108,7 +2112,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		state.BGP.ASNumber = asNumber
 		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "router-id" {
 			state.BGP.RouterID = cmd.Args[2]
+			state.DeviceConfig["bgp:router-id"] = state.BGP.RouterID
 		}
+		// 镜像到 DeviceConfig 以便随拓扑 save/reload 落盘（L2 修复，对齐 isis:* 键）。
+		state.DeviceConfig["bgp:enabled"] = "true"
+		state.DeviceConfig["bgp:as-number"] = fmt.Sprintf("%d", asNumber)
 		state.CurrentView = ViewBGP
 		state.CurrentSub = fmt.Sprintf("bgp-%d", asNumber)
 		return fmt.Sprintf("Enter BGP view, AS %d", asNumber)
@@ -2127,6 +2135,14 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			RemoteAS:  remoteAS,
 			EBGP:      ebgp,
 		}
+		// 镜像邻居到 DeviceConfig 以便随拓扑 save/reload 落盘（L2 修复，对齐 isis:* 键）。
+		peerIPs := make([]string, 0, len(state.BGP.Neighbors))
+		for ip := range state.BGP.Neighbors {
+			peerIPs = append(peerIPs, ip)
+		}
+		state.DeviceConfig["bgp:peer-ips"] = strings.Join(peerIPs, ",")
+		state.DeviceConfig["bgp:neighbor:"+peerIP+":remote-as"] = fmt.Sprintf("%d", remoteAS)
+		state.DeviceConfig["bgp:neighbor:"+peerIP+":ebgp"] = fmt.Sprintf("%t", ebgp)
 		return fmt.Sprintf("BGP neighbor %s configured", peerIP)
 	case "rip":
 		if state.CurrentView != ViewSystem {
@@ -4247,6 +4263,22 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 	case "ipv6":
 		delete(state.DeviceConfig, "ipv6:enabled")
 		return "IPv6 disabled"
+	case "isis":
+		// 反向清理 IS-IS 配置（P1-F 遗留 L1）。严格对齐 undo ospf/undo bgp 写法：
+		// 复位结构化字段并清理历史写盘的 isis:* 键。
+		state.ISIS.Enabled = false
+		state.ISIS.ProcessID = 0
+		state.ISIS.NetworkType = "level-2"
+		state.ISIS.ImportRoutes = nil
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "isis:") {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		if len(args) >= 2 {
+			return fmt.Sprintf("ISIS process %s removed", args[1])
+		}
+		return "ISIS process removed"
 	default:
 		return fmt.Sprintf("Error: undo '%s' is not supported", feature)
 	}
@@ -4374,6 +4406,57 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 		}
 		if ir, ok := cfg.Interfaces["isis:import-route"]; ok && ir != "" {
 			state.ISIS.ImportRoutes = strings.Split(ir, ",")
+		}
+	}
+
+	// 从 ConfigData 恢复 OSPF 配置（L2 修复，既有缺口）。cfg.Interfaces 已包含 ospf:* 键，
+	// 上面循环已写回 state.DeviceConfig；此处重建 state.OSPF 结构化字段，
+	// 保证 display ospf / OSPF 视图状态在 reload 后保持一致（对齐 isis 持久化做法）。
+	if enabled, ok := cfg.Interfaces["ospf:enabled"]; ok && enabled == "true" {
+		state.OSPF.Enabled = true
+		if pid, ok := cfg.Interfaces["ospf:process-id"]; ok {
+			if n, err := strconv.Atoi(pid); err == nil {
+				state.OSPF.ProcessID = n
+			}
+		}
+		if aid, ok := cfg.Interfaces["ospf:area-id"]; ok {
+			if n, err := strconv.Atoi(aid); err == nil {
+				state.OSPF.AreaID = n
+			}
+		}
+	}
+
+	// 从 ConfigData 恢复 BGP 配置（L2 修复，既有缺口）。对齐 isis 持久化做法。
+	if enabled, ok := cfg.Interfaces["bgp:enabled"]; ok && enabled == "true" {
+		state.BGP.Enabled = true
+		if as, ok := cfg.Interfaces["bgp:as-number"]; ok {
+			if n, err := strconv.Atoi(as); err == nil {
+				state.BGP.ASNumber = n
+			}
+		}
+		if rid, ok := cfg.Interfaces["bgp:router-id"]; ok {
+			state.BGP.RouterID = rid
+		}
+		if state.BGP.Neighbors == nil {
+			state.BGP.Neighbors = make(map[string]*BGPNeighbor)
+		}
+		if peerIPs, ok := cfg.Interfaces["bgp:peer-ips"]; ok && peerIPs != "" {
+			for _, ip := range strings.Split(peerIPs, ",") {
+				ip = strings.TrimSpace(ip)
+				if ip == "" {
+					continue
+				}
+				nb := &BGPNeighbor{IPAddress: ip}
+				if ras, ok := cfg.Interfaces["bgp:neighbor:"+ip+":remote-as"]; ok {
+					if n, err := strconv.Atoi(ras); err == nil {
+						nb.RemoteAS = n
+					}
+				}
+				if ebgp, ok := cfg.Interfaces["bgp:neighbor:"+ip+":ebgp"]; ok {
+					nb.EBGP = ebgp == "true"
+				}
+				state.BGP.Neighbors[ip] = nb
+			}
 		}
 	}
 }
