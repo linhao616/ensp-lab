@@ -328,3 +328,277 @@ func itoa(i int) string {
 	}
 	return string(rune('0' + i))
 }
+
+// ----------------------------------------------------------------------------
+// P2 NAT 真实过滤：applyNAT / ComputeL3PathNAT / EvaluatePathACL 跨 NAT（对齐 AC5）
+// ----------------------------------------------------------------------------
+
+// newNATServerTopo 构造 nat server 场景拓扑：
+//
+//	out(203.0.113.50, PC) -- nat(203.0.113.1/192.168.1.1, Router) -- srv(192.168.1.100, Server)
+//
+// nat 设备配 nat server：公网 203.0.113.10 → 内网 192.168.1.100。
+func newNATServerTopo() *topology.Topology {
+	t := topology.NewTopology("tnat", "nat-test")
+	t.AddDevice(&topology.Device{
+		ID:   "out",
+		Type: topology.DevicePC,
+		Interfaces: map[string]*topology.Interface{
+			"out0": {IPAddress: "203.0.113.50", Status: "up"},
+		},
+	})
+	t.AddDevice(&topology.Device{
+		ID:   "nat",
+		Type: topology.DeviceRouter,
+		Interfaces: map[string]*topology.Interface{
+			"nat-out": {IPAddress: "203.0.113.1", Status: "up"},
+			"nat-in":  {IPAddress: "192.168.1.1", Status: "up"},
+		},
+	})
+	t.AddDevice(&topology.Device{
+		ID:   "srv",
+		Type: topology.DeviceServer,
+		Interfaces: map[string]*topology.Interface{
+			"srv0": {IPAddress: "192.168.1.100", Status: "up"},
+		},
+	})
+	t.AddLink(&topology.Link{ID: "ln1", SourceDevice: "out", TargetDevice: "nat"})
+	t.AddLink(&topology.Link{ID: "ln2", SourceDevice: "nat", TargetDevice: "srv"})
+	return t
+}
+
+// newNATServerStates 返回 nat server 场景的 CLIState 注册表（nat 设备带 NAT 配置）。
+func newNATServerStates() map[string]*CLIState {
+	nat := newACLTestState(topology.DeviceRouter, "nat")
+	nat.NAT = &NATConfig{
+		Enabled: true,
+		Servers: []NATServer{{GlobalIP: "203.0.113.10", InsideIP: "192.168.1.100"}},
+	}
+	out := newACLTestState(topology.DevicePC, "out")
+	srv := newACLTestState(topology.DeviceServer, "srv")
+	return map[string]*CLIState{"nat": nat, "out": out, "srv": srv}
+}
+
+// newNATOutboundTopo 构造 nat outbound 场景拓扑：
+//
+//	pc(192.168.1.10, PC) -- nat(192.168.1.1/203.0.113.1, Router) -- web(203.0.113.50, Server)
+func newNATOutboundTopo() *topology.Topology {
+	t := topology.NewTopology("tnat", "nat-out-test")
+	t.AddDevice(&topology.Device{
+		ID:   "pc",
+		Type: topology.DevicePC,
+		Interfaces: map[string]*topology.Interface{
+			"pc0": {IPAddress: "192.168.1.10", Status: "up"},
+		},
+	})
+	t.AddDevice(&topology.Device{
+		ID:   "nat",
+		Type: topology.DeviceRouter,
+		Interfaces: map[string]*topology.Interface{
+			"nat-in":  {IPAddress: "192.168.1.1", Status: "up"},
+			"nat-out": {IPAddress: "203.0.113.1", Status: "up"},
+		},
+	})
+	t.AddDevice(&topology.Device{
+		ID:   "web",
+		Type: topology.DeviceServer,
+		Interfaces: map[string]*topology.Interface{
+			"web0": {IPAddress: "203.0.113.50", Status: "up"},
+		},
+	})
+	t.AddLink(&topology.Link{ID: "lo1", SourceDevice: "pc", TargetDevice: "nat"})
+	t.AddLink(&topology.Link{ID: "lo2", SourceDevice: "nat", TargetDevice: "web"})
+	return t
+}
+
+// newNATOutboundState 构造 nat outbound 设备状态：mode="easy-ip" 或 "address-group"。
+// ACL 2000 permit 源 192.168.1.0/24（命中内网源）；路由 0.0.0.0/0 朝出接口 nat-out。
+func newNATOutboundState(mode string) *CLIState {
+	nat := newACLTestState(topology.DeviceRouter, "nat")
+	nat.Interfaces = map[string]*InterfaceConfig{
+		"GigabitEthernet0/0": {Name: "GigabitEthernet0/0", IP: "192.168.1.1", Mask: "255.255.255.0"},
+		"GigabitEthernet0/1": {Name: "GigabitEthernet0/1", IP: "203.0.113.1", Mask: "255.255.255.0"},
+	}
+	nat.Routes = []*RouteEntry{
+		{Destination: "203.0.113.0", Mask: "255.255.255.0", Interface: "GigabitEthernet0/1"},
+	}
+	nat.ACLs["2000"] = []*ACLRule{
+		{ID: 10, Action: "permit", Protocol: "icmp", SrcIP: "192.168.1.0", SrcWildcard: "0.0.0.255"},
+	}
+	nat.NAT = &NATConfig{Enabled: true}
+	if mode == "address-group" {
+		nat.NAT.Outbounds = []NATOutbound{{ACLNum: 2000, Type: "address-group", AddressPool: 1}}
+		nat.NAT.AddressPools = []NATAddressPool{{ID: 1, StartIP: "203.0.113.5", EndIP: "203.0.113.10"}}
+	} else {
+		nat.NAT.Outbounds = []NATOutbound{{ACLNum: 2000, Type: "easy-ip"}}
+	}
+	return nat
+}
+
+// ---- applyNAT：Easy IP 改写 ----
+
+func TestApplyNAT_EasyIP(t *testing.T) {
+	nat := newNATOutboundState("easy-ip")
+	flow := PacketTuple{SrcIP: "192.168.1.10", DstIP: "203.0.113.50", Proto: "icmp"}
+	got, ok := applyNAT(nat, DirOutbound, flow)
+	assertEqual(t, "translated", ok, true)
+	assertEqual(t, "srcIP", got.SrcIP, "203.0.113.1") // 出接口 IP（朝目标最长前缀匹配）
+	assertEqual(t, "dstIP unchanged", got.DstIP, "203.0.113.50")
+	// 纯函数：输入 flow 不被修改（值传递）
+	assertEqual(t, "input srcIP unchanged", flow.SrcIP, "192.168.1.10")
+}
+
+// ---- applyNAT：address-group 首 IP 改写 ----
+
+func TestApplyNAT_AddressGroupFirstIP(t *testing.T) {
+	nat := newNATOutboundState("address-group")
+	flow := PacketTuple{SrcIP: "192.168.1.10", DstIP: "203.0.113.50", Proto: "icmp"}
+	got, ok := applyNAT(nat, DirOutbound, flow)
+	assertEqual(t, "translated", ok, true)
+	assertEqual(t, "srcIP", got.SrcIP, "203.0.113.5") // 地址池 StartIP（首 IP）
+}
+
+// ---- applyNAT：nat server DstIP 改写（仅 inbound 触发）----
+
+func TestApplyNAT_NATServerDstIP(t *testing.T) {
+	states := newNATServerStates()
+	nat := states["nat"]
+	flow := PacketTuple{SrcIP: "203.0.113.50", DstIP: "203.0.113.10", Proto: "icmp"}
+	got, ok := applyNAT(nat, DirInbound, flow)
+	assertEqual(t, "translated", ok, true)
+	assertEqual(t, "dstIP", got.DstIP, "192.168.1.100") // GlobalIP → InsideIP
+	assertEqual(t, "srcIP unchanged", got.SrcIP, "203.0.113.50")
+	// outbound 方向不触发 nat server（仅 inbound）
+	got2, ok2 := applyNAT(nat, DirOutbound, flow)
+	assertEqual(t, "outbound not translated", ok2, false)
+	assertEqual(t, "outbound dstIP unchanged", got2.DstIP, "203.0.113.10")
+}
+
+// ---- applyNAT：无匹配不改写 ----
+
+func TestApplyNAT_NoMatch(t *testing.T) {
+	nat := newNATOutboundState("easy-ip")
+	// SrcIP 不在 ACL 2000 permit 域（192.168.1.0/24）→ 不转换
+	flow := PacketTuple{SrcIP: "10.99.99.10", DstIP: "203.0.113.50", Proto: "icmp"}
+	got, ok := applyNAT(nat, DirOutbound, flow)
+	assertEqual(t, "translated", ok, false)
+	assertEqual(t, "srcIP unchanged", got.SrcIP, "10.99.99.10")
+	// 无 NAT 配置 → 原样返回
+	plain := newACLTestState(topology.DeviceRouter, "r1")
+	got3, ok3 := applyNAT(plain, DirOutbound, flow)
+	assertEqual(t, "no nat translated", ok3, false)
+	assertEqual(t, "no nat srcIP unchanged", got3.SrcIP, "10.99.99.10")
+}
+
+// ---- applyNAT：纯函数无副作用（多次调用一致 + 不改 state）----
+
+func TestApplyNAT_PureNoSideEffect(t *testing.T) {
+	nat := newNATOutboundState("easy-ip")
+	flow := PacketTuple{SrcIP: "192.168.1.10", DstIP: "203.0.113.50", Proto: "icmp"}
+	g1, ok1 := applyNAT(nat, DirOutbound, flow)
+	g2, ok2 := applyNAT(nat, DirOutbound, flow)
+	assertEqual(t, "ok1", ok1, true)
+	assertEqual(t, "ok2", ok2, true)
+	assertEqual(t, "srcIP consistent", g1.SrcIP, g2.SrcIP)
+	assertEqual(t, "dstIP consistent", g1.DstIP, g2.DstIP)
+	// state.NAT 未被修改
+	if nat.NAT == nil || !nat.NAT.Enabled {
+		t.Errorf("applyNAT 不应修改 state.NAT（Enabled 被改）")
+	}
+	if len(nat.NAT.Outbounds) != 1 || nat.NAT.Outbounds[0].Type != "easy-ip" {
+		t.Errorf("applyNAT 不应修改 NAT.Outbounds，got %+v", nat.NAT.Outbounds)
+	}
+}
+
+// ---- ComputeL3PathNAT：公网 IP 命中 GlobalIP → [...,natDev,insideDev] 且 natTranslated=true ----
+
+func TestComputeL3PathNAT_ServerGlobalIP(t *testing.T) {
+	topo := newNATServerTopo()
+	states := newNATServerStates()
+	srcState := states["out"]
+	path, translated := ComputeL3PathNAT(states, srcState, "203.0.113.10", topo)
+	assertEqual(t, "translated", translated, true)
+	want := []string{"out", "nat", "srv"}
+	if len(path) != len(want) {
+		t.Fatalf("ComputeL3PathNAT len=%d want %d (%v)", len(path), len(want), path)
+	}
+	for i := range want {
+		assertEqual(t, "path["+itoa(i)+"]", path[i], want[i])
+	}
+}
+
+// ---- ComputeL3PathNAT：普通 IP → 委托 ComputeL3Path 且 natTranslated=false ----
+
+func TestComputeL3PathNAT_NormalIPDelegates(t *testing.T) {
+	topo := newACLTestTopo() // pc1(10.0.0.10)-r1-r2-pc2(10.0.2.10)
+	srcState := newACLTestState(topology.DevicePC, "pc1")
+	path, translated := ComputeL3PathNAT(map[string]*CLIState{"pc1": srcState}, srcState, "10.0.2.10", topo)
+	assertEqual(t, "translated", translated, false)
+	want := []string{"pc1", "r1", "r2", "pc2"}
+	if len(path) != len(want) {
+		t.Fatalf("ComputeL3PathNAT len=%d want %d (%v)", len(path), len(want), path)
+	}
+	for i := range want {
+		assertEqual(t, "path["+itoa(i)+"]", path[i], want[i])
+	}
+}
+
+// natServerACLStates 为跨 NAT ACL 测试构造注册表：在 nat 设备上按需绑定
+// inbound(看 GlobalIP 203.0.113.10) / outbound(看 InsideIP 192.168.1.100) ACL，
+// 在 srv 上按需绑定 inbound(看 InsideIP 192.168.1.100) ACL。
+func natServerACLStates(inbound, outbound, srvInbound string) map[string]*CLIState {
+	states := newNATServerStates()
+	nat := states["nat"]
+	if inbound != "" {
+		nat.ACLs["4000"] = []*ACLRule{{ID: 10, Action: inbound, Protocol: "icmp", DstIP: "203.0.113.10"}}
+		nat.DeviceConfig["traffic-filter:inbound:4000"] = "4000"
+	}
+	if outbound != "" {
+		nat.ACLs["3000"] = []*ACLRule{{ID: 10, Action: outbound, Protocol: "icmp", DstIP: "192.168.1.100"}}
+		nat.DeviceConfig["traffic-filter:outbound:3000"] = "3000"
+	}
+	if srvInbound != "" {
+		srv := states["srv"]
+		srv.ACLs["5000"] = []*ACLRule{{ID: 10, Action: srvInbound, Protocol: "icmp", DstIP: "192.168.1.100"}}
+		srv.DeviceConfig["traffic-filter:inbound:5000"] = "5000"
+	}
+	return states
+}
+
+// NAT 设备 inbound ACL 看转换前的 GlobalIP（命中即 deny）。
+func TestEvaluatePathACL_NATInboundSeesGlobalIP(t *testing.T) {
+	states := natServerACLStates("deny", "", "")
+	flow := PacketTuple{SrcIP: "203.0.113.50", DstIP: "203.0.113.10", Proto: "icmp"}
+	dec := EvaluatePathACL(states, []string{"out", "nat", "srv"}, flow)
+	assertEqual(t, "action", dec.Action, "deny")
+	assertEqual(t, "device", dec.DeviceID, "nat")
+	assertEqual(t, "direction", dec.Direction, DirInbound)
+}
+
+// NAT 设备 outbound ACL 看转换后的 InsideIP（经 applyNAT(inbound) 改写 DstIP）。
+func TestEvaluatePathACL_NATOutboundSeesInsideIP(t *testing.T) {
+	states := natServerACLStates("permit", "deny", "")
+	flow := PacketTuple{SrcIP: "203.0.113.50", DstIP: "203.0.113.10", Proto: "icmp"}
+	dec := EvaluatePathACL(states, []string{"out", "nat", "srv"}, flow)
+	assertEqual(t, "action", dec.Action, "deny")
+	assertEqual(t, "device", dec.DeviceID, "nat")
+	assertEqual(t, "direction", dec.Direction, DirOutbound)
+}
+
+// NAT 改写后，下游（srv）inbound ACL 基于转换后 InsideIP 判定 deny。
+func TestEvaluatePathACL_NATDownstreamSeesTranslatedIP(t *testing.T) {
+	states := natServerACLStates("permit", "", "deny")
+	flow := PacketTuple{SrcIP: "203.0.113.50", DstIP: "203.0.113.10", Proto: "icmp"}
+	dec := EvaluatePathACL(states, []string{"out", "nat", "srv"}, flow)
+	assertEqual(t, "action", dec.Action, "deny")
+	assertEqual(t, "device", dec.DeviceID, "srv")
+	assertEqual(t, "direction", dec.Direction, DirInbound)
+}
+
+// NAT 设备与下游 ACL 均 permit → 全 permit（转换后 IP 仍被正确放行）。
+func TestEvaluatePathACL_NATAllPermit(t *testing.T) {
+	states := natServerACLStates("permit", "permit", "permit")
+	flow := PacketTuple{SrcIP: "203.0.113.50", DstIP: "203.0.113.10", Proto: "icmp"}
+	dec := EvaluatePathACL(states, []string{"out", "nat", "srv"}, flow)
+	assertEqual(t, "action", dec.Action, "permit")
+}

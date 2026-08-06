@@ -120,15 +120,20 @@ func deviceLabel(deviceID, ip string) string {
 	return fmt.Sprintf("%s (%s)", deviceID, ip)
 }
 
-// RenderTracerouteWithACL 在 FormatEngineTraceroute 之上叠加 ACL 判定（P1-C T02）。
+// RenderTracerouteWithACL 在 FormatEngineTraceroute 之上叠加 ACL 判定（P1-C T02）+ NAT 显示（P2）。
 //
 // 用 res.Hops[].DeviceID 组路径（并前置源设备）→ EvaluatePathACL（按 deviceID
 // 读取各设备「自身」的 CLIState）→ 命中 deny 渲染「前 k-1 跳 + 第 k 跳起 * * * +
 // ACL 拦截注记」；全 permit 则退化为 FormatEngineTraceroute（延续如实渲染风格）。
 //
+// P2 NAT 分支（设计 §3.2 / §4.4 / O1）：当 target 命中某 NAT 设备的 GlobalIP 时，
+// 走 ComputeL3PathNAT 推导路径 [...,natDev, insideDev]，在 NAT 设备那一跳显示
+// "NAT→<InsideIP>" + natSimNote，并对该路径调 EvaluatePathACL 做 ACL 评估；
+// 非 NAT 目标保持原 res.Hops 行为不变。t 为拓扑（NAT 解析依赖）；为 nil 时跳过 NAT 分支。
+//
 // states 为拓扑级 CLIState 注册表（deviceID→*CLIState），使途径 L3/防火墙设备
 // 自身配置的 traffic-filter ACL 也能被评估（修复 P1-C Round 1 中转设备 ACL 未生效）。
-func RenderTracerouteWithACL(states map[string]*CLIState, state *CLIState, res *sim.TracerouteResult, target string, maxTTL int) string {
+func RenderTracerouteWithACL(states map[string]*CLIState, state *CLIState, res *sim.TracerouteResult, target string, maxTTL int, t *topology.Topology) string {
 	if res == nil {
 		return FormatEngineTraceroute(nil, maxTTL)
 	}
@@ -139,6 +144,13 @@ func RenderTracerouteWithACL(states map[string]*CLIState, state *CLIState, res *
 	if state != nil {
 		src = state.DeviceID
 	}
+	// P2 NAT 分支：target 命中某 NAT GlobalIP → 用 NAT 感知路径渲染。
+	if t != nil {
+		if natPath, natTranslated := ComputeL3PathNAT(states, state, target, t); natTranslated && natPath != nil {
+			return renderTracerouteNAT(states, state, target, maxTTL, t, natPath)
+		}
+	}
+	// 非 NAT 目标：原有行为（基于引擎 res.Hops）。
 	path := buildTraceroutePath(src, res.Hops)
 	flow := PacketTuple{
 		SrcIP: bestEffortSourceIP(state),
@@ -153,14 +165,17 @@ func RenderTracerouteWithACL(states map[string]*CLIState, state *CLIState, res *
 
 // RenderPingWithACL 在 FormatEnginePing 之上叠加 ACL 判定（P1-C T03，API 主路径）。
 //
-// 经 ComputeL3Path + ResolveSourceIP 得路径与源 IP → EvaluatePathACL（按 deviceID
+// 经 ComputeL3PathNAT + ResolveSourceIP 得路径与源 IP → EvaluatePathACL（按 deviceID
 // 读取各设备「自身」的 CLIState）；命中 deny 渲染不可达(ACL 拦截)；全 permit 退化为
 // FormatEnginePing。ACL 代表真实过滤，优先于引擎拓扑结果（命中 deny 即视为不可达）。
+//
+// P2：路径经 ComputeL3PathNAT 推导（公网 GlobalIP → 解析到内网设备）；当 natTranslated
+// 为真（路径存在 NAT 转换）时在输出追加 natSimNote() 诚实占位（对齐 AC2/AC6）。
 //
 // states 为拓扑级 CLIState 注册表（deviceID→*CLIState），使途径 L3/防火墙设备
 // 自身配置的 traffic-filter ACL 也能被评估（修复 P1-C Round 1 中转设备 ACL 未生效）。
 func RenderPingWithACL(states map[string]*CLIState, state *CLIState, res *sim.PingResult, targetIP string, t *topology.Topology) string {
-	path := ComputeL3Path(state, targetIP, t)
+	path, natTranslated := ComputeL3PathNAT(states, state, targetIP, t)
 	srcIP := ResolveSourceIP(state, targetIP, t)
 	flow := PacketTuple{SrcIP: srcIP, DstIP: targetIP, Proto: "icmp"}
 	if dec := EvaluatePathACL(states, path, flow); dec.Action == "deny" {
@@ -168,8 +183,13 @@ func RenderPingWithACL(states map[string]*CLIState, state *CLIState, res *sim.Pi
 		if dec.Rule != nil {
 			ruleID = dec.Rule.ID
 		}
+		// P2：存在 NAT 转换时统一用 natSimNote 诚实占位（无 NAT 用 ACL 注记）。
+		note := aclSimNote()
+		if natTranslated {
+			note = natSimNote()
+		}
 		return fmt.Sprintf("Ping %s: destination unreachable (ACL 拦截: %s acl %s rule %d, %s) %s",
-			targetIP, dec.DeviceID, dec.ACLNum, ruleID, dec.Direction, aclSimNote())
+			targetIP, dec.DeviceID, dec.ACLNum, ruleID, dec.Direction, note)
 	}
 	return FormatEnginePing(res, targetIP)
 }
@@ -249,4 +269,107 @@ func indexInPath(deviceID string, path []string) int {
 		}
 	}
 	return -1
+}
+
+// natDeviceInfo 扫描 states 注册表，返回拥有 targetIP 作为 GlobalIP 的 NAT 设备、
+// 对应内网设备 ID（InsideIP → deviceIDByIP）与 InsideIP 本身（设计 §4.2 / §4.4）。
+func natDeviceInfo(states map[string]*CLIState, t *topology.Topology, targetIP string) (natDev, insideDev, insideIP string) {
+	if states == nil {
+		return "", "", ""
+	}
+	for devID, st := range states {
+		if st == nil || st.NAT == nil || !st.NAT.Enabled {
+			continue
+		}
+		for _, server := range st.NAT.Servers {
+			if server.GlobalIP != "" && server.GlobalIP == targetIP {
+				return devID, deviceIDByIP(t, server.InsideIP), server.InsideIP
+			}
+		}
+	}
+	return "", "", ""
+}
+
+// deviceFirstIP 返回拓扑中某设备的首个非空接口 IP（用于 NAT 路径跳的标签展示）。
+func deviceFirstIP(t *topology.Topology, devID string) string {
+	if t == nil {
+		return ""
+	}
+	dev, ok := t.Devices[devID]
+	if !ok || dev == nil || dev.Interfaces == nil {
+		return ""
+	}
+	for _, iface := range dev.Interfaces {
+		if iface != nil && iface.IPAddress != "" {
+			return iface.IPAddress
+		}
+	}
+	return ""
+}
+
+// natHopLine 渲染 NAT 路径中某一跳的文本行；natDev 那一跳追加 " (NAT→<InsideIP>)" + natSimNote 注记。
+func natHopLine(hop int, devID string, t *topology.Topology, natDev, insideIP string) string {
+	ip := deviceFirstIP(t, devID)
+	label := deviceLabel(devID, ip)
+	if devID == natDev {
+		label = fmt.Sprintf("%s (NAT→%s) %s", label, insideIP, natSimNote())
+	}
+	delayStr := "<1 ms"
+	return fmt.Sprintf("  %2d    %-8s %-8s %-8s  %s\n", hop, delayStr, delayStr, delayStr, label)
+}
+
+// renderTracerouteNAT 渲染 NAT 目标（公网 GlobalIP → 内网 InsideIP）的 tracert 结果。
+// natPath 由 ComputeL3PathNAT 推导（含 src、各中转、natDev、insideDev）。
+// 命中 ACL deny → 前跳正常、拦截跳起 * * * + 注记；全 permit → 逐跳渲染（NAT 跳带注记）。
+func renderTracerouteNAT(states map[string]*CLIState, state *CLIState, target string, maxTTL int, t *topology.Topology, natPath []string) string {
+	srcIP := bestEffortSourceIP(state)
+	flow := PacketTuple{SrcIP: srcIP, DstIP: target, Proto: "icmp"}
+	dec := EvaluatePathACL(states, natPath, flow)
+	natDev, _, insideIP := natDeviceInfo(states, t, target)
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Tracing route to %s over a maximum of %d hops:\n", target, maxTTL))
+
+	if dec.Action == "deny" {
+		// 拦截跳之前逐跳正常渲染（NAT 跳也带注记），拦截跳起 * * * + ACL 注记（诚实占位）。
+		blockedIdx := indexInPath(dec.DeviceID, natPath)
+		blockFrom := blockedIdx - 1
+		if blockedIdx <= 0 {
+			blockFrom = 0
+		}
+		if dec.Direction == DirOutbound && blockedIdx > 0 {
+			blockFrom = blockedIdx
+		}
+		if blockFrom < 0 {
+			blockFrom = 0
+		}
+		if blockFrom > len(natPath) {
+			blockFrom = len(natPath)
+		}
+		for i := 0; i < blockFrom && i < len(natPath); i++ {
+			b.WriteString(natHopLine(i+1, natPath[i], t, natDev, insideIP))
+		}
+		ruleID := 0
+		if dec.Rule != nil {
+			ruleID = dec.Rule.ID
+		}
+		note := fmt.Sprintf("ACL 拦截: %s acl %s rule %d, %s %s",
+			dec.DeviceID, dec.ACLNum, ruleID, dec.Direction, natSimNote())
+		for i := blockFrom; i < maxTTL; i++ {
+			line := fmt.Sprintf("  %2d    *        *        *     Request timed out.", i+1)
+			if i == blockFrom {
+				line += "  (" + note + ")"
+			}
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("\nTrace incomplete (blocked by ACL).")
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	// 全 permit：逐跳渲染（NAT 跳带 (NAT→InsideIP) 注记）。
+	for i, devID := range natPath {
+		b.WriteString(natHopLine(i+1, devID, t, natDev, insideIP))
+	}
+	b.WriteString("\nTrace complete.")
+	return strings.TrimRight(b.String(), "\n")
 }

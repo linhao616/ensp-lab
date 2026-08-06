@@ -242,7 +242,7 @@ func TestR2_TracerouteIntegration_TransitDenied(t *testing.T) {
 	states := newRound2States()
 	states["gw2"] = gw2State
 
-	out := RenderTracerouteWithACL(states, h1State, res, round2DstIP, 30)
+	out := RenderTracerouteWithACL(states, h1State, res, round2DstIP, 30, nil)
 	t.Logf("tracert output =\n%s", out)
 	if !strings.Contains(out, "ACL 拦截") {
 		t.Errorf("tracert 应含 ACL 拦截注记，实际输出:\n%s", out)

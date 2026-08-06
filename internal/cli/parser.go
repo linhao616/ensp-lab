@@ -183,6 +183,41 @@ func isDeviceIPMatch(device *topology.Device, targetIP string) bool {
 	return false
 }
 
+// buildVXLANTunnelDisplay 渲染 VXLAN 隧道信息（display vxlan tunnel）。
+// 修复仓库既有未定义引用（parser.go:3717），仅做忠实展示，不改变任何 NAT/ACL 语义。
+func buildVXLANTunnelDisplay(state *CLIState) string {
+	if state == nil || state.VXLAN == nil {
+		return "VXLAN: not configured"
+	}
+	enabled := "Disabled"
+	if state.VXLAN.Enabled {
+		enabled = "Enabled"
+	}
+	var b strings.Builder
+	b.WriteString("VXLAN Tunnel Information:\n")
+	b.WriteString("----------------------------------------------------\n")
+	b.WriteString(fmt.Sprintf("VXLAN: %s\n", enabled))
+	b.WriteString(fmt.Sprintf("VNI: %d\n", state.VXLAN.VNI))
+	b.WriteString(fmt.Sprintf("Local VTEP IP: %s\n", state.VXLAN.VTEPIP))
+	b.WriteString(fmt.Sprintf("Peer VTEP IP: %s\n", state.VXLAN.PeerVTEPIP))
+	if state.VXLAN.VRFName != "" {
+		b.WriteString(fmt.Sprintf("VRF: %s\n", state.VXLAN.VRFName))
+	}
+	if state.VXLAN.EvpnEnabled {
+		b.WriteString("EVPN: Enabled\n")
+	}
+	if len(state.VXLAN.VSIs) > 0 {
+		b.WriteString("\nVSI Information:\n")
+		for name, vsi := range state.VXLAN.VSIs {
+			if vsi == nil {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("  %s: VNI=%d Gateway=%s Status=%s\n", name, vsi.VNI, vsi.Gateway, vsi.Status))
+		}
+	}
+	return b.String()
+}
+
 func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) string {
 	if cmd == nil {
 		return ""
@@ -1156,9 +1191,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		target := cmd.Args[0]
 		if state.ResolveTraceroute != nil {
 			res := state.ResolveTraceroute(target)
-			return RenderTracerouteWithACL(nil, state, res, target, 30)
+			return RenderTracerouteWithACL(nil, state, res, target, 30, nil)
 		}
-		return RenderTracerouteWithACL(nil, state, nil, target, 30)
+		return RenderTracerouteWithACL(nil, state, nil, target, 30, nil)
 	case "ipconfig":
 		if len(cmd.Args) >= 1 {
 			sub := strings.ToLower(cmd.Args[0])

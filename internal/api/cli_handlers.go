@@ -344,5 +344,5 @@ func (r *Router) renderEngineTraceroute(eng sim.Engine, deviceId, targetIP strin
 	// P1-C T02：经 CLIState ACL 评估器叠加真实过滤判定。
 	dt := r.lookupDeviceType(t.ID, deviceId)
 	state := r.getOrInitCLIState(t.ID, deviceId, dt)
-	return cli.RenderTracerouteWithACL(registry, state, res, targetIP, maxTTL)
+	return cli.RenderTracerouteWithACL(registry, state, res, targetIP, maxTTL, t)
 }
