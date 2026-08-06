@@ -200,3 +200,40 @@ func TestUndoUnsupported(t *testing.T) {
 		t.Errorf("undo unsupported feature should report not supported, got: %q", out)
 	}
 }
+
+// TestPortSecurityExtendedCommands 扩展 P1-F 端口安全：protect-action / aging-time /
+// 手动粘滞绑定在交换机接口视图被正确接受并写出 DeviceConfig 键（T06 追加）。
+func TestPortSecurityExtendedCommands(t *testing.T) {
+	s := NewCLIStateWithType(topology.DeviceSwitch)
+	runOn(s, topology.DeviceSwitch, "system-view")
+	runOn(s, topology.DeviceSwitch, "interface GigabitEthernet0/0/1")
+
+	if out := runOn(s, topology.DeviceSwitch, "port-security protect-action restrict"); strings.Contains(out, "Error") {
+		t.Errorf("protect-action restrict should be accepted, got: %q", out)
+	}
+	if s.DeviceConfig["interface:GigabitEthernet0/0/1:port-security-protect-action"] != "restrict" {
+		t.Errorf("protect-action should write key, got %v", s.DeviceConfig)
+	}
+
+	if out := runOn(s, topology.DeviceSwitch, "port-security aging-time 30"); strings.Contains(out, "Error") {
+		t.Errorf("aging-time 30 should be accepted, got: %q", out)
+	}
+	if s.DeviceConfig["interface:GigabitEthernet0/0/1:port-security-aging-time"] != "30" {
+		t.Errorf("aging-time should write key, got %v", s.DeviceConfig)
+	}
+
+	if out := runOn(s, topology.DeviceSwitch, "port-security mac-address sticky 00e0-fc12-3456 vlan 10"); strings.Contains(out, "Error") {
+		t.Errorf("sticky-mac bind should be accepted, got: %q", out)
+	}
+	if s.DeviceConfig["interface:GigabitEthernet0/0/1:port-security-sticky-mac:00e0-fc12-3456"] != "10" {
+		t.Errorf("sticky-mac should write bound key, got %v", s.DeviceConfig)
+	}
+
+	// 非法范围拒错，且不写出键。
+	if out := runOn(s, topology.DeviceSwitch, "port-security max-mac-num 0"); !strings.Contains(out, "Error") {
+		t.Errorf("max-mac-num 0 should be rejected, got: %q", out)
+	}
+	if out := runOn(s, topology.DeviceSwitch, "port-security protect-action bogus"); !strings.Contains(out, "Error") {
+		t.Errorf("invalid protect-action should be rejected, got: %q", out)
+	}
+}

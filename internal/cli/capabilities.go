@@ -78,6 +78,9 @@ var capabilities = capabilityMatrix{
 	"lacp":          switchDevices(),
 	"port-security": switchDevices(),
 
+	// 端口安全诊断命令：simulate frame（仅交换机类，拍板 #6）。非交换机执行回显 not supported。
+	"simulate": switchDevices(),
+
 	// VTEP / EVPN-VXLAN 类：VTEP 设备、三层交换机
 	"vsi":                 l3SwitchOnly(),
 	"evpn-instance":       l3SwitchOnly(),

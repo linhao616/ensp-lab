@@ -600,10 +600,10 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 			100: {ID: 100, Name: "Management", Status: "Up", Ports: []string{"GE0/0/24"}},
 		},
 		MACTable: []*MACEntry{
-			{MAC: "00e0-fc12-3456", VLAN: 10, Interface: "GigabitEthernet0/0/1", Type: "Learned"},
-			{MAC: "00e0-fc12-3457", VLAN: 20, Interface: "GigabitEthernet0/0/2", Type: "Learned"},
+			{MAC: "00e0-fc12-3456", VLAN: 10, Interface: "GigabitEthernet0/0/1", Type: "dynamic"},
+			{MAC: "00e0-fc12-3457", VLAN: 20, Interface: "GigabitEthernet0/0/2", Type: "dynamic"},
 			{MAC: "00e0-fc12-3460", VLAN: 100, Interface: "GigabitEthernet0/0/24", Type: "Static"},
-			{MAC: "00e0-fc12-3461", VLAN: 1, Interface: "GigabitEthernet0/0/3", Type: "Learned"},
+			{MAC: "00e0-fc12-3461", VLAN: 1, Interface: "GigabitEthernet0/0/3", Type: "dynamic"},
 		},
 		Interfaces: map[string]*InterfaceConfig{
 			"GigabitEthernet0/0/1":  {Name: "GigabitEthernet0/0/1", Status: "Up", Protocol: "Up", Description: "Link to Core", IP: "192.168.1.1", Mask: "255.255.255.0"},

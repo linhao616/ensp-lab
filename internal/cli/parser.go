@@ -2353,6 +2353,18 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return applyPortSecurity(state, cmd.Args)
 
+	case "simulate":
+		// 模拟诊断命令：端口安全准入判定的唯一触发点（拍板 #2）。
+		// 限定 switchDevices()（能力矩阵已注册，非交换机由能力校验回 not supported）；
+		// 须处于接口视图，state.CurrentSub 为目标端口。
+		if state.CurrentView != ViewInterface {
+			return "Error: must be in interface view"
+		}
+		if len(cmd.Args) == 0 {
+			return "Error: usage: simulate frame <src-mac> [vlan <id>]"
+		}
+		return handleSimulateFrame(state, cmd.Args)
+
 	case "nslookup":
 		// 终端 DNS 查询（复用 state.HostDNS）。
 		if len(cmd.Args) == 0 {
@@ -3150,6 +3162,15 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				out.WriteString(fmt.Sprintf("%-17s %-5d %-20s %s\n", entry.MAC, entry.VLAN, entry.Interface, entry.Type))
 			}
 			return out.String()
+		case "port-security":
+			// 端口安全状态展示（T04）。可选 interface 过滤：
+			//   display port-security                → 全接口表
+			//   display port-security interface <if> → 单端口详情
+			filter := ""
+			if arg1 == "interface" && len(cmd.Args) > 2 {
+				filter = cmd.Args[2]
+			}
+			return buildPortSecurityDisplay(state, filter)
 		case "interface":
 			arg2 := ""
 			if len(cmd.Args) > 2 {
@@ -4096,20 +4117,234 @@ func applyPortSecurity(state *CLIState, args []string) string {
 		return "Port security disabled"
 	case "max-mac-num":
 		if len(args) >= 2 {
-			if maxNum, err := parseNum(args[1]); err == nil {
+			if maxNum, err := parseNum(args[1]); err == nil && maxNum >= psMaxMACMin && maxNum <= psMaxMACMax {
 				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-max-mac", state.CurrentSub)] = fmt.Sprintf("%d", maxNum)
 				return fmt.Sprintf("Port security max-mac-num set to %d", maxNum)
 			}
 		}
-		return "Error: usage: port-security max-mac-num <number>"
+		return fmt.Sprintf("Error: max-mac-num must be between %d and %d", psMaxMACMin, psMaxMACMax)
+	case "protect-action":
+		// 新增：protect-action {protect|restrict|shutdown}（拍板 #5，默认 restrict）。
+		if len(args) >= 2 {
+			act := strings.ToLower(args[1])
+			switch act {
+			case "protect", "restrict", "shutdown":
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-protect-action", state.CurrentSub)] = act
+				return fmt.Sprintf("Port security protect-action set to %s", act)
+			}
+		}
+		return "Error: invalid protect-action, must be one of protect|restrict|shutdown"
+	case "aging-time":
+		// 新增：aging-time <time>（合法范围 1–1440 分钟，拍板 #4）。
+		if len(args) >= 2 {
+			if n, err := parseNum(args[1]); err == nil && n >= psAgingMin && n <= psAgingMax {
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-aging-time", state.CurrentSub)] = fmt.Sprintf("%d", n)
+				return fmt.Sprintf("Port security aging-time set to %d minutes", n)
+			}
+		}
+		return fmt.Sprintf("Error: aging-time must be between %d and %d minutes", psAgingMin, psAgingMax)
 	case "mac-address":
 		if len(args) >= 2 && strings.ToLower(args[1]) == "sticky" {
+			// 手动绑定形态：mac-address sticky <mac> vlan <id>（写 port-security-sticky-mac:<mac>）。
+			if len(args) >= 5 && strings.EqualFold(strings.ToLower(args[3]), "vlan") {
+				mac := args[2]
+				canon, ok := canonMAC(mac)
+				if !ok {
+					return fmt.Sprintf("Error: invalid MAC address %q", mac)
+				}
+				vlan, err := parseNum(args[4])
+				if err != nil || vlan <= 0 {
+					return "Error: invalid vlan id"
+				}
+				state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-sticky-mac:%s", state.CurrentSub, canon)] = fmt.Sprintf("%d", vlan)
+				return fmt.Sprintf("Port security sticky MAC %s bound to vlan %d", canon, vlan)
+			}
+			// 无参 → 自动粘滞标志（既有行为，保留）。
 			state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-sticky", state.CurrentSub)] = "enable"
 			return "Port security sticky MAC enabled"
 		}
-		return "Error: usage: port-security mac-address sticky"
+		return "Error: usage: port-security mac-address sticky [<mac> vlan <id>]"
 	}
 	return "Error: invalid port-security subcommand"
+}
+
+// handleSimulateFrame 处理 simulate frame <src-mac> [vlan <id>]（T03，唯一触发点）。
+//
+// 解析参数 → 调用纯函数 EvaluatePortSecurity（只读 DeviceConfig + MACTable）→ 按返回结果
+// 应用副作用（写 MACTable / error-down / violation 计数 / 粘滞持久化键）。与 NAT 的
+// applyNAT / EvaluatePathACL 同构：纯函数不写 state，副作用在此落地。
+func handleSimulateFrame(state *CLIState, args []string) string {
+	if len(args) < 2 || strings.ToLower(args[0]) != "frame" {
+		return "Error: usage: simulate frame <src-mac> [vlan <id>]"
+	}
+	srcRaw := args[1]
+	canon, ok := canonMAC(srcRaw)
+	if !ok {
+		return fmt.Sprintf("Error: invalid MAC address %q", srcRaw)
+	}
+	vlan := 0
+	if len(args) >= 4 && strings.EqualFold(strings.ToLower(args[2]), "vlan") {
+		v, err := parseNum(args[3])
+		if err != nil || v < 0 {
+			return "Error: invalid vlan id"
+		}
+		vlan = v
+	}
+	iface := state.CurrentSub
+	res := EvaluatePortSecurity(state, iface, Frame{SrcMAC: canon, VLAN: vlan})
+
+	switch {
+	case res.Admit && res.Learned != nil:
+		// 准入且应学习：写入 MACTable；若粘滞则同时写持久化键。
+		state.MACTable = append(state.MACTable, res.Learned)
+		if res.Learned.Type == "sticky" {
+			key := fmt.Sprintf("interface:%s:port-security-sticky-learned:%s", iface, res.Learned.MAC)
+			state.DeviceConfig[key] = fmt.Sprintf("%d", vlan)
+		}
+		return fmt.Sprintf("Frame from %s on %s: ADMITTED (%s MAC learned) %s", canon, iface, res.Learned.Type, portSecSimNote())
+	case res.Admit:
+		// 授权 MAC：准入，不学习不计数。
+		return fmt.Sprintf("Frame from %s on %s: ADMITTED %s", canon, iface, portSecSimNote())
+	case res.Violation != nil && res.Violation.Action == "shutdown":
+		// shutdown：端口 error-down 置位 + violation 计数 +1。
+		state.DeviceConfig[fmt.Sprintf("interface:%s:port-security-error-down", iface)] = "true"
+		state.incPortSecurityViolations(iface)
+		return fmt.Sprintf("Frame from %s on %s: PORT ERROR-DOWN (protect-action=shutdown) %s", canon, iface, portSecSimNote())
+	case res.Violation != nil && res.Violation.Action == "restrict":
+		// restrict：丢弃 + violation 计数 +1。
+		state.incPortSecurityViolations(iface)
+		return fmt.Sprintf("Frame from %s on %s: DROPPED (protect-action=restrict, violation logged) %s", canon, iface, portSecSimNote())
+	default:
+		// protect：丢弃且不记录（无告警标志、不计数）。
+		return fmt.Sprintf("Frame from %s on %s: DROPPED (protect-action=protect) %s", canon, iface, portSecSimNote())
+	}
+}
+
+// buildPortSecurityDisplay 渲染 display port-security 的输出（T04）。
+//
+// filter==""：表格式列出所有接口（Interface/Status/Max MAC/Protect-Action/Sticky/Aging/Violations）。
+// filter!=""：单端口详情，附「已学安全/粘滞 MAC 列表」与 error-down 状态。
+// 只读 DeviceConfig 中 port-security 键与 MACTable，不写 state。
+func buildPortSecurityDisplay(state *CLIState, ifaceFilter string) string {
+	if state == nil {
+		return ""
+	}
+	ifaceNames := make([]string, 0, len(state.Interfaces))
+	for k := range state.Interfaces {
+		ifaceNames = append(ifaceNames, k)
+	}
+	sort.Strings(ifaceNames)
+
+	var b strings.Builder
+	if ifaceFilter == "" {
+		b.WriteString("Port Security Configuration\n")
+		b.WriteString(fmt.Sprintf("%-18s %-8s %-8s %-15s %-7s %-11s %s\n",
+			"Interface", "Status", "Max MAC", "Protect-Action", "Sticky", "Aging(min)", "Violations"))
+		for _, iface := range ifaceNames {
+			b.WriteString(psRow(state, iface))
+		}
+		return strings.TrimRight(b.String(), "\n")
+	}
+
+	// 单端口详情。
+	if _, ok := state.Interfaces[ifaceFilter]; !ok {
+		return fmt.Sprintf("Error: interface %s does not exist", ifaceFilter)
+	}
+	b.WriteString(fmt.Sprintf("Port Security Configuration: %s\n", ifaceFilter))
+	b.WriteString(fmt.Sprintf("  Status                  : %s\n", psStatusStr(state, ifaceFilter)))
+	b.WriteString(fmt.Sprintf("  Max MAC                 : %s\n", psMaxMACDisplay(state, ifaceFilter)))
+	b.WriteString(fmt.Sprintf("  Protect-Action          : %s%s\n", psProtectAction(state, ifaceFilter), psProtectDefaultMark(state, ifaceFilter)))
+	b.WriteString(fmt.Sprintf("  Sticky                  : %s\n", boolToYesNo(psIsSticky(state, ifaceFilter))))
+	b.WriteString(fmt.Sprintf("  Aging(min)              : %s\n", psAgingDisplay(state, ifaceFilter)))
+	b.WriteString(fmt.Sprintf("  Violations              : %s\n", psViolationsDisplay(state, ifaceFilter)))
+	b.WriteString(fmt.Sprintf("  Error-Down              : %s\n", psErrorDownDisplay(state, ifaceFilter)))
+	b.WriteString("  Learned Secure MACs:\n")
+	found := false
+	for _, e := range state.MACTable {
+		if e == nil || e.Interface != ifaceFilter {
+			continue
+		}
+		if e.Type == "sticky" || e.Type == "security" {
+			found = true
+			b.WriteString(fmt.Sprintf("    %s   VLAN %d   %s\n", e.MAC, e.VLAN, e.Type))
+		}
+	}
+	if !found {
+		b.WriteString("    (none)\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// psRow 返回 display port-security 全接口表的单行（已排序 by 接口名）。
+func psRow(state *CLIState, iface string) string {
+	if !psIsEnabled(state, iface) {
+		return fmt.Sprintf("%-18s %-8s %-8s %-15s %-7s %-11s %s\n",
+			iface, "disable", "-", "-", "no", "-", "-")
+	}
+	status := "enable"
+	maxStr := fmt.Sprintf("%d", psMaxMAC(state, iface))
+	protect := psProtectAction(state, iface)
+	sticky := boolToYesNo(psIsSticky(state, iface))
+	aging := psAgingDisplay(state, iface)
+	viol := psViolationsDisplay(state, iface)
+	return fmt.Sprintf("%-18s %-8s %-8s %-15s %-7s %-11s %s\n",
+		iface, status, maxStr, protect, sticky, aging, viol)
+}
+
+// boolToYesNo 把布尔转成 "yes"/"no"。
+func boolToYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
+// psStatusStr 返回端口安全启用状态文案（enable/disable）。
+func psStatusStr(state *CLIState, iface string) string {
+	if psIsEnabled(state, iface) {
+		return "enable"
+	}
+	return "disable"
+}
+
+// psMaxMACDisplay 返回 max-mac 展示值；未启用端口显示 "-"。
+func psMaxMACDisplay(state *CLIState, iface string) string {
+	if !psIsEnabled(state, iface) {
+		return "-"
+	}
+	return fmt.Sprintf("%d", psMaxMAC(state, iface))
+}
+
+// psProtectDefaultMark 在 protect-action 为缺省（键未配置）时返回 " (default)" 标注。
+func psProtectDefaultMark(state *CLIState, iface string) string {
+	if _, ok := state.DeviceConfig[psKey(iface, psKeyProtect)]; !ok {
+		return " (default)"
+	}
+	return ""
+}
+
+// psAgingDisplay 返回 aging-time 展示值；未配置显示 "-"。
+func psAgingDisplay(state *CLIState, iface string) string {
+	if v, ok := state.DeviceConfig[psKey(iface, psKeyAging)]; ok && v != "" {
+		return v
+	}
+	return "-"
+}
+
+// psViolationsDisplay 返回违规计数展示值；缺省 "0"。
+func psViolationsDisplay(state *CLIState, iface string) string {
+	if v, ok := state.DeviceConfig[psKey(iface, psKeyViolations)]; ok && v != "" {
+		return v
+	}
+	return "0"
+}
+
+// psErrorDownDisplay 返回 error-down 展示值（yes/no）。
+func psErrorDownDisplay(state *CLIState, iface string) string {
+	if state.DeviceConfig[psKey(iface, psKeyErrorDown)] == "true" {
+		return "yes"
+	}
+	return "no"
 }
 
 // executeServerService 统一处理服务器应用层服务启用（http/https/dns/ftp）。
@@ -4525,6 +4760,54 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 			}
 		}
 	}
+
+	// 端口安全粘滞 MAC 回填（B-lite，拍板 #3）：
+	// 上述循环已把全部 DeviceConfig 键（含 port-security-*）写回 state.DeviceConfig。
+	// 此处：① 清除运行态键 error-down / violations（reload 后运行态归零，见设计 §7 #3）；
+	// ② 扫描 port-security-sticky-learned:<mac> 键回填 MACTable（Type=sticky，
+	// 幂等去重：按 MAC+Interface 去重，避免 reload 重复追加）。
+	// 注：CLI 为单 goroutine 交互模型，MACTable 无并发写竞争（O4）。
+	for k := range state.DeviceConfig {
+		if !strings.HasPrefix(k, "interface:") {
+			continue
+		}
+		if strings.HasSuffix(k, ":port-security-error-down") || strings.HasSuffix(k, ":port-security-violations") {
+			delete(state.DeviceConfig, k)
+		}
+	}
+	const learnSep = ":port-security-sticky-learned:"
+	for k, v := range state.DeviceConfig {
+		idx := strings.Index(k, learnSep)
+		if idx < 0 {
+			continue
+		}
+		iface := strings.TrimPrefix(k[:idx], "interface:")
+		mac := k[idx+len(learnSep):]
+		if iface == "" || mac == "" {
+			continue
+		}
+		// 幂等去重：已存在相同 MAC+Interface 条目则跳过。
+		dup := false
+		for _, e := range state.MACTable {
+			if e != nil && e.Interface == iface && e.MAC == mac {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		vlan := 0
+		if n, err := strconv.Atoi(v); err == nil {
+			vlan = n
+		}
+		state.MACTable = append(state.MACTable, &MACEntry{
+			MAC:       mac,
+			VLAN:      vlan,
+			Interface: iface,
+			Type:      "sticky",
+		})
+	}
 }
 
 // NewCLIStateFromDeviceConfig 从 DeviceConfigData 创建 CLIState
@@ -4580,6 +4863,21 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 		}
 		if strings.EqualFold(ifc.Status, "down") {
 			b.WriteString(" shutdown\n")
+		}
+		// 端口安全：粘滞学习 MAC 持久化（B-lite，拍板 #3）。对每个
+		// port-security-sticky-learned:<mac> 键追加 VRP 风格行，提升
+		// display saved-configuration 保真度。按 mac 排序保证快照稳定。
+		learnPrefix := fmt.Sprintf("interface:%s:port-security-sticky-learned:", ifc.Name)
+		learned := make([]string, 0)
+		for k, v := range state.DeviceConfig {
+			if strings.HasPrefix(k, learnPrefix) {
+				mac := strings.TrimPrefix(k, learnPrefix)
+				learned = append(learned, fmt.Sprintf(" port-security mac-address sticky %s vlan %s", mac, v))
+			}
+		}
+		sort.Strings(learned)
+		for _, line := range learned {
+			b.WriteString(line + "\n")
 		}
 		b.WriteString("#\n")
 	}

@@ -424,3 +424,85 @@ func TestQAUnknownCommandUnchanged(t *testing.T) {
 		t.Errorf("unknown command fallback changed; want %q, got %q", want, out)
 	}
 }
+
+// TestQAPortSecurityExtended 独立复核端口安全扩展命令：范围拒错、键写入、能力拒绝。
+func TestQAPortSecurityExtended(t *testing.T) {
+	// 交换机接口视图：合法 accept + 键写入
+	sw := NewCLIStateWithType(topology.DeviceSwitch)
+	runOn(sw, topology.DeviceSwitch, "system-view")
+	runOn(sw, topology.DeviceSwitch, "interface GigabitEthernet0/0/1")
+	for _, c := range []string{
+		"port-security enable",
+		"port-security max-mac-num 4096",
+		"port-security protect-action shutdown",
+		"port-security aging-time 1440",
+		"port-security mac-address sticky 00e0-fc12-3456 vlan 10",
+	} {
+		if out := runOn(sw, topology.DeviceSwitch, c); strings.Contains(out, "Error") {
+			t.Errorf("switch should accept %q, got: %q", c, out)
+		}
+	}
+	if sw.DeviceConfig["interface:GigabitEthernet0/0/1:port-security-max-mac"] != "4096" {
+		t.Errorf("max-mac 4096 boundary should be accepted, got %v", sw.DeviceConfig)
+	}
+	if sw.DeviceConfig["interface:GigabitEthernet0/0/1:port-security-aging-time"] != "1440" {
+		t.Errorf("aging 1440 boundary should be accepted, got %v", sw.DeviceConfig)
+	}
+
+	// 范围边界拒错
+	sw2 := NewCLIStateWithType(topology.DeviceSwitch)
+	runOn(sw2, topology.DeviceSwitch, "system-view")
+	runOn(sw2, topology.DeviceSwitch, "interface GigabitEthernet0/0/1")
+	for _, bad := range []string{
+		"port-security max-mac-num 4097",
+		"port-security aging-time 1441",
+		"port-security protect-action invalid",
+	} {
+		if out := runOn(sw2, topology.DeviceSwitch, bad); !strings.Contains(out, "Error") {
+			t.Errorf("switch should reject %q, got: %q", bad, out)
+		}
+	}
+
+	// 路由器：端口安全与 simulate 均被能力拒绝
+	rt := NewCLIStateWithType(topology.DeviceRouter)
+	runOn(rt, topology.DeviceRouter, "system-view")
+	runOn(rt, topology.DeviceRouter, "interface GigabitEthernet0/0/1")
+	out := runOn(rt, topology.DeviceRouter, "port-security enable")
+	if !strings.Contains(out, "not supported") && !strings.Contains(out, "unknown command") {
+		t.Errorf("router port-security should be rejected, got: %q", out)
+	}
+	out = runOn(rt, topology.DeviceRouter, "simulate frame 00e0-fc12-3456")
+	if !strings.Contains(out, "not supported") && !strings.Contains(out, "unknown command") {
+		t.Errorf("router simulate should be rejected, got: %q", out)
+	}
+}
+
+// TestQAPortSecurityPersistReload 复核端口安全配置 save→reload 往返保留。
+func TestQAPortSecurityPersistReload(t *testing.T) {
+	sw := NewCLIStateWithType(topology.DeviceSwitch)
+	runOn(sw, topology.DeviceSwitch, "system-view")
+	runOn(sw, topology.DeviceSwitch, "interface GigabitEthernet0/0/1")
+	runOn(sw, topology.DeviceSwitch, "port-security enable")
+	runOn(sw, topology.DeviceSwitch, "port-security max-mac-num 3")
+	runOn(sw, topology.DeviceSwitch, "port-security protect-action restrict")
+	runOn(sw, topology.DeviceSwitch, "port-security aging-time 20")
+	runOn(sw, topology.DeviceSwitch, "save")
+	runOn(sw, topology.DeviceSwitch, "y")
+	cfg := sw.SerializeToDeviceConfigData()
+	reloaded := NewCLIStateFromDeviceConfig(topology.DeviceSwitch, cfg, "SW")
+
+	for _, k := range []string{
+		"interface:GigabitEthernet0/0/1:port-security",
+		"interface:GigabitEthernet0/0/1:port-security-max-mac",
+		"interface:GigabitEthernet0/0/1:port-security-protect-action",
+		"interface:GigabitEthernet0/0/1:port-security-aging-time",
+	} {
+		if _, ok := reloaded.DeviceConfig[k]; !ok {
+			t.Errorf("reload should preserve port-security key %s, got %v", k, reloaded.DeviceConfig)
+		}
+	}
+	disp := runOn(reloaded, topology.DeviceSwitch, "display port-security interface GigabitEthernet0/0/1")
+	if !strings.Contains(disp, "enable") || !strings.Contains(disp, "restrict") || !strings.Contains(disp, "20") {
+		t.Errorf("reloaded display should reproduce config, got: %q", disp)
+	}
+}
