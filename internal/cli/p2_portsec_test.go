@@ -201,9 +201,9 @@ func TestAC3MacAddressTypeLabels(t *testing.T) {
 	s.MACTable = append(s.MACTable, &MACEntry{MAC: "00e0-fc12-aaaa", VLAN: 10, Interface: "GigabitEthernet0/0/1", Type: "sticky"})
 	s.MACTable = append(s.MACTable, &MACEntry{MAC: "00e0-fc12-bbbb", VLAN: 20, Interface: "GigabitEthernet0/0/2", Type: "security"})
 	out := runOn(s, topology.DeviceL3Switch, "display mac-address")
-	// 注：种子 Static 条目按主理人拍板 O2「保留 Static 不动」，故显示大写 "Static"；
-	// 运行时学习的粘滞/安全/动态条目为小写 sticky/security/dynamic。
-	for _, label := range []string{"sticky", "security", "Static", "dynamic"} {
+	// 种子 static 条目已与主理人重裁归一化为小写 "static"，与 PRD §4 标签及
+	// 运行时学习的 sticky/security/dynamic 保持一致（全小写）。
+	for _, label := range []string{"sticky", "security", "static", "dynamic"} {
 		if !strings.Contains(out, label) {
 			t.Errorf("display mac-address should render Type label %q, got: %q", label, out)
 		}
