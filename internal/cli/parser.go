@@ -5171,8 +5171,10 @@ func buildSavedVRRPConfig(state *CLIState, iface string) string {
 			b.WriteString("\n")
 		}
 		if g.AuthMode != "" {
-			// 仅持久化认证模式与 key（key 脱敏由 display 负责）。
-			b.WriteString(fmt.Sprintf(" vrrp vrid %d authentication-mode %s %s\n", g.VRID, g.AuthMode, g.AuthKey))
+			// 诚实边界（主理人裁定 §7.5 胜出，修复 T06 明文泄露）：current-configuration 的
+			// VRRP 认证行仅输出「模式 + cipher」，不回显明文 key（display vrrp 详情亦仅显示模式）。
+			// auth-key 仍持久化于 DeviceConfig（真实认证所需），仅 display 端脱敏。
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d authentication-mode %s cipher\n", g.VRID, g.AuthMode))
 		}
 		if g.PreemptDelay != 0 {
 			b.WriteString(fmt.Sprintf(" vrrp vrid %d preempt timer delay %d\n", g.VRID, g.PreemptDelay))
