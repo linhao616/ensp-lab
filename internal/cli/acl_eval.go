@@ -164,6 +164,24 @@ func deviceStateFor(states map[string]*CLIState, deviceID string) *CLIState {
 // Round 1「中转设备 ACL 未生效」bug：此前仅用源设备 state 评估全部设备，导致落在
 // 中转/目的设备自身 CLIState 上的 ACL 永不被读取）。CLI 单机/测试上下文若无注册表，
 // 可传 nil，此时所有设备视为未绑定 → 全 permit（向后兼容）。
+// EvaluatePathACL 沿「源→目的」有序设备路径逐跳评估，返回首个 deny（或全 permit）。
+//
+// 读取每个设备「自身」的 CLIState（states：deviceID→*CLIState 注册表）做 traffic-filter
+// 与 NAT 评估；注册表中缺失的设备视为未绑定 ACL → 放行（见设计 §9 拍板 #2）。
+//
+// 方向规则：src=outbound；中转=inbound+outbound；dst=inbound。首 deny 即停
+// （沿途所有设备取交集，任一 deny 即丢）。
+//
+// NAT 线程化（P2，设计 §1.4 / §4.1）：flow 在循环中为可变值，逐设备改写并向下游传递。
+//   仅当该设备携带 NAT 配置（state.NAT != nil && state.NAT.Enabled）时才做地址转换；
+//   无 NAT 配置的设备 applyNAT 原样返回，等价旧行为。顺序：
+//   - 源(i==0)：applyNAT(outbound) 改写 SrcIP → 评估 outbound ACL（转换后）。
+//   - 中转(0<i<n-1)：评估 inbound ACL（转换前）→ applyNAT(inbound) 改写 DstIP
+//     → applyNAT(outbound) 改写 SrcIP → 评估 outbound ACL（转换后）。
+//   - 末跳(i==n-1)：评估 inbound ACL，使用上游 NAT 设备已改写的 flow。
+// 入向 ACL 在 NAT 之前（看转换前 IP），出向 ACL 在 NAT 之后（看转换后 IP）。
+//
+// 纯函数（无副作用、不写 state、不碰 sim 引擎）。
 func EvaluatePathACL(states map[string]*CLIState, path []string, flow PacketTuple) Decision {
 	permit := Decision{Action: "permit", Matched: false}
 	n := len(path)
@@ -171,18 +189,35 @@ func EvaluatePathACL(states map[string]*CLIState, path []string, flow PacketTupl
 		return permit
 	}
 	for i, dev := range path {
-		var dirs []Direction
+		st := deviceStateFor(states, dev)
+		// 该设备是否携带 NAT 配置（仅 L3 设备能配 NAT，与能力白名单一致）。
+		natEnabled := st != nil && st.NAT != nil && st.NAT.Enabled
 		if i == 0 {
-			dirs = []Direction{DirOutbound}
+			// 源设备：仅 outbound（NAT 先改写，再评估转换后的 outbound ACL）。
+			if natEnabled {
+				flow, _ = applyNAT(st, DirOutbound, flow)
+			}
+			dec := EvaluateDeviceACL(st, dev, DirOutbound, flow)
+			if dec.Action == "deny" {
+				return dec
+			}
 		} else if i == n-1 {
-			dirs = []Direction{DirInbound}
+			// 末跳：仅 inbound（flow 已是上游 NAT 改写后）。
+			dec := EvaluateDeviceACL(st, dev, DirInbound, flow)
+			if dec.Action == "deny" {
+				return dec
+			}
 		} else {
-			dirs = []Direction{DirInbound, DirOutbound}
-		}
-		for _, d := range dirs {
-			// TODO(P2): 带 NAT 出向的设备此处预留 evaluateNATACL 调用点，
-			// 待 NAT 与 ACL 顺序/匹配侧拍板后接入（设计 §5 P2）。
-			dec := EvaluateDeviceACL(deviceStateFor(states, dev), dev, d, flow)
+			// 中转设备：inbound(转换前) → NAT(inbound+outbound) → outbound(转换后)。
+			dec := EvaluateDeviceACL(st, dev, DirInbound, flow)
+			if dec.Action == "deny" {
+				return dec
+			}
+			if natEnabled {
+				flow, _ = applyNAT(st, DirInbound, flow)
+				flow, _ = applyNAT(st, DirOutbound, flow)
+			}
+			dec = EvaluateDeviceACL(st, dev, DirOutbound, flow)
 			if dec.Action == "deny" {
 				return dec
 			}
@@ -200,7 +235,7 @@ func aclPreCheck(states map[string]*CLIState, srcDeviceID, targetIP string, t *t
 		// 无源设备状态（退化/极端场景）→ 不做 ACL 预判，交由基础可达性判定。
 		return Decision{Action: "permit", Matched: false}
 	}
-	path := ComputeL3Path(srcState, targetIP, t)
+	path, _ := ComputeL3PathNAT(states, srcState, targetIP, t)
 	srcIP := ResolveSourceIP(srcState, targetIP, t)
 	flow := PacketTuple{SrcIP: srcIP, DstIP: targetIP, Proto: "icmp"}
 	return EvaluatePathACL(states, path, flow)
@@ -462,13 +497,240 @@ func aclSimNote() string {
 	return "（ACL 为模拟过滤）"
 }
 
-// evaluateNATACL 是 P2 预留的 NAT+ACL 交互空桩 hook（设计 §5 P2）。
+// natSimNote 返回 NAT「诚实占位」注记（设计 §7 约定 #5 / §8 拍板 #4）。
+// lite 引擎标注「模拟转换，非内核级真实 NAT」；full 引擎返回较轻量注记。
+func natSimNote() string {
+	if sim.EngineModeName() == "lite" {
+		return "（NAT 为模拟转换（lite 引擎），非内核级真实 NAT）"
+	}
+	return "（NAT 为模拟转换）"
+}
+
+// applyNAT 在「一台 NAT 设备上、某一方向」对 flow 做地址转换（纯函数，无副作用）。
 //
-// 本期不实现 NAT 与 ACL 的先后顺序/匹配侧语义，始终返回 permit（不拦截）。
-// TODO(P2): 接入 NAT 顺序与转换前/后 IP 语义。
-func evaluateNATACL(state *CLIState, deviceID string, flow PacketTuple) Decision {
-	// TODO(P2): 实现 ACL 与 NAT 的交互判定；本期恒返回 permit。
-	return Decision{Action: "permit", Matched: false, DeviceID: deviceID}
+//   - dir == DirInbound：遍历 nat server，若 flow.DstIP == 某 NATServer.GlobalIP
+//     （精确匹配；协议/端口本期忽略）→ 改写 flow.DstIP = server.InsideIP。
+//   - dir == DirOutbound：遍历 nat outbound，对每个 outbound 用
+//     state.ACLs[outbound.ACLNum]（按 ACLNum 字符串匹配；ACL 缺失=permit any）
+//     判断 flow.SrcIP 是否命中其 permit 域（仅看 SrcIP：rule.Action=="permit" 且
+//     matchIP(flow.SrcIP, rule.SrcIP, rule.SrcWildcard)）；命中则改写 flow.SrcIP：
+//     Type=="easy-ip" → longestPrefixEgressIP(state, flow.DstIP)（空则回退首个接口 IP）；
+//     Type=="address-group" → 对应 state.NAT.AddressPools 中 ID 匹配的 StartIP（首 IP）。
+//
+// 返回改写后的 flow 与 translated 标记；未命中任何转换规则则原样返回、translated=false。
+//
+// 注意：返回 PacketTuple 而非 Decision——NAT 是改写而非拦截，下游 ACL 需拿转换后 IP
+// 续判（拦截仍由 EvaluateDeviceACL 负责）。纯函数：只读 state.NAT/ACLs/Interfaces/Routes，
+// 绝不写 state、不碰引擎。无 NAT 配置（state.NAT==nil 或未 Enabled）原样返回。
+func applyNAT(state *CLIState, dir Direction, flow PacketTuple) (PacketTuple, bool) {
+	if state == nil || state.NAT == nil || !state.NAT.Enabled {
+		return flow, false
+	}
+	switch dir {
+	case DirInbound:
+		for _, server := range state.NAT.Servers {
+			if server.GlobalIP != "" && server.GlobalIP == flow.DstIP {
+				nf := flow
+				nf.DstIP = server.InsideIP
+				return nf, true
+			}
+		}
+		return flow, false
+	case DirOutbound:
+		for _, ob := range state.NAT.Outbounds {
+			if !natOutboundMatches(state, ob, flow) {
+				continue
+			}
+			nf := flow
+			if ob.Type == "address-group" {
+				// 地址池模式：取对应 AddressPool 的 StartIP（首 IP，多 IP 取首，诚实占位）。
+				if startIP := addressPoolStartIP(state, ob.AddressPool); startIP != "" {
+					nf.SrcIP = startIP
+					return nf, true
+				}
+				return flow, false
+			}
+			// easy-ip（默认）：取朝目标出接口的 IP；路由缺失回退首个接口 IP。
+			if egressIP := longestPrefixEgressIP(state, flow.DstIP); egressIP != "" {
+				nf.SrcIP = egressIP
+				return nf, true
+			}
+			if firstIP := firstInterfaceIP(state); firstIP != "" {
+				nf.SrcIP = firstIP
+				return nf, true
+			}
+			return flow, false
+		}
+		return flow, false
+	default:
+		return flow, false
+	}
+}
+
+// natOutboundMatches 判断 flow.SrcIP 是否命中某条 nat outbound 的 permit 域。
+//
+// 用 state.ACLs[outbound.ACLNum]（字符串键）匹配；若 ACLNum 未命中但 ACLName 非空，
+// 再尝试 ACLName。ACL 不存在（缺失）视为 permit any（命中）。仅看 SrcIP，忽略 DstIP。
+func natOutboundMatches(state *CLIState, ob NATOutbound, flow PacketTuple) bool {
+	rules, ok := state.ACLs[strconv.Itoa(ob.ACLNum)]
+	if !ok && ob.ACLName != "" {
+		rules, ok = state.ACLs[ob.ACLName]
+	}
+	if !ok || len(rules) == 0 {
+		// ACL 缺失 = permit any（本期简化）。
+		return true
+	}
+	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rule.Action), "permit") {
+			continue
+		}
+		if rule.SrcIP == "" || matchIP(flow.SrcIP, rule.SrcIP, rule.SrcWildcard) {
+			return true
+		}
+	}
+	return false
+}
+
+// addressPoolStartIP 返回指定 ID 的 NAT 地址池的 StartIP（首 IP）。
+func addressPoolStartIP(state *CLIState, poolID int) string {
+	if state == nil || state.NAT == nil {
+		return ""
+	}
+	for _, pool := range state.NAT.AddressPools {
+		if pool.ID == poolID {
+			return pool.StartIP
+		}
+	}
+	return ""
+}
+
+// firstInterfaceIP 返回设备首个非空接口 IP（Easy IP 出接口路由缺失时的回退）。
+func firstInterfaceIP(state *CLIState) string {
+	if state == nil {
+		return ""
+	}
+	for _, iface := range state.Interfaces {
+		if iface != nil && iface.IP != "" {
+			return iface.IP
+		}
+	}
+	return ""
+}
+
+// ComputeL3PathNAT 是「NAT 感知」的路径解析（设计 §3.2 / §4.4）。
+//
+//  1. 先 deviceIDByIP(t, targetIP)：命中普通拓扑接口 IP → 直接委托 ComputeL3Path，
+//     返回 (path, false)（natTranslated=false，向后兼容）。
+//  2. 否则 deviceIDByNATGlobalIP(states, t, targetIP)：扫描各设备 CLIState.NAT.Servers，
+//     找到 GlobalIP == targetIP 的 NAT 设备 natDev 及其 InsideIP；
+//     - BFS 算到 natDev（复用同一 BFS，仅 dstDev=natDev）；
+//     - insideDev = deviceIDByIP(t, server.InsideIP)（内网真实服务器）；
+//     - 路径 append insideDev 作为最后一跳：[src,...,natDev, insideDev]；
+//     - 返回 (path, true)（natTranslated=true）。
+//
+// BFS 仍是最短路径，insideDev 仅作为 NAT 设备之后的「真实终点」追加，不参与 BFS 队列
+// （NAT 设备已是 BFS 终点；inside 设备与 NAT 设备拓扑相连，是 NAT 映射的真实终点）。
+// 若该 NAT 设备无法从 src 经 BFS 到达（不连通），返回 (nil, true)。
+//
+// 不破坏既有 ComputeL3Path 签名（保护 diagnostic_handlers.go 与既有测试）。
+func ComputeL3PathNAT(states map[string]*CLIState, srcState *CLIState, targetIP string, t *topology.Topology) ([]string, bool) {
+	if srcState == nil || t == nil {
+		return nil, false
+	}
+	// 1) 普通拓扑接口 IP：直接委托，保持旧行为。
+	if deviceIDByIP(t, targetIP) != "" {
+		return ComputeL3Path(srcState, targetIP, t), false
+	}
+	// 2) NAT GlobalIP：扫描各设备 CLIState 的 nat server。
+	natDev, insideDev, ok := deviceIDByNATGlobalIP(states, t, targetIP)
+	if !ok {
+		return nil, false
+	}
+	path := computeL3PathToDevice(srcState.DeviceID, natDev, t)
+	if path == nil {
+		// NAT 设备从 src 不可达：诚实退化，natTranslated=true 告知调用方目标为公网 IP。
+		return nil, true
+	}
+	if insideDev != "" {
+		path = append(path, insideDev)
+	}
+	return path, true
+}
+
+// deviceIDByNATGlobalIP 扫描 states 注册表，返回拥有 targetIP 作为 GlobalIP 的
+// NAT 设备 ID 与对应内网设备 ID（InsideIP → deviceIDByIP）。
+func deviceIDByNATGlobalIP(states map[string]*CLIState, t *topology.Topology, targetIP string) (natDev, insideDev string, ok bool) {
+	if states == nil {
+		return "", "", false
+	}
+	for devID, st := range states {
+		if st == nil || st.NAT == nil || !st.NAT.Enabled {
+			continue
+		}
+		for _, server := range st.NAT.Servers {
+			if server.GlobalIP != "" && server.GlobalIP == targetIP {
+				insideDev = deviceIDByIP(t, server.InsideIP)
+				return devID, insideDev, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// computeL3PathToDevice 由拓扑 BFS 计算 src→dstDev 的有序设备路径（含 src、dstDev）。
+// 找不到目标设备或无拓扑时返回 nil（调用方据此退化为基础可达性判定）。
+func computeL3PathToDevice(src, dstDev string, t *topology.Topology) []string {
+	if src == "" || dstDev == "" || t == nil {
+		return nil
+	}
+	if src == dstDev {
+		return []string{src}
+	}
+	prev := make(map[string]string)
+	visited := map[string]bool{src: true}
+	q := []string{src}
+	found := false
+	for len(q) > 0 {
+		cur := q[0]
+		q = q[1:]
+		for _, link := range t.Links {
+			var next string
+			if link.SourceDevice == cur {
+				next = link.TargetDevice
+			} else if link.TargetDevice == cur {
+				next = link.SourceDevice
+			} else {
+				continue
+			}
+			if visited[next] {
+				continue
+			}
+			visited[next] = true
+			prev[next] = cur
+			if next == dstDev {
+				found = true
+				break
+			}
+			q = append(q, next)
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	var path []string
+	for d := dstDev; d != ""; d = prev[d] {
+		path = append([]string{d}, path...)
+		if d == src {
+			break
+		}
+	}
+	return path
 }
 
 // bestEffortSourceIP 在缺少拓扑 t 时推导 tracert 渲染所需的源 IP（尽力而为）：
