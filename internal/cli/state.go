@@ -55,7 +55,6 @@ type CLIState struct {
 	MLAGInterfaces map[string]map[string]string
 	LLDP           *LLDPConfig
 	STP            *STPConfig
-	VRRP           map[int]*VRRPConfig
 	IPRouting      bool // 三层路由功能启用标志
 	IPsec          map[string]*IPsecConfig
 	SNMP           *SNMPConfig
@@ -271,14 +270,6 @@ type STPPort struct {
 	PortName     string
 	PortPriority int
 	Cost         int
-}
-
-type VRRPConfig struct {
-	GroupID   int
-	VirtualIP string
-	Priority  int
-	Preempt   bool
-	Delay     int
 }
 
 type IPsecConfig struct {
@@ -514,7 +505,6 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 			Ports:          make(map[string]*STPPort),
 			VLANMapping:    make(map[int]int),
 		},
-		VRRP:   make(map[int]*VRRPConfig),
 		IPsec:  make(map[string]*IPsecConfig),
 		SNMP:   &SNMPConfig{},
 		Syslog: &SyslogConfig{},
