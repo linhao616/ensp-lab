@@ -2,6 +2,19 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.5.0] - 2026-08-06
+
+### Added
+- **P1-C Firewall 真实过滤（路线 B）**：`internal/cli/acl_eval.go` 新增纯函数式 CLIState 仿真 ACL 评估器，按设备 ID 从拓扑级 `map[string]*CLIState` registry 逐设备读取 ACL，隐式 `deny any`（未绑定设备放行、绑定但无 permit 匹配则丢弃）；方向模型 `src=outbound` / `transit=inbound+outbound` / `dst=inbound`，沿路径取交集、首 deny 即停；介入 CLI `ping` / `tracert` / `cli.CheckReachability` 与诊断 `blockedBy`。CLIState 为单一事实源，旁路 `protocol.Firewall` / `MatchACL`（加 Deprecated 注释）；NAT 保留空桩（P2）。
+- **华为 VRP 实训课程参考索引**：`docs/reference/huawei-vrp-course.md` 逐讲索引（4 部分 ~36 讲）+ ensp-lab 功能覆盖矩阵（已实现/待校验/待开发）+ 安全视角（高级 ACL / NAT / 端口安全 / AAA）优先借鉴。来源百度网盘课程（MCP 无下载能力，以摘要索引）。
+- **P1-C 设计文档签名同步**：`docs/p1c-firewall-design.md` §3.1/§3.2/§4.1–§4.3 由单一 `state` 改为 `states` 注册表版本，与 `acl_eval.go` 实际签名对齐。
+
+### Fixed
+- QA Round 1 发现真实 Bug（单源 `state` 套全路径致中转/目的 ACL 不生效），引入 registry 透传修复；Round 2 独立回归 NoOne 全绿。
+
+### Security
+- ACL 评估器默认 `deny any` 与华为 VRP 语义一致，避免「未匹配即放行」的越权风险；lite 引擎对 ACL 标记为「仿真过滤，非内核级真实过滤」诚实占位。
+
 ## [v0.4.0] - 2026-08-05
 
 ### Added

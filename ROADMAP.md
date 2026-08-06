@@ -10,6 +10,8 @@
 
 **当前状态**：API handler 拆分重构（`router.go` → `topology_/device_/link_/cli_/annotation_/system_handlers.go`）已完成，`router.go` 仅保留 `NewRouter()` 路由注册，`internal/api` 可正常编译，根目录 `ensp-lab.exe` 为最新构建（含嵌入前端）。
 
+**近期更新（v0.5.0）**：P1-C Firewall 真实过滤（路线 B 仿真 ACL 评估器，隐式 deny-any + 方向模型，介入 ping/tracert/可达性全路径与诊断 blockedBy）已交付并通过 QA 两轮回归；新增百度网盘华为 VRP 实训课程参考索引（`docs/reference/huawei-vrp-course.md`），为后续 P2 协议特性提供行为验收 oracle。
+
 ## 三、短中期计划（3~6 个月）
 
 ### P0（最高优先级）
@@ -49,7 +51,8 @@
 | v0.3.0 | ✅ 已完成 | 2026-07 | API handler 拆分重构（构建通过）+ 设备详情浮动窗口 + Ping 测试面板增强（任意源/目标 + 连续 Ping）+ 引擎懒启动（移除启动按钮） |
 | v0.3.1 | ✅ 已完成 | 2026-07 | 稳定性加固：IP 合法性校验（HTTP 400）+ dbgSim 限流 + 低资源测试报告 + 最小启动配置 |
 | v0.4.0 | ✅ 已完成 | 2026-08 | 安全加固(P0: V-01~V-04 / F1-F10) + protoSim 多拓扑修复 + 真实诊断(P1-D) + VRP CLI 广度(P1-F) + Firewall 路线定调 |
-| v0.5.0 | 📅 后续 | - | P1-C Firewall 真实过滤（路线 B 仿真 ACL）+ P2 CLI 增强（Tab 补全 / 历史上下键 / EVPN 详细 display） |
+| v0.5.0 | ✅ 已完成 | 2026-08 | P1-C Firewall 真实过滤（路线 B 仿真 ACL：隐式 deny-any + 方向模型，介入 ping/tracert/可达性全路径 + 诊断 blockedBy）+ 华为 VRP 实训课程参考索引 |
+| v0.6.0 | 📅 后续 | - | P2：NAT 真实过滤（填 evaluateNATACL 空桩）/ 端口安全 / VRRP / STP·RSTP·MSTP / 链路聚合 / DHCP 中继 / GRE / AAA / IPv6 + P2 CLI 增强（Tab 补全 / 历史上下键 / EVPN 详细 display） |
 | v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（延迟 / 丢包 / 带宽） |
 
 ## 六、贡献指南
