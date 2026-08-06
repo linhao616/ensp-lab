@@ -11,6 +11,7 @@ package cli
 import (
 	"ensp-lab/internal/topology"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -868,6 +869,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				return "Error: incomplete command"
 			}
 			sub := strings.ToLower(strings.Join(cmd.Args, " "))
+			if strings.HasPrefix(sub, "vrrp") {
+				// undo vrrp vrid <id> [virtual-ip <ip>]（P1，T04）。
+				return applyUndoVRRP(state, cmd.Args)
+			}
 			switch sub {
 			case "shutdown":
 				// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
@@ -1791,51 +1796,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return fmt.Sprintf("IP pool %s configured", poolName)
 	case "vrrp":
-		if state.CurrentView != ViewInterface {
-			return "Error: must be in interface view"
-		}
-		if len(cmd.Args) < 2 {
-			return "Error: need group-id and virtual-ip"
-		}
-		groupID, err := parseNum(cmd.Args[0])
-		if err != nil {
-			return "Error: invalid group-id"
-		}
-		virtualIP := cmd.Args[1]
-		priority := 100
-		preempt := true
-		delay := 0
-		var warn strings.Builder
-		for i := 2; i < len(cmd.Args); i += 2 {
-			if i+1 >= len(cmd.Args) {
-				break
-			}
-			switch strings.ToLower(cmd.Args[i]) {
-			case "priority":
-				// 解析失败保留已有默认值，不再静默写成 0。
-				if n, err := parseNum(cmd.Args[i+1]); err == nil {
-					priority = n
-				} else {
-					warn.WriteString(fmt.Sprintf(" [warn: invalid priority %q, kept %d]", cmd.Args[i+1], priority))
-				}
-			case "preempt":
-				preempt = strings.ToLower(cmd.Args[i+1]) != "disable"
-			case "delay":
-				if n, err := parseNum(cmd.Args[i+1]); err == nil {
-					delay = n
-				} else {
-					warn.WriteString(fmt.Sprintf(" [warn: invalid delay %q, kept %d]", cmd.Args[i+1], delay))
-				}
-			}
-		}
-		state.VRRP[groupID] = &VRRPConfig{
-			GroupID:   groupID,
-			VirtualIP: virtualIP,
-			Priority:  priority,
-			Preempt:   preempt,
-			Delay:     delay,
-		}
-		return fmt.Sprintf("VRRP group %d configured%s", groupID, warn.String())
+		// 华为 VRP 风格 VRRP 命令族（P2 第三项）：vrrp vrid <1-255> <subcommand>。
+		// 全部经 DeviceConfig["interface:<iface>:vrrp:<vrid>:<field>"] 持久化
+		// （单一事实源，save/reload 自动往返）。能力校验沿用 ExecuteCommandOn
+		// 的 isCommandSupported（capabilities.go: "vrrp": l3Devices()）。
+		return applyVRRP(state, cmd.Args)
 	case "ipsec":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2686,11 +2651,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 					out.WriteString(fmt.Sprintf("  stp mode %s\n", state.STP.Mode))
 					out.WriteString(fmt.Sprintf("  stp enable\n"))
 				}
-				if state.VRRP != nil && len(state.VRRP) > 0 {
-					for id, vrrp := range state.VRRP {
-						out.WriteString(fmt.Sprintf("  vrrp vrid %d ip %s\n", id, vrrp.VirtualIP))
+			if ifaces := vrrpInterfaces(state); len(ifaces) > 0 {
+				for _, iname := range ifaces {
+					if s := buildSavedVRRPConfig(state, iname); s != "" {
+						out.WriteString(s)
 					}
 				}
+			}
 				if state.SNMP.Enabled {
 					out.WriteString(fmt.Sprintf("  snmp-agent\n"))
 				}
@@ -3626,25 +3593,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "vrrp":
-			var out strings.Builder
-			if len(state.VRRP) > 0 {
-				out.WriteString("VRRP Groups:\n")
-				for _, group := range state.VRRP {
-					out.WriteString(fmt.Sprintf("  Group %d:\n", group.GroupID))
-					out.WriteString(fmt.Sprintf("    Virtual IP: %s\n", group.VirtualIP))
-					out.WriteString(fmt.Sprintf("    Priority: %d\n", group.Priority))
-					out.WriteString(fmt.Sprintf("    Preempt: %s\n", func() string {
-						if group.Preempt {
-							return "Enabled"
-						}
-						return "Disabled"
-					}()))
-					out.WriteString(fmt.Sprintf("    Delay: %ds\n", group.Delay))
-				}
-			} else {
-				out.WriteString("VRRP: Not configured\n")
-			}
-			return out.String()
+			// 忠实展示 VRRP 组（P2 第三项）：支持 brief / interface <if> / vrid <id> / 全接口。
+			// 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附诚实占位注记。
+			return buildVRRPDisplay(state, arg1, cmd.Args)
 		case "ipsec":
 			var out strings.Builder
 			if len(state.IPsec) > 0 {
@@ -4166,6 +4117,162 @@ func applyPortSecurity(state *CLIState, args []string) string {
 		return "Error: usage: port-security mac-address sticky [<mac> vlan <id>]"
 	}
 	return "Error: invalid port-security subcommand"
+}
+
+// applyVRRP 处理接口视图下的 VRRP 命令族（P2 第三项，华为 VRP 课程 60/61）。
+//
+// 解析 VRP 子命令并写对应 DeviceConfig 键（单一事实源）：
+//   vrrp vrid <1-255> virtual-ip <ip>            → 写 :virtual-ip；先调 vrrpSameSubnet 校验，失败回 Error
+//   vrrp vrid <1-255> priority <1-254>           → 写 :priority
+//   vrrp vrid <1-255> preempt-mode disable       → 写 :preempt="disable"（enable 可省略，默认开启）
+//   vrrp vrid <1-255> timer advertise <1-255>    → 写 :advertise
+//   [P1] vrrp vrid <1-255> track interface <if> [reduced <1-255>]
+//                                                  → 写 :track-iface / :track-reduced（reduced 缺省 10）
+//   [P1] vrrp vrid <1-255> authentication-mode {simple|md5} <key>
+//                                                  → 写 :auth-mode / :auth-key（仅存不显明文）
+//
+// 范围/格式非法 → "Error: ..."；非接口视图 → "Error: must be in interface view"；
+// 能力校验沿用 ExecuteCommandOn 的 isCommandSupported（"vrrp": l3Devices()）。
+//
+// 副作用（写 DeviceConfig 键）在此落地；纯函数选举/校验见 vrrp_eval.go。
+func applyVRRP(state *CLIState, args []string) string {
+	if state.CurrentView != ViewInterface {
+		return "Error: must be in interface view"
+	}
+	iface := state.CurrentSub
+	if len(args) < 1 {
+		return "Error: usage: vrrp vrid <1-255> {virtual-ip <ip> | priority <1-254> | preempt-mode disable | timer advertise <1-255> | track interface <iface> [reduced <1-255>] | authentication-mode {simple|md5} <key>}"
+	}
+	if strings.ToLower(args[0]) != "vrid" {
+		return "Error: usage: vrrp vrid <1-255> ..."
+	}
+	if len(args) < 2 {
+		return "Error: vrid number required"
+	}
+	vrid, err := parseNum(args[1])
+	if err != nil || vrid < vrrpVRIDMin || vrid > vrrpVRIDMax {
+		return fmt.Sprintf("Error: vrid must be between %d and %d", vrrpVRIDMin, vrrpVRIDMax)
+	}
+	if len(args) < 3 {
+		return "Error: incomplete vrrp command"
+	}
+	sub := strings.ToLower(args[2])
+	switch sub {
+	case "virtual-ip":
+		if len(args) < 4 {
+			return "Error: virtual-ip address required"
+		}
+		vip := args[3]
+		if net.ParseIP(vip) == nil {
+			return fmt.Sprintf("Error: invalid virtual-ip %q", vip)
+		}
+		// 先做虚拟 IP 与接口 IP 同网段校验（拍板 #4，P0）。
+		ok, _, errMsg := vrrpSameSubnet(state, iface, vip)
+		if !ok {
+			return errMsg
+		}
+		state.DeviceConfig[vrrpKey(iface, vrid, "virtual-ip")] = vip
+		return fmt.Sprintf("VRRP vrid %d virtual-ip %s configured", vrid, vip)
+	case "priority":
+		if len(args) < 4 {
+			return "Error: priority value required"
+		}
+		pri, err := parseNum(args[3])
+		if err != nil || pri < vrrpPriMin || pri > vrrpPriMax {
+			return fmt.Sprintf("Error: priority must be between %d and %d", vrrpPriMin, vrrpPriMax)
+		}
+		state.DeviceConfig[vrrpKey(iface, vrid, "priority")] = strconv.Itoa(pri)
+		return fmt.Sprintf("VRRP vrid %d priority %d configured", vrid, pri)
+	case "preempt-mode":
+		if len(args) < 4 {
+			return "Error: usage: vrrp vrid <id> preempt-mode disable"
+		}
+		mode := strings.ToLower(args[3])
+		if mode != "disable" {
+			return "Error: usage: vrrp vrid <id> preempt-mode disable"
+		}
+		state.DeviceConfig[vrrpKey(iface, vrid, "preempt")] = "disable"
+		return fmt.Sprintf("VRRP vrid %d preempt-mode disable configured", vrid)
+	case "timer":
+		if len(args) < 5 || strings.ToLower(args[3]) != "advertise" {
+			return "Error: usage: vrrp vrid <id> timer advertise <1-255>"
+		}
+		adv, err := parseNum(args[4])
+		if err != nil || adv < vrrpAdvMin || adv > vrrpAdvMax {
+			return fmt.Sprintf("Error: advertise interval must be between %d and %d", vrrpAdvMin, vrrpAdvMax)
+		}
+		state.DeviceConfig[vrrpKey(iface, vrid, "advertise")] = strconv.Itoa(adv)
+		return fmt.Sprintf("VRRP vrid %d timer advertise %d configured", vrid, adv)
+	case "track":
+		// track interface <iface> [reduced <1-255>]
+		if len(args) < 4 || strings.ToLower(args[3]) != "interface" {
+			return "Error: usage: vrrp vrid <id> track interface <iface> [reduced <1-255>]"
+		}
+		if len(args) < 5 {
+			return "Error: track interface name required"
+		}
+		trackIface := args[4]
+		reduced := vrrpTrackReducedDefault
+		if len(args) >= 6 && strings.ToLower(args[5]) == "reduced" {
+			if len(args) < 7 {
+				return "Error: reduced value required"
+			}
+			r, err := parseNum(args[6])
+			if err != nil || r < vrrpTrackReducedMin || r > vrrpTrackReducedMax {
+				return fmt.Sprintf("Error: reduced must be between %d and %d", vrrpTrackReducedMin, vrrpTrackReducedMax)
+			}
+			reduced = r
+		}
+		state.DeviceConfig[vrrpKey(iface, vrid, "track-iface")] = trackIface
+		state.DeviceConfig[vrrpKey(iface, vrid, "track-reduced")] = strconv.Itoa(reduced)
+		return fmt.Sprintf("VRRP vrid %d track interface %s reduced %d configured", vrid, trackIface, reduced)
+	case "authentication-mode":
+		if len(args) < 5 {
+			return "Error: usage: vrrp vrid <id> authentication-mode {simple|md5} <key>"
+		}
+		mode := strings.ToLower(args[3])
+		if mode != "simple" && mode != "md5" {
+			return "Error: authentication-mode must be simple or md5"
+		}
+		key := args[4]
+		state.DeviceConfig[vrrpKey(iface, vrid, "auth-mode")] = mode
+		state.DeviceConfig[vrrpKey(iface, vrid, "auth-key")] = key
+		return fmt.Sprintf("VRRP vrid %d authentication-mode %s configured", vrid, mode)
+	default:
+		return fmt.Sprintf("Error: unknown vrrp subcommand %q", sub)
+	}
+}
+
+// applyUndoVRRP 处理接口视图下的 undo vrrp 命令（P1）。
+//
+//   undo vrrp vrid <1-255> [virtual-ip <ip>]
+//
+// 删除 interface:<iface>:vrrp:<vrid>:* 全部字段键（virtual-ip 为组存在标记，
+// 删除后即该组消失）。副作用（删 DeviceConfig 键）在此落地。
+func applyUndoVRRP(state *CLIState, args []string) string {
+	if state.CurrentView != ViewInterface {
+		return "Error: must be in interface view"
+	}
+	iface := state.CurrentSub
+	if len(args) < 3 || strings.ToLower(args[0]) != "vrrp" || strings.ToLower(args[1]) != "vrid" {
+		return "Error: usage: undo vrrp vrid <1-255> [virtual-ip <ip>]"
+	}
+	vrid, err := parseNum(args[2])
+	if err != nil || vrid < vrrpVRIDMin || vrid > vrrpVRIDMax {
+		return fmt.Sprintf("Error: vrid must be between %d and %d", vrrpVRIDMin, vrrpVRIDMax)
+	}
+	prefix := fmt.Sprintf("interface:%s:vrrp:%d:", iface, vrid)
+	deleted := false
+	for k := range state.DeviceConfig {
+		if strings.HasPrefix(k, prefix) {
+			delete(state.DeviceConfig, k)
+			deleted = true
+		}
+	}
+	if deleted {
+		return fmt.Sprintf("VRRP vrid %d on %s deleted", vrid, iface)
+	}
+	return fmt.Sprintf("Error: VRRP vrid %d not configured on %s", vrid, iface)
 }
 
 // handleSimulateFrame 处理 simulate frame <src-mac> [vlan <id>]（T03，唯一触发点）。
@@ -4879,7 +4986,27 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 		for _, line := range learned {
 			b.WriteString(line + "\n")
 		}
+		// VRRP（P2 第三项）：按 VRP 合规格式输出 vrrp vrid X virtual-ip（差异值才补 priority/preempt/advertise）。
+		// 仅在该接口已在本循环（state.Interfaces）出现时，随接口块一起输出，避免重复 interface 标题。
+		if _, ok := state.Interfaces[ifc.Name]; ok {
+			if vrrpLines := buildSavedVRRPConfig(state, ifc.Name); vrrpLines != "" {
+				b.WriteString(vrrpLines)
+			}
+		}
 		b.WriteString("#\n")
+	}
+	// 独立 VRRP 输出通道：遍历 DeviceConfig vrrp 键（vrrpInterfaces），对任意「拥有 VRRP 配置、
+	// 但 state.Interfaces 未重建」的接口（典型为 save→reload 后）补齐 interface 块与 VRRP 配置行，
+	// 保证 display current-configuration 在 reload 后仍完整复现 VRRP（修掉残桩丢配置缺陷，AC2）。
+	for _, iname := range vrrpInterfaces(state) {
+		if _, ok := state.Interfaces[iname]; ok {
+			continue
+		}
+		if vrrpLines := buildSavedVRRPConfig(state, iname); vrrpLines != "" {
+			b.WriteString(fmt.Sprintf("interface %s\n", iname))
+			b.WriteString(vrrpLines)
+			b.WriteString("#\n")
+		}
 	}
 
 	for _, r := range state.Routes {
@@ -4906,6 +5033,151 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 	}
 
 	b.WriteString(fmt.Sprintf("!configuration saved at %s\n", state.SaveTime))
+	return b.String()
+}
+
+// buildVRRPDisplay 渲染 `display vrrp [brief|interface <if>|vrid <id>]`（P2 第三项）。
+//
+//   arg1==""         → 遍历所有接口所有组，逐组详情（含 EvaluateVRRP 角色 + 诚实注记）
+//   arg1=="brief"    → 摘要表：VRID / Interface / Virtual IP / Priority / Role
+//   arg1=="interface"→ 单接口所有组详情（args[2] 为目标接口名）
+//   arg1=="vrid"     → 跨接口匹配该 vrid 的组详情（args[2] 为 vrid）
+//
+// 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附 vrrpSimNote() 诚实注记。
+// 角色恒为 Master（拍板 #2(a) 本地静态假设）或 Initialize（未配组），绝不臆造 Backup（O2）。
+func buildVRRPDisplay(state *CLIState, arg1 string, args []string) string {
+	if state == nil {
+		return "VRRP: Not configured"
+	}
+	// 决定要展示的 (iface, vrid) 组集合。
+	var refs []vrrpGroupRef
+	switch arg1 {
+	case "interface":
+		if len(args) < 3 {
+			return "Error: usage: display vrrp interface <interface>"
+		}
+		iface := args[2]
+		for _, g := range collectVRRPGroups(state, iface) {
+			refs = append(refs, vrrpGroupRef{iface, g.VRID})
+		}
+	case "vrid":
+		if len(args) < 3 {
+			return "Error: usage: display vrrp vrid <id>"
+		}
+		vrid, err := parseNum(args[2])
+		if err != nil {
+			return "Error: invalid vrid"
+		}
+		for _, iface := range vrrpInterfaces(state) {
+			for _, g := range collectVRRPGroups(state, iface) {
+				if g.VRID == vrid {
+					refs = append(refs, vrrpGroupRef{iface, g.VRID})
+					break
+				}
+			}
+		}
+	case "brief":
+		for _, iface := range vrrpInterfaces(state) {
+			for _, g := range collectVRRPGroups(state, iface) {
+				refs = append(refs, vrrpGroupRef{iface, g.VRID})
+			}
+		}
+	default: // "" → 全接口
+		for _, iface := range vrrpInterfaces(state) {
+			for _, g := range collectVRRPGroups(state, iface) {
+				refs = append(refs, vrrpGroupRef{iface, g.VRID})
+			}
+		}
+	}
+
+	if len(refs) == 0 {
+		return "VRRP: Not configured"
+	}
+	if arg1 == "brief" {
+		return renderVRRPBrief(state, refs)
+	}
+	return renderVRRPDetail(state, refs)
+}
+
+// renderVRRPBrief 渲染 display vrrp brief 的摘要表。
+func renderVRRPBrief(state *CLIState, refs []vrrpGroupRef) string {
+	var out strings.Builder
+	// 列宽：VRID(5) Interface(22) Virtual IP(16) Priority(8) Role(8)
+	out.WriteString(fmt.Sprintf("%-5s %-22s %-16s %-8s %s\n", "VRID", "Interface", "Virtual IP", "Priority", "Role"))
+	for _, ref := range refs {
+		res := EvaluateVRRP(state, ref.iface, ref.vrid)
+		out.WriteString(fmt.Sprintf("%-5d %-22s %-16s %-8d %s\n", ref.vrid, ref.iface, res.VirtualIP, res.Priority, res.Role))
+	}
+	out.WriteString("\n" + vrrpSimNote() + "\n")
+	return out.String()
+}
+
+// renderVRRPDetail 渲染 display vrrp（非 brief）的逐组详情。
+func renderVRRPDetail(state *CLIState, refs []vrrpGroupRef) string {
+	var out strings.Builder
+	for i, ref := range refs {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		res := EvaluateVRRP(state, ref.iface, ref.vrid)
+		g, _ := collectVRRPGroup(state, ref.iface, ref.vrid)
+		out.WriteString(fmt.Sprintf("%s | Virtual Router %d\n", ref.iface, ref.vrid))
+		out.WriteString(fmt.Sprintf("  %-15s: %s            %s\n", "State", res.Role, "（本地假设选举，非跨设备真实通告）"))
+		out.WriteString(fmt.Sprintf("  %-15s: %s\n", "Virtual IP", res.VirtualIP))
+		out.WriteString(fmt.Sprintf("  %-15s: %d\n", "Priority", res.Priority))
+		preemptStr := "Enabled"
+		if !res.Preempt {
+			preemptStr = "Disabled"
+		}
+		out.WriteString(fmt.Sprintf("  %-15s: %s\n", "Preempt", preemptStr))
+		out.WriteString(fmt.Sprintf("  %-15s: %d s\n", "Advertise Timer", res.Advertise))
+		if g.TrackInterface != "" {
+			out.WriteString(fmt.Sprintf("  %-15s: %s (reduced %d, Effective Priority %d)\n", "Track Interface", g.TrackInterface, g.TrackReduced, res.EffectivePriority))
+		}
+		if g.AuthMode != "" {
+			// 仅显示认证模式，不显示明文 key（诚实边界 O3）。
+			out.WriteString(fmt.Sprintf("  %-15s: %s\n", "Authentication", g.AuthMode))
+		}
+	}
+	out.WriteString("\n" + vrrpSimNote() + "\n")
+	return out.String()
+}
+
+// buildSavedVRRPConfig 输出指定接口下所有 VRRP 组的 VRP 合规配置行（已缩进，无 interface 包装）。
+// 若接口无 VRRP 配置返回 ""。差异值才补行（priority!=100 / preempt 关闭 / advertise!=1），
+// 修复旧 `vrrp vrid %d ip %s` 的非合规格式（拍板 #6，保真度约定）。
+func buildSavedVRRPConfig(state *CLIState, iface string) string {
+	groups := collectVRRPGroups(state, iface)
+	if len(groups) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, g := range groups {
+		b.WriteString(fmt.Sprintf(" vrrp vrid %d virtual-ip %s\n", g.VRID, g.VirtualIP))
+		if g.Priority != vrrpPriDefault {
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d priority %d\n", g.VRID, g.Priority))
+		}
+		if !g.Preempt {
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d preempt-mode disable\n", g.VRID))
+		}
+		if g.Advertise != vrrpAdvDefault {
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d timer advertise %d\n", g.VRID, g.Advertise))
+		}
+		if g.TrackInterface != "" {
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d track interface %s", g.VRID, g.TrackInterface))
+			if g.TrackReduced != vrrpTrackReducedDefault {
+				b.WriteString(fmt.Sprintf(" reduced %d", g.TrackReduced))
+			}
+			b.WriteString("\n")
+		}
+		if g.AuthMode != "" {
+			// 仅持久化认证模式与 key（key 脱敏由 display 负责）。
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d authentication-mode %s %s\n", g.VRID, g.AuthMode, g.AuthKey))
+		}
+		if g.PreemptDelay != 0 {
+			b.WriteString(fmt.Sprintf(" vrrp vrid %d preempt timer delay %d\n", g.VRID, g.PreemptDelay))
+		}
+	}
 	return b.String()
 }
 
