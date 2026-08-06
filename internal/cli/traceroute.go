@@ -191,6 +191,11 @@ func RenderPingWithACL(states map[string]*CLIState, state *CLIState, res *sim.Pi
 		return fmt.Sprintf("Ping %s: destination unreachable (ACL 拦截: %s acl %s rule %d, %s) %s",
 			targetIP, dec.DeviceID, dec.ACLNum, ruleID, dec.Direction, note)
 	}
+	// P2（拍板 #4 ② / 约定 #5）：路径存在 NAT 转换时，即便 permit 也要追加 natSimNote()
+	// 诚实占位（NAT 为模拟转换，非内核级真实 NAT），与 tracert 路径口径一致。
+	if natTranslated {
+		return FormatEnginePing(res, targetIP) + "\n" + natSimNote()
+	}
 	return FormatEnginePing(res, targetIP)
 }
 
