@@ -2,6 +2,22 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.6.0] - 2026-08-07
+
+本轮为 P2 协议特性累积发布（自 v0.5.0 起落地的 NAT / 端口安全 / VRRP / STP·RSTP·MSTP），延续「纯函数仿真评估 + 诚实占位」路线，全部经独立 QA 两轮验收。
+
+### Added
+- **P2 NAT 真实过滤（course 38）**：`internal/cli/acl_eval.go` 填 `evaluateNATACL` 空桩，复用 P1-C ACL 评估器；`applyNAT` 替代原空桩 + `EvaluatePathACL` 接线 + `ComputeL3PathNAT`；tracert/ping 显示接入与 `natSimNote` 诚实占位（数据源未接入时明确提示，不编造）。
+- **P2 端口安全（course 49）**：真实 MAC 准入纯函数 `EvaluatePortSecurity` + `simulate frame` L2 触发 + `portSecSimNote()` 诚实占位；种子 MAC Type 归一化为小写 `static`。
+- **P2 VRRP（course 60/61）**：移除 `state.VRRP`，DeviceConfig 单一事实源 `interface:<iface>:vrrp:<vrid>:<field>`；纯函数 `EvaluateVRRP` + `vrrpSimNote()` 诚实占位；真实配置 / 选举 / 展示与 P1 track/auth/undo；current-config 认证密钥脱敏；根治 save→reload 丢配置缺陷。
+- **P2 STP/RSTP/MSTP（course 55/56/57）**：增量 PRD + 增量设计（**拍板#2 方向更正**为 Bridge ID 比较「Priority 小者胜，同优先则 MAC 小者胜」）；方案 A 落地——移除 `state.STP`/`STPConfig`/`STPPort`，全状态改 `stp:<field>` + `interface:<iface>:stp:<field>` DeviceConfig 键，根治 save→reload 丢配置（P0-1）；`stp_eval.go` 纯函数评估器（`CompareBridgeID`/`EvaluateSTP`/`collectSTPInstances`/`SelectRootBridge`/`stpSimNote`）；`parser.go` 重写 `applySTP`/`buildSTPDisplay`/`buildSavedSTPConfig`/`applyUndoSTP` 并新增 `ViewMSTRegion`。
+
+### Fixed
+- STP `undo stp instance <id> root` 参数索引错位（真源 bug，`1544304` 修复）；VRRP current-config 认证密钥脱敏；端口安全种子 MAC 归一化。
+
+### Security
+- NAT / 端口安全 / VRRP / STP 均为纯函数仿真评估，lite 引擎对「真实过滤」标记为诚实占位（非内核级真实过滤），避免误导；密钥在 current-config 输出中脱敏。
+
 ## [v0.5.0] - 2026-08-06
 
 ### Added
