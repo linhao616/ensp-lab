@@ -244,6 +244,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 
 	// 能力校验：未绑定设备类型时跳过
 	if dt != "" && !isCommandSupported(command, dt) {
+		// P2 #5：链路聚合命令族给出 VRP 风格专用文案（PRD AC8 / 设计 §1.7），
+		// 而非通用 "command 'x' is not supported on device type" 兜底串。
+		if isLAGCommandName(command) {
+			return errLAGNotSupported(string(dt))
+		}
 		return fmt.Sprintf("Error: command '%s' is not supported on device type %q", command, dt)
 	}
 
@@ -357,6 +362,41 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				return fmt.Sprintf("Error: Vlanif interface is only supported on L3 Switch, Router, Firewall and VTEP")
 			}
 		}
+		// —— 聚合口族（Eth-Trunk / ET / Bridge-Aggregation / BAGG）专用分支 ——
+		// P2 #5 改动点 1（设计 §1.4）：聚合口是**逻辑口**，其 up/down 由成员实时派生，
+		// 绝不能像物理口那样无条件写 :status="Up"（那是编造）。
+		// ⚠️ 仅对「前缀后紧跟数字」的名字生效（isTrunkFamilyInterface），
+		//    Ethernet0/0/1 等物理口不受影响，避免大范围回归。
+		isTrunkIface := isTrunkFamilyInterface(ifName)
+		if isTrunkIface {
+			trunkID, _ := lagTrunkIDFromName(ifName)
+			// 能力守卫：Eth-Trunk 仅二层/三层交换机支持
+			if !lagDeviceSupported(state) {
+				return errLAGNotSupported(string(state.DeviceType))
+			}
+			if ok, msg := validTrunkID(trunkID); !ok {
+				return msg
+			}
+			state.CurrentView = ViewInterface
+			state.CurrentSub = ifName
+			// 存在标记（§1.3 存在判据的显式来源）
+			if strings.EqualFold(strings.TrimSpace(ifName[:1]), "b") ||
+				strings.HasPrefix(strings.ToLower(ifName), "bagg") {
+				state.DeviceConfig[lagBridgeTrunkKey(trunkID, "exists")] = "true"
+			} else {
+				state.DeviceConfig[lagTrunkKey(trunkID, "exists")] = "true"
+			}
+			if state.Interfaces == nil {
+				state.Interfaces = make(map[string]*InterfaceConfig)
+			}
+			if _, ok := state.Interfaces[ifName]; !ok {
+				state.Interfaces[ifName] = &InterfaceConfig{Name: ifName}
+			}
+			// 状态实时派生（绝不硬编码 Up，P0-11）
+			syncLAGTrunkIfaceStatus(state, trunkID)
+			return "Enter interface view"
+		}
+
 		state.CurrentView = ViewInterface
 		state.CurrentSub = ifName
 		// 初始化接口配置（如果不存在）
@@ -674,35 +714,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return fmt.Sprintf("Port hybrid %s VLAN: %s", hybridType, strings.Join(vlanList, " "))
 		case portCmd == "link-aggregation":
 			// H3C: port link-aggregation group <id> / port link-agg group <id>
-			if len(cmd.Args) < 3 {
-				return "Error: usage: port link-aggregation group <id>"
-			}
-			if strings.ToLower(cmd.Args[1]) != "group" {
-				return "Error: usage: port link-aggregation group <id>"
-			}
-			groupID, err := parseNum(cmd.Args[2])
-			if err != nil {
-				return "Error: invalid group ID"
-			}
-			trunkName := fmt.Sprintf("Bridge-Aggregation%d", groupID)
-			state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", state.CurrentSub)] = fmt.Sprintf("%d", groupID)
-			if state.Interfaces == nil {
-				state.Interfaces = make(map[string]*InterfaceConfig)
-			}
-			if _, ok := state.Interfaces[trunkName]; !ok {
-				state.Interfaces[trunkName] = &InterfaceConfig{Name: trunkName, Status: "Up", Protocol: "Up"}
-			}
-			state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)] = "Up"
-			membersKey := fmt.Sprintf("interface:%s:members", trunkName)
-			members := state.DeviceConfig[membersKey]
-			if members == "" {
-				state.DeviceConfig[membersKey] = state.CurrentSub
-			} else {
-				if !strings.Contains(members, state.CurrentSub) {
-					state.DeviceConfig[membersKey] = members + "," + state.CurrentSub
-				}
-			}
-			return fmt.Sprintf("Port added to Bridge-Aggregation %d", groupID)
+			// P2 #5 改动点 2（设计 §1.4）：复用 P0-9 五项校验，只写 :eth-trunk + agg-family="h3c"，
+			// **删除 :status / :members 双写**——这是幽灵 Bridge-Aggregation 组的根因之一（拍板 #4）。
+			return applyH3CPortLinkAggregationGroup(state, cmd.Args)
 		case portCmd == "m-lag":
 			// H3C: port m-lag peer-link <id> / port m-lag group <id>
 			if len(cmd.Args) < 2 {
@@ -741,103 +755,38 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return fmt.Sprintf("Error: unknown port command '%s'", portCmd)
 		}
 	case "eth-trunk":
-		// 在物理接口下加入聚合组
+		// 物理接口视图下加入聚合组（P2 #5 改动点 3）。
+		// 重写为 applyEthTrunkMember：P0-9 五项校验 + 仅写 :eth-trunk / :agg-family 单一事实源，
+		// **删除 :status="Up" 硬编码与 :members 逗号串双写**。
 		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
 			return "Error: must be in physical interface view, usage: eth-trunk <id>"
 		}
+		if !lagDeviceSupported(state) {
+			return errLAGNotSupported(string(state.DeviceType))
+		}
 		trunkID, err := parseNum(cmd.Args[0])
 		if err != nil {
-			return "Error: invalid Eth-Trunk ID"
+			return errLAGInvalidTrunkID
 		}
-		trunkName := fmt.Sprintf("Eth-Trunk%d", trunkID)
-		// 保存配置
-		state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", state.CurrentSub)] = fmt.Sprintf("%d", trunkID)
-		// 初始化聚合接口
-		if state.Interfaces == nil {
-			state.Interfaces = make(map[string]*InterfaceConfig)
-		}
-		if _, ok := state.Interfaces[trunkName]; !ok {
-			state.Interfaces[trunkName] = &InterfaceConfig{Name: trunkName, Status: "Up", Protocol: "Up"}
-		}
-		state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)] = "Up"
-		// 记录成员端口
-		membersKey := fmt.Sprintf("interface:%s:members", trunkName)
-		members := state.DeviceConfig[membersKey]
-		if members == "" {
-			state.DeviceConfig[membersKey] = state.CurrentSub
-		} else {
-			memberList := strings.Split(members, ",")
-			found := false
-			for _, m := range memberList {
-				if m == state.CurrentSub {
-					found = true
-					break
-				}
-			}
-			if !found {
-				state.DeviceConfig[membersKey] = members + "," + state.CurrentSub
-			}
-		}
-		return fmt.Sprintf("Port added to Eth-Trunk %d", trunkID)
+		return applyEthTrunkMember(state, state.CurrentSub, trunkID, aggFamilyHuawei)
 	case "mode":
-		// 设置聚合模式：mode lacp-static / mode manual / link-aggregation mode dynamic
-		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
-			return "Error: must be in interface view"
-		}
-		mode := cmd.Args[0]
-		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
-			return "Error: mode command only available in Eth-Trunk/Bridge-Aggregation view"
-		}
-		state.DeviceConfig[fmt.Sprintf("interface:%s:mode", state.CurrentSub)] = mode
-		return fmt.Sprintf("Aggregation mode set to %s", mode)
+		// 聚合口视图 mode { manual load-balance | lacp-static }（P2 #5 改动点 4）。
+		// 两 token 整体识别 + 枚举校验 + 写 :lag:mode；
+		// 设备能力守卫在 applyLAGMode **分支内**完成（设计 §1.7：mode 不入顶层能力矩阵）。
+		return applyLAGMode(state, cmd.Args)
 	case "trunkport":
-		// 华为: trunkport 10GE 1/0/1 / trunkport 10GE 1/0/1 to 10GE 1/0/2
-		if state.CurrentView != ViewInterface || len(cmd.Args) < 2 {
-			return "Error: must be in interface view, usage: trunkport <interface-type> <interface-number> [to <interface-type> <interface-number>]"
-		}
-		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
-			return "Error: trunkport command only available in Eth-Trunk/Bridge-Aggregation view"
-		}
-		ifaceType := cmd.Args[0]
-		ifaceNum := cmd.Args[1]
-		membersKey := fmt.Sprintf("interface:%s:members", state.CurrentSub)
-		members := state.DeviceConfig[membersKey]
-		newMember := ifaceType + " " + ifaceNum
-		if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[2]) == "to" {
-			endType := cmd.Args[3]
-			endNum := cmd.Args[4]
-			newMember = fmt.Sprintf("%s %s to %s %s", ifaceType, ifaceNum, endType, endNum)
-		}
-		if members == "" {
-			state.DeviceConfig[membersKey] = newMember
-		} else {
-			if !strings.Contains(members, newMember) {
-				state.DeviceConfig[membersKey] = members + "," + newMember
-			}
-		}
-		return fmt.Sprintf("Trunkport %s added", newMember)
+		// 聚合口视图 trunkport <type> <num> [to <num>]（P2 #5 改动点 5）。
+		// 官方 to 语法 + 区间展开（仅末段可变、≤8）+ 复用 P0-9 校验。
+		return applyLAGTrunkport(state, cmd.Args)
 	case "load-balance":
-		if state.CurrentView != ViewInterface || len(cmd.Args) == 0 {
-			return "Error: must be in interface view, usage: load-balance <mode>"
-		}
-		if !strings.HasPrefix(strings.ToLower(state.CurrentSub), "eth-trunk") && !strings.HasPrefix(strings.ToLower(state.CurrentSub), "bridge-aggregation") {
-			return "Error: load-balance command only available in Eth-Trunk/Bridge-Aggregation view"
-		}
-		mode := strings.Join(cmd.Args, " ")
-		state.DeviceConfig[fmt.Sprintf("interface:%s:load-balance", state.CurrentSub)] = mode
-		return fmt.Sprintf("Load balance mode set to %s", mode)
+		// 聚合口视图 load-balance <六值枚举>（P2 #5 改动点 6）。
+		return applyLAGLoadBalance(state, cmd.Args)
+	case "least", "max":
+		// 聚合口视图 least|max active-linknumber <1-8>（P0-14）。
+		return applyLAGLinkNumber(state, command, cmd.Args)
 	case "link-aggregation":
-		// H3C: link-aggregation mode dynamic
-		if state.CurrentView != ViewInterface || len(cmd.Args) < 2 {
-			return "Error: must be in interface view, usage: link-aggregation mode <dynamic|static>"
-		}
-		subCmd := strings.ToLower(cmd.Args[0])
-		if subCmd == "mode" {
-			mode := cmd.Args[1]
-			state.DeviceConfig[fmt.Sprintf("interface:%s:mode", state.CurrentSub)] = mode
-			return fmt.Sprintf("Link aggregation mode set to %s", mode)
-		}
-		return "Error: invalid link-aggregation command"
+		// H3C 聚合口视图 link-aggregation mode { static | dynamic }（P2 #5 改动点 7）。
+		return applyH3CLinkAggregationMode(state, cmd.Args)
 	case "description":
 		// 设置接口描述
 		if state.CurrentView != ViewInterface {
@@ -872,6 +821,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			if strings.HasPrefix(sub, "vrrp") {
 				// undo vrrp vrid <id> [virtual-ip <ip>]（P1，T04）。
 				return applyUndoVRRP(state, cmd.Args)
+			}
+			// undo eth-trunk / trunkport / mode / load-balance / least|max / lacp / port link-aggregation
+			// （P2 #5，T02/T04：链路聚合接口视图 undo 语义）。
+			if msg, handled := applyUndoLAGInterface(state, cmd.Args); handled {
+				return msg
 			}
 			switch sub {
 			case "shutdown":
@@ -1487,6 +1441,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		// （方案 A，移除 state.STP）；side-effect 仅在此落地，show 经 EvaluateSTP 纯函数派生。
 		return applySTP(state, cmd.Args)
 	case "lacp":
+		// P2 #5 改动点 13：lacp 命令族扩展（与既有 M-LAG 子命令共存不冲突）。
+		//   非 m-lag 子命令 → applyLACPFeature（priority / preempt / timeout）
+		//   m-lag 子命令   → 维持既有行为，零回归
+		if len(cmd.Args) == 0 || !strings.EqualFold(cmd.Args[0], "m-lag") {
+			return applyLACPFeature(state, cmd.Args)
+		}
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
 		}
@@ -2418,21 +2378,21 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			portName := cmd.Args[0]
 			authMethod := "eap"
 			reauth := false
-		quietTimer := 60
-		var warn strings.Builder
-		if len(cmd.Args) >= 2 {
-			authMethod = cmd.Args[1]
-		}
-		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "reauth" {
-			reauth = true
-		}
-		if len(cmd.Args) >= 4 {
-			if n, err := parseNum(cmd.Args[3]); err == nil {
-				quietTimer = n
-			} else {
-				warn.WriteString(fmt.Sprintf(" [warn: invalid quiet-timer %q, kept 60]", cmd.Args[3]))
+			quietTimer := 60
+			var warn strings.Builder
+			if len(cmd.Args) >= 2 {
+				authMethod = cmd.Args[1]
 			}
-		}
+			if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[2]) == "reauth" {
+				reauth = true
+			}
+			if len(cmd.Args) >= 4 {
+				if n, err := parseNum(cmd.Args[3]); err == nil {
+					quietTimer = n
+				} else {
+					warn.WriteString(fmt.Sprintf(" [warn: invalid quiet-timer %q, kept 60]", cmd.Args[3]))
+				}
+			}
 			state.Dot1x.Ports[portName] = &Dot1xPort{
 				Enabled:    true,
 				AuthMethod: authMethod,
@@ -2528,16 +2488,16 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 					out.WriteString(fmt.Sprintf("  bgp %d\n", state.BGP.ASNumber))
 					out.WriteString(fmt.Sprintf("  router-id %s\n", state.BGP.RouterID))
 				}
-			if isSTPEnabled(state) {
-				out.WriteString(buildSavedSTPConfig(state))
-			}
-			if ifaces := vrrpInterfaces(state); len(ifaces) > 0 {
-				for _, iname := range ifaces {
-					if s := buildSavedVRRPConfig(state, iname); s != "" {
-						out.WriteString(s)
+				if isSTPEnabled(state) {
+					out.WriteString(buildSavedSTPConfig(state))
+				}
+				if ifaces := vrrpInterfaces(state); len(ifaces) > 0 {
+					for _, iname := range ifaces {
+						if s := buildSavedVRRPConfig(state, iname); s != "" {
+							out.WriteString(s)
+						}
 					}
 				}
-			}
 				if state.SNMP.Enabled {
 					out.WriteString(fmt.Sprintf("  snmp-agent\n"))
 				}
@@ -2577,128 +2537,16 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			//（P1-F，决策 #6 + 风险3）。
 			return state.buildSavedConfigSnapshot() + formatProtocolBlocks(state)
 		case "eth-trunk":
-			if isHost || isCloudHub {
-				return fmt.Sprintf("Error: Eth-Trunk is not supported on %s", state.DeviceType)
-			}
-			// display eth-trunk [id]
-			trunkID := ""
-			if arg1 != "" && arg1 != "brief" {
-				trunkID = arg1
-			}
-			var out strings.Builder
-			out.WriteString("Eth-Trunk interface information:\n")
-			out.WriteString("----------------------------------------------------\n")
-			// 收集所有 Eth-Trunk 接口
-			trunkMap := make(map[string][]string)
-			for k, v := range state.DeviceConfig {
-				if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
-					parts := strings.SplitN(k, ":", 3)
-					if len(parts) >= 2 {
-						portName := parts[1]
-						trunkIDVal := v
-						trunkName := fmt.Sprintf("Eth-Trunk%s", trunkIDVal)
-						trunkMap[trunkName] = append(trunkMap[trunkName], portName)
-					}
-				}
-			}
-			if len(trunkMap) == 0 {
-				out.WriteString("No Eth-Trunk interface configured\n")
-			} else {
-				for trunkName, members := range trunkMap {
-					// 如果指定了 trunkID，只显示该 trunk
-					if trunkID != "" && trunkName != fmt.Sprintf("Eth-Trunk%s", trunkID) {
-						continue
-					}
-					mode := state.DeviceConfig[fmt.Sprintf("interface:%s:mode", trunkName)]
-					if mode == "" {
-						mode = "manual"
-					}
-					loadBalance := state.DeviceConfig[fmt.Sprintf("interface:%s:load-balance", trunkName)]
-					if loadBalance == "" {
-						loadBalance = "src-dst-mac"
-					}
-					ip := state.DeviceConfig[fmt.Sprintf("interface:%s:ip", trunkName)]
-					status := state.DeviceConfig[fmt.Sprintf("interface:%s:status", trunkName)]
-					out.WriteString(fmt.Sprintf("%s (Mode: %s, Load-Balance: %s)\n", trunkName, mode, loadBalance))
-					out.WriteString(fmt.Sprintf("  Status: %s\n", status))
-					if ip != "" {
-						out.WriteString(fmt.Sprintf("  IP address: %s\n", ip))
-					}
-					out.WriteString(fmt.Sprintf("  Member ports (%d):\n", len(members)))
-					for _, p := range members {
-						portStatus := state.DeviceConfig[fmt.Sprintf("interface:%s:status", p)]
-						if portStatus == "" {
-							portStatus = "Up"
-						}
-						out.WriteString(fmt.Sprintf("    %s: %s\n", p, portStatus))
-					}
-					out.WriteString("\n")
-				}
-			}
-			return out.String()
+			// P2 #5 改动点 8（T03）：重写为 buildEthTrunkDisplay，唯一数据源 = EvaluateLAG。
+			// 支持 display eth-trunk [<id>] [verbose | load-balance | interface <if>]；
+			// 无参按 trunk-id 升序逐组完整块；成员自然序确定性（AC5）。
+			return buildEthTrunkDisplay(state, cmd.Args[1:])
 		case "link-aggregation":
-			// display link-aggregation summary
-			if arg1 == "summary" {
-				var out strings.Builder
-				out.WriteString("Summary of link aggregation:\n")
-				out.WriteString("----------------------------------------------------\n")
-				// 收集所有聚合组
-				aggMap := make(map[string]map[string]interface{})
-				// 检查 Eth-Trunk
-				for k, v := range state.DeviceConfig {
-					if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
-						parts := strings.SplitN(k, ":", 3)
-						if len(parts) >= 2 {
-							portName := parts[1]
-							trunkID := v
-							trunkName := fmt.Sprintf("Eth-Trunk%s", trunkID)
-							if aggMap[trunkName] == nil {
-								aggMap[trunkName] = make(map[string]interface{})
-								aggMap[trunkName]["type"] = "Eth-Trunk"
-								aggMap[trunkName]["members"] = []string{}
-							}
-							members := aggMap[trunkName]["members"].([]string)
-							members = append(members, portName)
-							aggMap[trunkName]["members"] = members
-						}
-					}
-				}
-				// 检查 Bridge-Aggregation
-				for k := range state.DeviceConfig {
-					if strings.HasPrefix(k, "interface:") && strings.HasSuffix(k, ":eth-trunk") {
-						parts := strings.SplitN(k, ":", 3)
-						if len(parts) >= 2 {
-							portName := parts[1]
-							// 检查是否是 Bridge-Aggregation
-							aggID := state.DeviceConfig[fmt.Sprintf("interface:%s:eth-trunk", portName)]
-							if aggID != "" {
-								bridgeName := fmt.Sprintf("Bridge-Aggregation%s", aggID)
-								if _, ok := aggMap[bridgeName]; !ok {
-									if aggMap[bridgeName] == nil {
-										aggMap[bridgeName] = make(map[string]interface{})
-										aggMap[bridgeName]["type"] = "Bridge-Aggregation"
-										aggMap[bridgeName]["members"] = []string{}
-									}
-									members := aggMap[bridgeName]["members"].([]string)
-									members = append(members, portName)
-									aggMap[bridgeName]["members"] = members
-								}
-							}
-						}
-					}
-				}
-				if len(aggMap) == 0 {
-					out.WriteString("No link aggregation configured\n")
-				} else {
-					out.WriteString(fmt.Sprintf("%-25s %-10s %s\n", "Aggregation Group", "Type", "Member Ports"))
-					out.WriteString("---------------------------------------------------------------\n")
-					for name, info := range aggMap {
-						aggType := info["type"]
-						members := info["members"].([]string)
-						out.WriteString(fmt.Sprintf("%-25s %-10s %d\n", name, aggType, len(members)))
-					}
-				}
-				return out.String()
+			// P2 #5 改动点 9（T03）：display link-aggregation summary。
+			// **已删除现状残桩的第二个重映射循环**——那是幽灵 Bridge-Aggregation
+			// 编造数据的根因（P1-10 升级 P0，拍板 #4）；改按 agg-family 归类 + 确定性升序。
+			if arg1 == "" || arg1 == "summary" {
+				return buildLinkAggregationSummary(state)
 			}
 			return "Error: invalid link-aggregation command"
 		case "port-vlan", "port":
@@ -4646,14 +4494,15 @@ func applyPortSecurity(state *CLIState, args []string) string {
 // applyVRRP 处理接口视图下的 VRRP 命令族（P2 第三项，华为 VRP 课程 60/61）。
 //
 // 解析 VRP 子命令并写对应 DeviceConfig 键（单一事实源）：
-//   vrrp vrid <1-255> virtual-ip <ip>            → 写 :virtual-ip；先调 vrrpSameSubnet 校验，失败回 Error
-//   vrrp vrid <1-255> priority <1-254>           → 写 :priority
-//   vrrp vrid <1-255> preempt-mode disable       → 写 :preempt="disable"（enable 可省略，默认开启）
-//   vrrp vrid <1-255> timer advertise <1-255>    → 写 :advertise
-//   [P1] vrrp vrid <1-255> track interface <if> [reduced <1-255>]
-//                                                  → 写 :track-iface / :track-reduced（reduced 缺省 10）
-//   [P1] vrrp vrid <1-255> authentication-mode {simple|md5} <key>
-//                                                  → 写 :auth-mode / :auth-key（仅存不显明文）
+//
+//	vrrp vrid <1-255> virtual-ip <ip>            → 写 :virtual-ip；先调 vrrpSameSubnet 校验，失败回 Error
+//	vrrp vrid <1-255> priority <1-254>           → 写 :priority
+//	vrrp vrid <1-255> preempt-mode disable       → 写 :preempt="disable"（enable 可省略，默认开启）
+//	vrrp vrid <1-255> timer advertise <1-255>    → 写 :advertise
+//	[P1] vrrp vrid <1-255> track interface <if> [reduced <1-255>]
+//	                                               → 写 :track-iface / :track-reduced（reduced 缺省 10）
+//	[P1] vrrp vrid <1-255> authentication-mode {simple|md5} <key>
+//	                                               → 写 :auth-mode / :auth-key（仅存不显明文）
 //
 // 范围/格式非法 → "Error: ..."；非接口视图 → "Error: must be in interface view"；
 // 能力校验沿用 ExecuteCommandOn 的 isCommandSupported（"vrrp": l3Devices()）。
@@ -4769,7 +4618,7 @@ func applyVRRP(state *CLIState, args []string) string {
 
 // applyUndoVRRP 处理接口视图下的 undo vrrp 命令（P1）。
 //
-//   undo vrrp vrid <1-255> [virtual-ip <ip>]
+//	undo vrrp vrid <1-255> [virtual-ip <ip>]
 //
 // 删除 interface:<iface>:vrrp:<vrid>:* 全部字段键（virtual-ip 为组存在标记，
 // 删除后即该组消失）。副作用（删 DeviceConfig 键）在此落地。
@@ -5172,6 +5021,13 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 		return fmt.Sprintf("ACL %s removed", aclID)
 	case "stp":
 		return applyUndoSTP(state, args)
+	case "interface":
+		// undo interface Eth-Trunk <id>（P2 #5，T04 改动点 12 / AC11）：
+		// 存在成员时必须拒绝，无成员才允许删除并清理 interface:Eth-Trunk<id>:* 全部键。
+		return applyUndoInterfaceTrunk(state, args)
+	case "lacp":
+		// undo lacp priority|preempt|timeout（系统视图，P2 #5 T04 改动点 13）。
+		return applyUndoLACPFeature(state, args[1:])
 	case "dhcp":
 		if state.DHCP != nil {
 			state.DHCP.Enabled = false
@@ -5391,6 +5247,24 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 		}
 	}
 
+	// 链路聚合逻辑口重建（P2 #5，T04 改动点 11）：
+	// reload 后 state.Interfaces 不含 Eth-Trunk / Bridge-Aggregation 逻辑口，
+	// 会导致 display interface / display ip interface brief 丢失聚合口（P0-3）。
+	// 此处按 collectLAGTrunks 的存在判据（§1.3）重建条目，
+	// **Status 由 syncLAGTrunkIfaceStatus → EvaluateLAG 实时派生，绝不硬编码 Up**（P0-11）。
+	if trunks := collectLAGTrunks(state); len(trunks) > 0 {
+		if state.Interfaces == nil {
+			state.Interfaces = make(map[string]*InterfaceConfig)
+		}
+		for _, id := range trunks {
+			name := lagDisplayTrunkName(state, id)
+			if _, ok := state.Interfaces[name]; !ok {
+				state.Interfaces[name] = &InterfaceConfig{Name: name}
+			}
+			syncLAGTrunkIfaceStatus(state, id)
+		}
+	}
+
 	// 端口安全粘滞 MAC 回填（B-lite，拍板 #3）：
 	// 上述循环已把全部 DeviceConfig 键（含 port-security-*）写回 state.DeviceConfig。
 	// 此处：① 清除运行态键 error-down / violations（reload 后运行态归零，见设计 §7 #3）；
@@ -5496,7 +5370,14 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 		if ifc.Description != "" {
 			b.WriteString(fmt.Sprintf(" description %s\n", ifc.Description))
 		}
-		if strings.EqualFold(ifc.Status, "down") {
+		// 聚合口（Eth-Trunk / Bridge-Aggregation）的 Status 是由成员**实时派生**的运行状态
+		// （P2 #5，P0-11），并非管理态 shutdown；照抄会把 operate down 误写成用户配置。
+		// 故聚合口仅在 DeviceConfig 明确记录管理性 shutdown 时才输出 shutdown 行。
+		if isTrunkFamilyInterface(ifc.Name) {
+			if strings.EqualFold(strings.TrimSpace(state.DeviceConfig[fmt.Sprintf("interface:%s:status", ifc.Name)]), "Down") {
+				b.WriteString(" shutdown\n")
+			}
+		} else if strings.EqualFold(ifc.Status, "down") {
 			b.WriteString(" shutdown\n")
 		}
 		// 端口安全：粘滞学习 MAC 持久化（B-lite，拍板 #3）。对每个
@@ -5523,6 +5404,11 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			if stpLines := buildSavedSTPInterfaceConfig(state, ifc.Name); stpLines != "" {
 				b.WriteString(stpLines)
 			}
+			// 链路聚合（P2 #5，T04 改动点 10）：聚合口输出 mode / load-balance /
+			// least|max active-linknumber，成员口输出 eth-trunk <id> / lacp priority。
+			if lagLines := buildSavedLAGInterfaceConfig(state, ifc.Name); lagLines != "" {
+				b.WriteString(lagLines)
+			}
 		}
 		b.WriteString("#\n")
 	}
@@ -5538,6 +5424,12 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			b.WriteString(vrrpLines)
 			b.WriteString("#\n")
 		}
+	}
+	// 独立链路聚合输出通道（P2 #5，T04 改动点 10）：复用上面的 VRRP 范式，
+	// 对「拥有 LAG 配置但 state.Interfaces 未重建」的聚合口 / 成员口补齐 interface 块，
+	// 保证 save→reload 后 display current-configuration 完整复现聚合配置（AC2 ③）。
+	if lagLines := buildSavedLAGConfig(state); lagLines != "" {
+		b.WriteString(lagLines)
 	}
 
 	for _, r := range state.Routes {
@@ -5569,10 +5461,10 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 
 // buildVRRPDisplay 渲染 `display vrrp [brief|interface <if>|vrid <id>]`（P2 第三项）。
 //
-//   arg1==""         → 遍历所有接口所有组，逐组详情（含 EvaluateVRRP 角色 + 诚实注记）
-//   arg1=="brief"    → 摘要表：VRID / Interface / Virtual IP / Priority / Role
-//   arg1=="interface"→ 单接口所有组详情（args[2] 为目标接口名）
-//   arg1=="vrid"     → 跨接口匹配该 vrid 的组详情（args[2] 为 vrid）
+//	arg1==""         → 遍历所有接口所有组，逐组详情（含 EvaluateVRRP 角色 + 诚实注记）
+//	arg1=="brief"    → 摘要表：VRID / Interface / Virtual IP / Priority / Role
+//	arg1=="interface"→ 单接口所有组详情（args[2] 为目标接口名）
+//	arg1=="vrid"     → 跨接口匹配该 vrid 的组详情（args[2] 为 vrid）
 //
 // 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附 vrrpSimNote() 诚实注记。
 // 角色恒为 Master（拍板 #2(a) 本地静态假设）或 Initialize（未配组），绝不臆造 Backup（O2）。

@@ -78,6 +78,14 @@ var capabilities = capabilityMatrix{
 	"lacp":          switchDevices(),
 	"port-security": switchDevices(),
 
+	// 链路聚合 Eth-Trunk 命令族（P2 第五项，设计 §1.7）：仅交换机类支持。
+	// ⚠️ `mode` **不入本矩阵**——它是通用动词，入矩阵会误伤其他 mode 类命令；
+	//    改由 parser.go `case "mode"` 分支内的设备类型守卫等效拒绝（爆炸半径为零）。
+	"eth-trunk":        switchDevices(),
+	"trunkport":        switchDevices(),
+	"load-balance":     switchDevices(),
+	"link-aggregation": switchDevices(),
+
 	// 端口安全诊断命令：simulate frame（仅交换机类，拍板 #6）。非交换机执行回显 not supported。
 	"simulate": switchDevices(),
 
