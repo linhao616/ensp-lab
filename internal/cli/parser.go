@@ -4211,10 +4211,10 @@ func applyUndoSTP(state *CLIState, args []string) string {
 		delete(state.DeviceConfig, stpKey("priority"))
 		return "STP root role removed"
 	case "instance":
-		if len(sub) < 3 || strings.ToLower(sub[1]) != "root" {
+		if len(sub) < 3 || strings.ToLower(sub[2]) != "root" {
 			return "Error: usage: undo stp instance <id> root"
 		}
-		id, err := parseNum(sub[2])
+		id, err := parseNum(sub[1])
 		if err != nil {
 			return "Error: invalid instance ID"
 		}
