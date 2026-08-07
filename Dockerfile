@@ -41,4 +41,4 @@ COPY --from=go-builder /app/ensp-lab /usr/local/bin/
 EXPOSE ${ENS_PORT}
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://localhost:${ENS_PORT}/health || exit 1
-ENTRYPOINT ["sh", "-c", "ensp-lab -port ${ENS_PORT}"]
+ENTRYPOINT ["sh", "-c", "exec ensp-lab -port ${ENS_PORT} \"$@\"", "ensp-lab"]
