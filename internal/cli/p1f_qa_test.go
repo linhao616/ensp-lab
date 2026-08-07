@@ -225,10 +225,10 @@ func TestQAUndoSystemFeature(t *testing.T) {
 		t.Errorf("undo acl 2000 should report removed, got: %q", out)
 	}
 
-	// undo stp → STP 禁用
+	// undo stp → STP 禁用（方案 A：写 stp:enabled=false，清理全部 stp 键）
 	runOn(r, topology.DeviceRouter, "undo stp")
-	if r.STP.Enabled {
-		t.Errorf("undo stp should disable STP")
+	if r.DeviceConfig["stp:enabled"] != "false" {
+		t.Errorf("undo stp should disable STP (stp:enabled should be false)")
 	}
 
 	// undo dhcp → DHCP 禁用

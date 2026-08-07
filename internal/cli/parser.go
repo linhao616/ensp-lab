@@ -1481,130 +1481,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return "Error: invalid LLDP config"
 	case "stp":
-		if state.CurrentView != ViewSystem {
-			return "Error: must be in system view"
-		}
-		if len(cmd.Args) == 0 {
-			state.STP.Enabled = true
-			return "STP enabled (RSTP)"
-		}
-		subCmd := strings.ToLower(cmd.Args[0])
-		switch subCmd {
-		case "enable":
-			state.STP.Enabled = true
-			return "STP enabled"
-		case "disable":
-			state.STP.Enabled = false
-			return "STP disabled"
-		case "mode":
-			if len(cmd.Args) >= 2 {
-				state.STP.Mode = cmd.Args[1]
-				return fmt.Sprintf("STP mode set to %s", cmd.Args[1])
-			}
-		case "priority":
-			if len(cmd.Args) >= 2 {
-				pri, err := parseNum(cmd.Args[1])
-				if err == nil {
-					state.STP.BridgePriority = pri
-					return fmt.Sprintf("STP priority set to %d", pri)
-				}
-			}
-		case "v-stp":
-			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "enable" {
-				state.STP.VSTPEnabled = true
-				return "V-STP enabled"
-			} else if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "disable" {
-				state.STP.VSTPEnabled = false
-				return "V-STP disabled"
-			}
-			return "Error: usage: stp v-stp enable|disable"
-		case "bridge-address":
-			if len(cmd.Args) >= 2 {
-				state.STP.BridgeAddress = cmd.Args[1]
-				return fmt.Sprintf("STP bridge-address set to %s", cmd.Args[1])
-			}
-			return "Error: usage: stp bridge-address <mac>"
-		case "root":
-			if len(cmd.Args) >= 2 {
-				rootType := strings.ToLower(cmd.Args[1])
-				if rootType == "primary" {
-					state.STP.BridgePriority = 0
-					return "STP root primary configured"
-				} else if rootType == "secondary" {
-					state.STP.BridgePriority = 4096
-					return "STP root secondary configured"
-				}
-			}
-			return "Error: usage: stp root primary|secondary"
-		case "edged-port":
-			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "enable" {
-				state.DeviceConfig["stp:edged-port"] = "enable"
-				return "STP edged-port enabled"
-			} else if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[1]) == "disable" {
-				state.DeviceConfig["stp:edged-port"] = "disable"
-				return "STP edged-port disabled"
-			}
-			return "Error: usage: stp edged-port enable|disable"
-		case "bpdu-protection":
-			state.DeviceConfig["stp:bpdu-protection"] = "enable"
-			return "STP BPDU protection enabled"
-		case "root-protection":
-			state.DeviceConfig["stp:root-protection"] = "enable"
-			return "STP root protection enabled"
-		case "loop-protection":
-			state.DeviceConfig["stp:loop-protection"] = "enable"
-			return "STP loop protection enabled"
-		case "tc-protection":
-			if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "interval" {
-				interval, err := parseNum(cmd.Args[2])
-				if err == nil {
-					state.DeviceConfig["stp:tc-protection-interval"] = fmt.Sprintf("%d", interval)
-					return fmt.Sprintf("STP TC protection interval set to %ds", interval)
-				}
-			}
-			return "Error: usage: stp tc-protection interval <seconds>"
-		case "region-configuration":
-			// stp region-configuration 进入 MSTP 域配置视图
-			return "Enter MSTP region configuration view"
-		case "region-name":
-			if len(cmd.Args) >= 1 {
-				state.STP.RegionName = cmd.Args[0]
-				return fmt.Sprintf("STP region name set to %s", cmd.Args[0])
-			}
-			return "Error: usage: stp region-name <name>"
-		case "revision-level":
-			if len(cmd.Args) >= 1 {
-				level, err := parseNum(cmd.Args[0])
-				if err == nil {
-					state.STP.RevisionLevel = level
-					return fmt.Sprintf("STP revision level set to %d", level)
-				}
-			}
-			return "Error: usage: stp revision-level <level>"
-		case "instance":
-			// stp instance <id> vlan <vlan-list>
-			if len(cmd.Args) >= 4 && strings.ToLower(cmd.Args[1]) == "vlan" {
-				instanceID, err := parseNum(cmd.Args[0])
-				if err != nil {
-					return "Error: invalid instance ID"
-				}
-				vlanList := strings.Split(cmd.Args[2], ",")
-				for _, v := range vlanList {
-					vlanID, err := parseNum(v)
-					if err == nil {
-						state.STP.VLANMapping[vlanID] = instanceID
-					}
-				}
-				return fmt.Sprintf("STP instance %d mapping VLAN %s", instanceID, cmd.Args[2])
-			}
-			return "Error: usage: stp instance <id> vlan <vlan-list>"
-		case "active":
-			// stp active 激活 MSTP 配置
-			state.STP.RegionActive = true
-			state.STP.Enabled = true
-			return "STP region configuration activated"
-		}
-		return "Error: invalid STP config"
+		// STP/RSTP/MSTP 命令族（P2 第四项，华为 VRP 课程 55/56/57）。
+		// 全部经 DeviceConfig["stp:<field>"]（系统级）与
+		// DeviceConfig["interface:<iface>:stp:<field>"]（接口级）单一事实源持久化
+		// （方案 A，移除 state.STP）；side-effect 仅在此落地，show 经 EvaluateSTP 纯函数派生。
+		return applySTP(state, cmd.Args)
 	case "lacp":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2647,10 +2528,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 					out.WriteString(fmt.Sprintf("  bgp %d\n", state.BGP.ASNumber))
 					out.WriteString(fmt.Sprintf("  router-id %s\n", state.BGP.RouterID))
 				}
-				if state.STP.Enabled {
-					out.WriteString(fmt.Sprintf("  stp mode %s\n", state.STP.Mode))
-					out.WriteString(fmt.Sprintf("  stp enable\n"))
-				}
+			if isSTPEnabled(state) {
+				out.WriteString(buildSavedSTPConfig(state))
+			}
 			if ifaces := vrrpInterfaces(state); len(ifaces) > 0 {
 				for _, iname := range ifaces {
 					if s := buildSavedVRRPConfig(state, iname); s != "" {
@@ -3539,59 +3419,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}()))
 			return out.String()
 		case "stp":
-			var out strings.Builder
-			// 检查是否有 region-configuration 子命令
-			if arg1 == "region-configuration" {
-				regionName := state.STP.RegionName
-				if regionName == "" {
-					regionName = "default"
-				}
-				out.WriteString("MSTP Region Configuration:\n")
-				out.WriteString(fmt.Sprintf("  Region Name: %s\n", regionName))
-				out.WriteString(fmt.Sprintf("  Revision Level: %d\n", state.STP.RevisionLevel))
-				out.WriteString("  VLAN Mapping:\n")
-				if len(state.STP.VLANMapping) == 0 {
-					out.WriteString("    (none)\n")
-				} else {
-					// 按实例分组显示 VLAN 映射
-					instanceVLANs := make(map[int][]int)
-					for vlan, instance := range state.STP.VLANMapping {
-						instanceVLANs[instance] = append(instanceVLANs[instance], vlan)
-					}
-					for instance, vlans := range instanceVLANs {
-						out.WriteString(fmt.Sprintf("    Instance %d: VLAN %v\n", instance, vlans))
-					}
-				}
-				out.WriteString(fmt.Sprintf("  Configuration Status: %s\n", func() string {
-					if state.STP.RegionActive {
-						return "Active"
-					}
-					return "Inactive"
-				}()))
-				return out.String()
-			}
-			// 默认 STP 信息
-			if state.STP.Enabled {
-				out.WriteString(fmt.Sprintf("STP Mode: %s\n", state.STP.Mode))
-				out.WriteString(fmt.Sprintf("Bridge Priority: %d\n", state.STP.BridgePriority))
-				if state.STP.VSTPEnabled {
-					out.WriteString("V-STP: Enabled\n")
-				}
-				if state.STP.BridgeAddress != "" {
-					out.WriteString(fmt.Sprintf("Bridge Address: %s\n", state.STP.BridgeAddress))
-				}
-				out.WriteString("Ports:\n")
-				if len(state.STP.Ports) == 0 {
-					out.WriteString("  (none)\n")
-				} else {
-					for _, port := range state.STP.Ports {
-						out.WriteString(fmt.Sprintf("  %s: Priority=%d, Cost=%d\n", port.PortName, port.PortPriority, port.Cost))
-					}
-				}
-			} else {
-				out.WriteString("STP: Disabled\n")
-			}
-			return out.String()
+			// STP/RSTP/MSTP 显示（P2 第四项）：纯函数渲染，无副作用。
+			// 单事实源 = DeviceConfig（stp:* / interface:*:stp:*），display 经 buildSTPDisplay 即时派生。
+			return buildSTPDisplay(state, arg1, cmd.Args)
 		case "vrrp":
 			// 忠实展示 VRRP 组（P2 第三项）：支持 brief / interface <if> / vrid <id> / 全接口。
 			// 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附诚实占位注记。
@@ -4049,6 +3879,700 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 	}
 	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
+}
+
+// ---------------------------------------------------------------------------
+// STP/RSTP/MSTP 命令处理器与展示（P2 第四项，华为 VRP 课程 55/56/57）
+// 单一事实源 = DeviceConfig（stp:<field> 系统级 + interface:<iface>:stp:<field> 接口级）。
+// side-effect 仅在本文件落地；选举/角色经 stp_eval.go 纯函数 EvaluateSTP 派生。
+// ---------------------------------------------------------------------------
+
+// applySTP 处理系统/接口/MST region 视图下的 stp 命令族（按 state.CurrentView 分支）。
+func applySTP(state *CLIState, args []string) string {
+	switch state.CurrentView {
+	case ViewSystem:
+		return applySTPInSystem(state, args)
+	case ViewInterface:
+		return applyInterfaceSTP(state, args)
+	case ViewMSTRegion:
+		return applySTPRegion(state, args)
+	default:
+		return "Error: must be in system view"
+	}
+}
+
+// applySTPInSystem 系统视图下的 stp 子命令（enable/disable/mode/priority/root/pathcost-standard/
+// bpdu/root/loop/tc-protection/bridge-address/instance/region-configuration 等）。
+// 成功回显 VRP 静默风格（不回 "STP enabled (RSTP)" 等硬编码）。
+func applySTPInSystem(state *CLIState, args []string) string {
+	if len(args) == 0 {
+		state.DeviceConfig[stpKey("enabled")] = "true"
+		return ""
+	}
+	sub := strings.ToLower(args[0])
+	// 接口视图命令误用在系统视图 → 明确提示迁接口视图（拍板 #1）。
+	if sub == "cost" || sub == "port" || sub == "edged-port" {
+		return "Error: must be in interface view"
+	}
+	switch sub {
+	case "enable":
+		state.DeviceConfig[stpKey("enabled")] = "true"
+		return ""
+	case "disable":
+		state.DeviceConfig[stpKey("enabled")] = "false"
+		return ""
+	case "mode":
+		if len(args) < 2 {
+			return "Error: usage: stp mode {stp|rstp|mstp}"
+		}
+		m := strings.ToLower(args[1])
+		if m != "stp" && m != "rstp" && m != "mstp" {
+			return "Error: invalid STP mode (expect stp|rstp|mstp)"
+		}
+		state.DeviceConfig[stpKey("mode")] = m
+		return ""
+	case "priority":
+		if len(args) < 2 {
+			return "Error: usage: stp priority <0-61440, multiple of 4096>"
+		}
+		pri, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid priority value"
+		}
+		if ok, msg := validPriority(pri); !ok {
+			return msg
+		}
+		state.DeviceConfig[stpKey("priority")] = strconv.Itoa(pri)
+		return ""
+	case "root":
+		if len(args) < 2 {
+			return "Error: usage: stp root primary|secondary"
+		}
+		rt := strings.ToLower(args[1])
+		if rt == "primary" {
+			state.DeviceConfig[stpKey("priority")] = "0"
+		} else if rt == "secondary" {
+			state.DeviceConfig[stpKey("priority")] = strconv.Itoa(stpPriStep)
+		} else {
+			return "Error: usage: stp root primary|secondary"
+		}
+		return ""
+	case "v-stp":
+		// 最小保留（O7）：仅配置态，不触发真实 V-STP 跨设备同步。
+		if len(args) < 2 {
+			return "Error: usage: stp v-stp enable|disable"
+		}
+		v := strings.ToLower(args[1])
+		if v == "enable" {
+			state.DeviceConfig[stpKey("v-stp")] = "enable"
+		} else if v == "disable" {
+			state.DeviceConfig[stpKey("v-stp")] = "disable"
+		} else {
+			return "Error: usage: stp v-stp enable|disable"
+		}
+		return ""
+	case "bridge-address":
+		if len(args) < 2 {
+			return "Error: usage: stp bridge-address <mac>"
+		}
+		mac, ok := canonMAC(args[1])
+		if !ok {
+			return fmt.Sprintf("Error: invalid MAC address %q", args[1])
+		}
+		state.DeviceConfig[stpKey("bridge-address")] = mac
+		return ""
+	case "pathcost-standard":
+		if len(args) < 2 {
+			return "Error: usage: stp pathcost-standard {dot1d-1998|dot1t|legacy}"
+		}
+		std := strings.ToLower(args[1])
+		if std != "dot1d-1998" && std != "dot1t" && std != "legacy" {
+			return "Error: invalid pathcost-standard (expect dot1d-1998|dot1t|legacy)"
+		}
+		state.DeviceConfig[stpKey("pathcost-standard")] = std
+		return ""
+	case "bpdu-protection":
+		state.DeviceConfig[stpKey("bpdu-protection")] = "enable"
+		return ""
+	case "root-protection":
+		state.DeviceConfig[stpKey("root-protection")] = "enable"
+		return ""
+	case "loop-protection":
+		state.DeviceConfig[stpKey("loop-protection")] = "enable"
+		return ""
+	case "tc-protection":
+		if len(args) >= 3 && strings.ToLower(args[1]) == "interval" {
+			iv, err := parseNum(args[2])
+			if err != nil {
+				return "Error: invalid tc-protection interval"
+			}
+			state.DeviceConfig[stpKey("tc-protection-interval")] = strconv.Itoa(iv)
+		}
+		state.DeviceConfig[stpKey("tc-protection")] = "enable"
+		return ""
+	case "region-configuration":
+		// 进入 MSTP 域配置视图（拍板 #6）。
+		state.CurrentView = ViewMSTRegion
+		state.CurrentSub = ""
+		return "Enter MSTP region configuration view"
+	case "instance":
+		// stp instance <id> vlan <list> | stp instance <id> priority <n> |
+		// stp instance <id> root primary|secondary（P1-8）。
+		if len(args) < 2 {
+			return "Error: usage: stp instance <id> {vlan <list>|priority <n>|root primary|secondary}"
+		}
+		id, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid instance ID"
+		}
+		if ok, msg := validInstanceID(id); !ok {
+			return msg
+		}
+		if len(args) < 3 {
+			return "Error: usage: stp instance <id> {vlan|priority|root}"
+		}
+		switch strings.ToLower(args[2]) {
+		case "vlan":
+			if len(args) < 4 {
+				return "Error: usage: stp instance <id> vlan <list>"
+			}
+			vlanSpec := strings.Join(args[3:], " ")
+			if !validVLANList(vlanSpec) {
+				return fmt.Sprintf("Error: invalid VLAN list %q", vlanSpec)
+			}
+			state.DeviceConfig[fmt.Sprintf("stp:instance:%d:vlans", id)] = vlanSpec
+		case "priority":
+			if len(args) < 4 {
+				return "Error: usage: stp instance <id> priority <n>"
+			}
+			pri, err := parseNum(args[3])
+			if err != nil {
+				return "Error: invalid priority value"
+			}
+			if ok, msg := validPriority(pri); !ok {
+				return msg
+			}
+			state.DeviceConfig[fmt.Sprintf("stp:instance:%d:priority", id)] = strconv.Itoa(pri)
+		case "root":
+			if len(args) < 4 {
+				return "Error: usage: stp instance <id> root primary|secondary"
+			}
+			rt := strings.ToLower(args[3])
+			if rt == "primary" {
+				state.DeviceConfig[fmt.Sprintf("stp:instance:%d:priority", id)] = "0"
+				state.DeviceConfig[fmt.Sprintf("stp:instance:%d:root", id)] = "primary"
+			} else if rt == "secondary" {
+				state.DeviceConfig[fmt.Sprintf("stp:instance:%d:priority", id)] = strconv.Itoa(stpPriStep)
+				state.DeviceConfig[fmt.Sprintf("stp:instance:%d:root", id)] = "secondary"
+			} else {
+				return "Error: usage: stp instance <id> root primary|secondary"
+			}
+		default:
+			return "Error: usage: stp instance <id> {vlan|priority|root}"
+		}
+		return ""
+	case "region-name", "revision-level", "active":
+		// 这些为 MST region 视图命令，需先进入 region-configuration。
+		return "Error: please enter MST region configuration view first (stp region-configuration)"
+	default:
+		return "Error: invalid STP config"
+	}
+}
+
+// applyInterfaceSTP 接口视图下的 stp 子命令（cost/port priority/edged-port，拍板 #1 迁接口视图）。
+func applyInterfaceSTP(state *CLIState, args []string) string {
+	if state.CurrentView != ViewInterface {
+		return "Error: must be in interface view"
+	}
+	iface := state.CurrentSub
+	if len(args) == 0 {
+		return "Error: usage: stp <cost|port priority|edged-port>"
+	}
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "cost":
+		if len(args) < 2 {
+			return "Error: usage: stp cost <1-200000000>"
+		}
+		c, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid cost value"
+		}
+		std := stpPathCostStd(state)
+		if ok, msg := validCost(c, std); !ok {
+			return msg
+		}
+		state.DeviceConfig[stpIfaceKey(iface, "cost")] = strconv.Itoa(c)
+		return ""
+	case "port":
+		if len(args) < 3 || strings.ToLower(args[1]) != "priority" {
+			return "Error: usage: stp port priority <0-240, multiple of 16>"
+		}
+		pp, err := parseNum(args[2])
+		if err != nil {
+			return "Error: invalid port priority value"
+		}
+		if ok, msg := validPortPriority(pp); !ok {
+			return msg
+		}
+		state.DeviceConfig[stpIfaceKey(iface, "port-priority")] = strconv.Itoa(pp)
+		return ""
+	case "edged-port":
+		if len(args) < 2 {
+			return "Error: usage: stp edged-port enable|disable"
+		}
+		e := strings.ToLower(args[1])
+		if e == "enable" {
+			state.DeviceConfig[stpIfaceKey(iface, "edged-port")] = "enable"
+		} else if e == "disable" {
+			state.DeviceConfig[stpIfaceKey(iface, "edged-port")] = "disable"
+		} else {
+			return "Error: usage: stp edged-port enable|disable"
+		}
+		return ""
+	default:
+		// 系统视图命令误用在接口视图。
+		return "Error: must be in system view"
+	}
+}
+
+// applySTPRegion MST region 视图下的 stp 子命令（region-name/revision-level/instance/active）。
+func applySTPRegion(state *CLIState, args []string) string {
+	if state.CurrentView != ViewMSTRegion {
+		return "Error: must be in MST region configuration view"
+	}
+	if len(args) == 0 {
+		return "Error: incomplete command"
+	}
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "region-name":
+		if len(args) < 2 {
+			return "Error: usage: region-name <name>"
+		}
+		state.DeviceConfig[stpKey("region-name")] = args[1]
+		return ""
+	case "revision-level":
+		if len(args) < 2 {
+			return "Error: usage: revision-level <level>"
+		}
+		lv, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid revision level"
+		}
+		state.DeviceConfig[stpKey("revision-level")] = strconv.Itoa(lv)
+		return ""
+	case "instance":
+		if len(args) < 4 || strings.ToLower(args[2]) != "vlan" {
+			return "Error: usage: instance <id> vlan <list>"
+		}
+		id, err := parseNum(args[1])
+		if err != nil {
+			return "Error: invalid instance ID"
+		}
+		if ok, msg := validInstanceID(id); !ok {
+			return msg
+		}
+		vlanSpec := strings.Join(args[3:], " ")
+		if !validVLANList(vlanSpec) {
+			return fmt.Sprintf("Error: invalid VLAN list %q", vlanSpec)
+		}
+		state.DeviceConfig[fmt.Sprintf("stp:instance:%d:vlans", id)] = vlanSpec
+		return ""
+	case "active":
+		if len(args) < 2 || strings.ToLower(args[1]) != "region-configuration" {
+			return "Error: usage: active region-configuration"
+		}
+		state.DeviceConfig[stpKey("region-active")] = "true"
+		return ""
+	default:
+		return "Error: invalid MST region configuration command"
+	}
+}
+
+// applyUndoSTP 处理 undo stp [root|instance <id> root|bpdu-protection|...|region-configuration]
+// （清全部 stp:* 与 interface:*:stp:* 键并写 stp:enabled=false，方案 A 保活禁用态）。
+func applyUndoSTP(state *CLIState, args []string) string {
+	sub := []string{}
+	if len(args) > 1 {
+		sub = args[1:]
+	}
+	if len(sub) == 0 {
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "stp:") || (strings.HasPrefix(k, "interface:") && strings.Contains(k, ":stp:")) {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		state.DeviceConfig[stpKey("enabled")] = "false"
+		return "STP disabled"
+	}
+	switch strings.ToLower(sub[0]) {
+	case "root":
+		delete(state.DeviceConfig, stpKey("priority"))
+		return "STP root role removed"
+	case "instance":
+		if len(sub) < 3 || strings.ToLower(sub[1]) != "root" {
+			return "Error: usage: undo stp instance <id> root"
+		}
+		id, err := parseNum(sub[2])
+		if err != nil {
+			return "Error: invalid instance ID"
+		}
+		delete(state.DeviceConfig, fmt.Sprintf("stp:instance:%d:priority", id))
+		delete(state.DeviceConfig, fmt.Sprintf("stp:instance:%d:root", id))
+		return fmt.Sprintf("STP instance %d root role removed", id)
+	case "bpdu-protection":
+		delete(state.DeviceConfig, stpKey("bpdu-protection"))
+		return "STP BPDU protection removed"
+	case "root-protection":
+		delete(state.DeviceConfig, stpKey("root-protection"))
+		return "STP root protection removed"
+	case "loop-protection":
+		delete(state.DeviceConfig, stpKey("loop-protection"))
+		return "STP loop protection removed"
+	case "tc-protection":
+		delete(state.DeviceConfig, stpKey("tc-protection"))
+		delete(state.DeviceConfig, stpKey("tc-protection-interval"))
+		return "STP TC protection removed"
+	case "bridge-address":
+		delete(state.DeviceConfig, stpKey("bridge-address"))
+		return "STP bridge-address removed"
+	case "region-configuration":
+		delete(state.DeviceConfig, stpKey("region-name"))
+		delete(state.DeviceConfig, stpKey("revision-level"))
+		delete(state.DeviceConfig, stpKey("region-active"))
+		for k := range state.DeviceConfig {
+			if strings.HasPrefix(k, "stp:instance:") {
+				delete(state.DeviceConfig, k)
+			}
+		}
+		return "STP region configuration removed"
+	default:
+		return fmt.Sprintf("Error: undo '%s' is not supported", strings.Join(sub, " "))
+	}
+}
+
+// validVLANList 校验 VRP VLAN 列表（支持 "2 to 10" / "2-10" / "10 20 30" / "2,10" 形态）。
+func validVLANList(spec string) bool {
+	tmp := strings.NewReplacer("to", " ", "TO", " ", "-", " ", ",", " ").Replace(spec)
+	fields := strings.Fields(tmp)
+	if len(fields) == 0 {
+		return false
+	}
+	for _, f := range fields {
+		n, err := strconv.Atoi(f)
+		if err != nil || n < 1 || n > 4094 {
+			return false
+		}
+	}
+	return true
+}
+
+// buildSTPDisplay 渲染 display stp [brief|interface <if>|region-configuration]（P2 第四项）。
+// 只读 EvaluateSTP / collectSTPInstances，无副作用；末尾附 stpSimNote() 诚实注记。
+func buildSTPDisplay(state *CLIState, arg1 string, args []string) string {
+	if !isSTPEnabled(state) {
+		return "STP: Disabled"
+	}
+	switch arg1 {
+	case "brief":
+		return renderSTPBrief(state)
+	case "interface":
+		iface := ""
+		if len(args) >= 3 {
+			iface = args[2]
+		}
+		return renderSTPInterface(state, iface)
+	case "region-configuration":
+		return renderSTPRegion(state)
+	default:
+		return renderSTPDefault(state)
+	}
+}
+
+// renderSTPDefault 渲染 display stp（CIST Global Info + 各端口 Role/State + 诚实注记）。
+func renderSTPDefault(state *CLIState) string {
+	cist := EvaluateSTP(state, 0)
+	var out strings.Builder
+	out.WriteString("-------[CIST Global Info]-------\n")
+	out.WriteString(fmt.Sprintf(" Mode                : %s\n", stpMode(state)))
+	out.WriteString(fmt.Sprintf(" CIST Bridge         : %s\n", formatBridgeID(cist.BridgePriority, cist.BridgeAddress)))
+	out.WriteString(fmt.Sprintf(" Bridge Priority     : %d\n", cist.BridgePriority))
+	out.WriteString(fmt.Sprintf(" Root Bridge         : %s   (本地假设: 本桥桥 ID 最小, 非真实 BPDU 选举)\n", formatBridgeID(cist.RootPriority, cist.RootAddress)))
+	out.WriteString(fmt.Sprintf(" Root Path Cost      : %d\n", cist.RootPathCost))
+	if v := state.DeviceConfig[stpKey("bridge-address")]; v != "" {
+		out.WriteString(fmt.Sprintf(" Bridge Address      : %s\n", v))
+	}
+	if state.DeviceConfig[stpKey("v-stp")] == "enable" {
+		out.WriteString(" V-STP               : Enabled\n")
+	}
+	out.WriteString("-------[Port Role/State]-------\n")
+	for _, p := range cist.Ports {
+		line := fmt.Sprintf("%-20s: %-7s %-11s", p.Interface, p.Role, p.State)
+		if p.Note != "" {
+			line += "   " + p.Note
+		}
+		out.WriteString(line + "\n")
+	}
+	out.WriteString("\n" + stpSimNote() + "\n")
+	return out.String()
+}
+
+// renderSTPBrief 渲染 display stp brief（MSTID / Port / Role / State 摘要表，按实例分组）。
+func renderSTPBrief(state *CLIState) string {
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("%-6s %-16s %-9s %s\n", "MSTID", "Port", "Role", "State"))
+	for _, id := range collectSTPInstances(state) {
+		inst := EvaluateSTP(state, id)
+		for _, p := range inst.Ports {
+			out.WriteString(fmt.Sprintf("%-6d %-16s %-9s %s\n", id, p.Interface, p.Role, p.State))
+		}
+	}
+	out.WriteString("\n" + stpSimNote() + "\n")
+	return out.String()
+}
+
+// renderSTPInterface 渲染 display stp interface <if>（单端口详情 + 诚实注记）。
+func renderSTPInterface(state *CLIState, iface string) string {
+	cist := EvaluateSTP(state, 0)
+	var port *STPPortResult
+	for i := range cist.Ports {
+		if cist.Ports[i].Interface == iface {
+			port = &cist.Ports[i]
+			break
+		}
+	}
+	bpdu := "Disabled"
+	if state.DeviceConfig[stpKey("bpdu-protection")] == "enable" {
+		bpdu = "Enabled"
+	}
+	rootPortID := "0.0"
+	if port != nil && port.Role == "ROOT" {
+		rootPortID = fmt.Sprintf("%d.2", port.PortPriority)
+	}
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("Interface: %s\n", iface))
+	out.WriteString("CIST Global Information:\n")
+	out.WriteString(fmt.Sprintf(" Mode              : %s\n", stpMode(state)))
+	out.WriteString(fmt.Sprintf(" CIST Bridge       : %s\n", formatBridgeID(cist.BridgePriority, cist.BridgeAddress)))
+	out.WriteString(fmt.Sprintf(" CIST Root/ERPC    : %s / %d   (本地假设, 非真实 BPDU)\n", formatBridgeID(cist.RootPriority, cist.RootAddress), cist.RootPathCost))
+	out.WriteString(fmt.Sprintf(" CIST RegRoot/IRPC : %s / %d\n", formatBridgeID(cist.BridgePriority, cist.BridgeAddress), 0))
+	out.WriteString(fmt.Sprintf(" CIST RootPortId   : %s\n", rootPortID))
+	out.WriteString(fmt.Sprintf(" BPDU-Protection   : %s\n", bpdu))
+	out.WriteString(" TC or TCN received: 0\n")
+	role, st, note := "--", "DOWN", ""
+	if port != nil {
+		role, st, note = port.Role, port.State, port.Note
+	}
+	line := fmt.Sprintf(" Port Role/State   : %s / %s", role, st)
+	if note != "" {
+		line += "   " + note
+	}
+	out.WriteString(line + "\n")
+	out.WriteString("\n" + stpSimNote() + "\n")
+	return out.String()
+}
+
+// renderSTPRegion 渲染 display stp region-configuration（Region name/Revision/Instance VLAN Mapped/Active）。
+func renderSTPRegion(state *CLIState) string {
+	name := state.DeviceConfig[stpKey("region-name")]
+	if name == "" {
+		name = "default"
+	}
+	rev := 0
+	if v := state.DeviceConfig[stpKey("revision-level")]; v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			rev = n
+		}
+	}
+	active := state.DeviceConfig[stpKey("region-active")] == "true"
+	instVlans := map[int]string{}
+	for k, v := range state.DeviceConfig {
+		if !strings.HasPrefix(k, "stp:instance:") || !strings.HasSuffix(k, ":vlans") {
+			continue
+		}
+		rest := strings.TrimPrefix(k, "stp:instance:") // "<id>:vlans"
+		ci := strings.Index(rest, ":")
+		if ci <= 0 {
+			continue
+		}
+		id, err := strconv.Atoi(rest[:ci])
+		if err != nil || id <= 0 {
+			continue
+		}
+		instVlans[id] = v
+	}
+	hasRegion := name != "default" || rev != 0 || len(instVlans) > 0 || active
+	if !hasRegion {
+		return "MSTP Region: not configured"
+	}
+	var out strings.Builder
+	out.WriteString("Oper configuration\n")
+	out.WriteString(" Format selector    : 0\n")
+	out.WriteString(fmt.Sprintf(" Region name        : %s\n", name))
+	out.WriteString(fmt.Sprintf(" Revision level     : %d\n", rev))
+	out.WriteString(" Instance  VLAN Mapped\n")
+	out.WriteString(fmt.Sprintf(" %-8d %s\n", 0, "1 to 4094"))
+	ids := make([]int, 0, len(instVlans))
+	for id := range instVlans {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		out.WriteString(fmt.Sprintf(" %-8d %s\n", id, instVlans[id]))
+	}
+	status := "Inactive"
+	if active {
+		status = "Active"
+	}
+	out.WriteString(fmt.Sprintf(" Configuration Status: %s\n", status))
+	return out.String()
+}
+
+// buildSavedSTPConfig 输出系统级 STP 配置块（display current-configuration / display this 复用）。
+// 仅差异值补行，保证 save→reload 后完整复现（AC2）。返回 "" 表示无系统级 STP 配置。
+func buildSavedSTPConfig(state *CLIState) string {
+	if !isSTPEnabled(state) {
+		return ""
+	}
+	var b strings.Builder
+	mode := stpMode(state)
+	if mode != stpModeDefault {
+		b.WriteString(fmt.Sprintf(" stp mode %s\n", mode))
+	}
+	switch pri := stpBridgePriority(state, 0); pri {
+	case 0:
+		b.WriteString(" stp root primary\n")
+	case stpPriStep:
+		b.WriteString(" stp root secondary\n")
+	case stpPriDefault:
+		// 默认，不输出
+	default:
+		b.WriteString(fmt.Sprintf(" stp priority %d\n", pri))
+	}
+	std := stpPathCostStd(state)
+	if std != stpPCStdDefault {
+		b.WriteString(fmt.Sprintf(" stp pathcost-standard %s\n", std))
+	}
+	if state.DeviceConfig[stpKey("bpdu-protection")] == "enable" {
+		b.WriteString(" stp bpdu-protection\n")
+	}
+	if state.DeviceConfig[stpKey("root-protection")] == "enable" {
+		b.WriteString(" stp root-protection\n")
+	}
+	if state.DeviceConfig[stpKey("loop-protection")] == "enable" {
+		b.WriteString(" stp loop-protection\n")
+	}
+	if state.DeviceConfig[stpKey("tc-protection")] == "enable" {
+		b.WriteString(" stp tc-protection\n")
+		if v := state.DeviceConfig[stpKey("tc-protection-interval")]; v != "" && v != strconv.Itoa(stpTCIntervalDefault) {
+			b.WriteString(fmt.Sprintf(" stp tc-protection interval %s\n", v))
+		}
+	}
+	if v := state.DeviceConfig[stpKey("bridge-address")]; v != "" {
+		b.WriteString(fmt.Sprintf(" stp bridge-address %s\n", v))
+	}
+	// MSTP 实例级 root / priority（P1-8）
+	rootByInst := map[int]string{}
+	priByInst := map[int]int{}
+	for k, v := range state.DeviceConfig {
+		if !strings.HasPrefix(k, "stp:instance:") {
+			continue
+		}
+		rest := strings.TrimPrefix(k, "stp:instance:") // "<id>:root" or "<id>:priority"
+		ci := strings.Index(rest, ":")
+		if ci <= 0 {
+			continue
+		}
+		id, err := strconv.Atoi(rest[:ci])
+		if err != nil || id <= 0 {
+			continue
+		}
+		switch rest[ci+1:] {
+		case "root":
+			rootByInst[id] = v
+		case "priority":
+			if n, e2 := strconv.Atoi(v); e2 == nil {
+				priByInst[id] = n
+			}
+		}
+	}
+	instIDs := make([]int, 0)
+	for id := range rootByInst {
+		instIDs = append(instIDs, id)
+	}
+	for id := range priByInst {
+		if _, ok := rootByInst[id]; !ok {
+			instIDs = append(instIDs, id)
+		}
+	}
+	sort.Ints(instIDs)
+	for _, id := range instIDs {
+		if r, ok := rootByInst[id]; ok {
+			b.WriteString(fmt.Sprintf(" stp instance %d root %s\n", id, r))
+		} else if p, ok := priByInst[id]; ok && p != stpPriDefault {
+			b.WriteString(fmt.Sprintf(" stp instance %d priority %d\n", id, p))
+		}
+	}
+	// region 块（stp region-configuration 子命令按 VRP 缩进嵌套 2 空格）
+	regionName := state.DeviceConfig[stpKey("region-name")]
+	rev := state.DeviceConfig[stpKey("revision-level")]
+	active := state.DeviceConfig[stpKey("region-active")] == "true"
+	instVlans := map[int]string{}
+	for k, v := range state.DeviceConfig {
+		if !strings.HasPrefix(k, "stp:instance:") || !strings.HasSuffix(k, ":vlans") {
+			continue
+		}
+		rest := strings.TrimPrefix(k, "stp:instance:")
+		ci := strings.Index(rest, ":")
+		if ci <= 0 {
+			continue
+		}
+		id, err := strconv.Atoi(rest[:ci])
+		if err != nil || id <= 0 {
+			continue
+		}
+		instVlans[id] = v
+	}
+	if regionName != "" || rev != "" || len(instVlans) > 0 {
+		b.WriteString(" stp region-configuration\n")
+		if regionName != "" {
+			b.WriteString(fmt.Sprintf("  region-name %s\n", regionName))
+		}
+		if rev != "" {
+			b.WriteString(fmt.Sprintf("  revision-level %s\n", rev))
+		}
+		vlanIDs := make([]int, 0, len(instVlans))
+		for id := range instVlans {
+			vlanIDs = append(vlanIDs, id)
+		}
+		sort.Ints(vlanIDs)
+		for _, id := range vlanIDs {
+			b.WriteString(fmt.Sprintf("  instance %d vlan %s\n", id, instVlans[id]))
+		}
+		if active {
+			b.WriteString("  active region-configuration\n")
+		}
+	}
+	return b.String()
+}
+
+// buildSavedSTPInterfaceConfig 输出单接口下 STP 接口级配置行（display current-configuration 接口块内）。
+// 返回 "" 表示该接口无 STP 接口级配置。
+func buildSavedSTPInterfaceConfig(state *CLIState, iface string) string {
+	var b strings.Builder
+	if v := state.DeviceConfig[stpIfaceKey(iface, "edged-port")]; v == "enable" {
+		b.WriteString(" stp edged-port enable\n")
+	} else if v == "disable" {
+		b.WriteString(" stp edged-port disable\n")
+	}
+	if v := state.DeviceConfig[stpIfaceKey(iface, "cost")]; v != "" {
+		b.WriteString(fmt.Sprintf(" stp cost %s\n", v))
+	}
+	if v := state.DeviceConfig[stpIfaceKey(iface, "port-priority")]; v != "" && v != strconv.Itoa(stpPortPriDefault) {
+		b.WriteString(fmt.Sprintf(" stp port priority %s\n", v))
+	}
+	return b.String()
 }
 
 // applyPortSecurity 实现端口安全命令（enable/disable/max-mac-num/mac-address sticky）。
@@ -4553,7 +5077,7 @@ func buildDiagnosticInfo(state *CLIState) string {
 		isis = "Running"
 	}
 	stp := "Disabled"
-	if state.STP.Enabled {
+	if isSTPEnabled(state) {
 		stp = "Enabled"
 	}
 	dhcp := "Disabled"
@@ -4585,8 +5109,8 @@ func formatProtocolBlocks(state *CLIState) string {
 	if state.BGP.Enabled {
 		b.WriteString(fmt.Sprintf(" bgp %d\n", state.BGP.ASNumber))
 	}
-	if state.STP.Enabled {
-		b.WriteString(fmt.Sprintf(" stp mode %s\n", state.STP.Mode))
+	if isSTPEnabled(state) {
+		b.WriteString(fmt.Sprintf(" stp mode %s\n", stpMode(state)))
 	}
 	if state.DHCP != nil && state.DHCP.Enabled {
 		b.WriteString(" dhcp enable\n")
@@ -4647,8 +5171,7 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 		delete(state.ACLs, aclID)
 		return fmt.Sprintf("ACL %s removed", aclID)
 	case "stp":
-		state.STP.Enabled = false
-		return "STP disabled"
+		return applyUndoSTP(state, args)
 	case "dhcp":
 		if state.DHCP != nil {
 			state.DHCP.Enabled = false
@@ -4949,6 +5472,11 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 	b.WriteString(fmt.Sprintf("sysname %s\n", name))
 	b.WriteString("#\n")
 
+	// 系统级 STP 配置块（方案 A：单事实源 DeviceConfig，随快照完整复现，修 P0-1 丢配置）。
+	if s := buildSavedSTPConfig(state); s != "" {
+		b.WriteString(s)
+	}
+
 	ifaceNames := make([]string, 0, len(state.Interfaces))
 	for k := range state.Interfaces {
 		ifaceNames = append(ifaceNames, k)
@@ -4991,6 +5519,9 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 		if _, ok := state.Interfaces[ifc.Name]; ok {
 			if vrrpLines := buildSavedVRRPConfig(state, ifc.Name); vrrpLines != "" {
 				b.WriteString(vrrpLines)
+			}
+			if stpLines := buildSavedSTPInterfaceConfig(state, ifc.Name); stpLines != "" {
+				b.WriteString(stpLines)
 			}
 		}
 		b.WriteString("#\n")

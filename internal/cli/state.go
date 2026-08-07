@@ -26,6 +26,7 @@ const (
 	ViewVTY       ViewType = "vty"
 	ViewDHCPPool  ViewType = "dhcp-pool"
 	ViewISIS      ViewType = "isis" // IS-IS 协议视图（P1-F）
+	ViewMSTRegion  ViewType = "mst-region" // MSTP 域配置视图（P2 第四项 STP）
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -54,7 +55,6 @@ type CLIState struct {
 	MLAG           *MLAGConfig
 	MLAGInterfaces map[string]map[string]string
 	LLDP           *LLDPConfig
-	STP            *STPConfig
 	IPRouting      bool // 三层路由功能启用标志
 	IPsec          map[string]*IPsecConfig
 	SNMP           *SNMPConfig
@@ -242,19 +242,6 @@ type MLAGConfig struct {
 	DFSGroup       map[int]*DFSGroupConfig
 }
 
-type STPConfig struct {
-	Enabled        bool
-	Mode           string
-	BridgePriority int
-	Ports          map[string]*STPPort
-	VSTPEnabled    bool
-	BridgeAddress  string
-	RegionName     string
-	RevisionLevel  int
-	VLANMapping    map[int]int
-	RegionActive   bool
-}
-
 type DFSGroupConfig struct {
 	ID             int
 	MLAGID         int
@@ -264,12 +251,6 @@ type DFSGroupConfig struct {
 	Authentication string
 	Password       string
 	Enabled        bool
-}
-
-type STPPort struct {
-	PortName     string
-	PortPriority int
-	Cost         int
 }
 
 type IPsecConfig struct {
@@ -497,13 +478,6 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 		MLAGInterfaces: make(map[string]map[string]string),
 		LLDP: &LLDPConfig{
 			PortConfig: make(map[string]bool),
-		},
-		STP: &STPConfig{
-			Enabled:        false,
-			Mode:           "rstp",
-			BridgePriority: 32768,
-			Ports:          make(map[string]*STPPort),
-			VLANMapping:    make(map[int]int),
 		},
 		IPsec:  make(map[string]*IPsecConfig),
 		SNMP:   &SNMPConfig{},
