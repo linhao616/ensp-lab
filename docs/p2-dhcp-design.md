@@ -249,7 +249,7 @@ parser.go:2646   interface:<Vlanif<id>>:dhcp-pool     ← display ip pool 的地
 - **涉及文件**：`internal/cli/dhcp_relay_cmd.go`（主体）、`internal/cli/parser.go`（改动点 4、6）。
 - **依赖**：**T0**（视图分派与守卫已就位）、**T1**（消费 `dhcpSelectKey`/`dhcpRelayKey` 键约定 + `validRelayServerIP` + `parseRelayServerIPs`/`joinRelayServerIPs` + 常量）。
 - **内容（对齐 P0-3~P0-7 / P1-1、P1-2、P1-5、P1-6 / AC3/AC4/AC5/AC9 / 拍板 #1、#3、#6）**：
-  1. `applyDHCPRelayServerIP`：**前置守卫（拍板 #1）**——`dhcpSelectMode(state, iface) != "relay"` → `Error: Please run 'dhcp select relay' on this interface first.` **且不写任何键**；IPv4 校验；追加到 `dhcp-relay:server-ips` 逗号串**尾部保序**、重复地址**幂等不追加**；超过 `MaxRelayServerIPs=8` → `Error: The number of DHCP relay server IP addresses exceeds the upper limit (8).`；缺参 → `Error: usage: dhcp relay server-ip <ip-address>`。
+  1. `applyDHCPRelayServerIP`：**前置守卫（拍板 #1）**——`dhcpSelectMode(state, iface) != "relay"` → `Error: Please run 'dhcp select relay' on this interface first.` **且不写任何键**；**先 `validRelayServerIP` 校验通过后才写键**（非法 IP / 越界被拒时**绝不残留空串键**，对齐 PRD AC4「不得留下空串键」）；校验通过 → 追加到 `dhcp-relay:server-ips` 逗号串**尾部保序**、重复地址**幂等不追加**；超过 `MaxRelayServerIPs=8` → `Error: The number of DHCP relay server IP addresses exceeds the upper limit (8).`；缺参 → `Error: usage: dhcp relay server-ip <ip-address>`。
   2. `applyDHCPRelayInformation`：`enable` → 写 `dhcp-relay:option82="true"`；`strategy {drop|keep|replace}` → 严格枚举校验（非法 → `Error: unrecognized command`）写 `dhcp-relay:option82-strategy`；**未 `information enable` 时配 strategy → 允许 + `Info:` 提示**（拍板 #6，避免顺序强耦合）。
   3. `applyDHCPRelaySourceIP`：单值后配覆盖；同走 `validRelayServerIP`；写 `dhcp-relay:source-ip`。
   4. **三态互斥级联清理（拍板 #3，补齐 T0 的 TODO 钩子）**：`applyDHCPSelect` 在写入 `global`/`interface` 时，**删除 `interface:<if>:dhcp-relay:` 精确前缀的全部键**（§1.6 碰撞警告：绝不误删 `dhcp-pool`）。
