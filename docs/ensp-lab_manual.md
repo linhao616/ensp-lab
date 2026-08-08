@@ -520,6 +520,50 @@ Save the configuration successfully.
 - 前端：`frontend/src/components/CliTerminal.tsx`（每设备 `sessions` 状态）；`FloatWindow.tsx`（浮动窗口容器，含拖拽 / 最小化 / 最大化 / 关闭）、`DeviceDetail.tsx`（窗口内容：CLI / 配置 两 Tab）、`TopologyCanvas.tsx`（`onDoubleClick` / 右键「查看详情」触发 `onOpenDevice`）、`App.tsx`（`windows` / `zMap` 多窗口状态 + 任务栏）。
 - 后端：`internal/cli/parser.go` 的 `save` / `display saved-configuration` / `display startup` / `reset saved-configuration`，`doSave()` 生成快照；`internal/topology/model.go` 的 `DeviceConfigData` 新增 `saved/saved_config/save_time` 字段。
 
+#### 4.8.1 DHCP 中继（DHCP Relay）命令参考
+
+对应华为 VRP 实训课程 27。中继让跨网段客户端经中继代理向 DHCP 服务器获取地址。
+
+**前置**：先在系统视图 `dhcp enable` 启用 DHCP 功能（未启用时配置仍能写入，仅附 `Info:` 软提示，不阻断）。`dhcp select` / `dhcp relay *` 为**接口视图**命令，仅 Router / L3Switch / Firewall / VTEP 支持配置；二层 Switch / PC / Server 配置会被拒，但 `display dhcp relay` **只读、任意设备可读**（空态输出 `Info: No DHCP relay interface configured.`）。
+
+```
+# 进入接口并指定 DHCP 模式（global | interface | relay 三态互斥，切换即级联清除旧中继键）
+interface GigabitEthernet0/0/1
+dhcp select relay
+# 指定 DHCP 服务器地址（保序去重，上限 8；未先 select relay 直接配置会被拒绝且不写任何键）
+dhcp relay server-ip 10.1.1.1
+dhcp relay server-ip 10.1.1.2
+# Option82 中继信息选项
+dhcp relay information enable
+dhcp relay information strategy replace     # drop | keep | replace（缺省 replace，current-config 不输出缺省行）
+# 指定中继报文源地址
+dhcp relay source-ip 10.2.2.254
+```
+
+撤销：
+
+```
+undo dhcp select relay                 # 清 dhcp-select 并级联清 dhcp-relay:* 键
+undo dhcp relay server-ip 10.1.1.1     # 带参精确摘除；无参清空全部
+undo dhcp relay information enable
+undo dhcp relay information strategy
+undo dhcp relay source-ip
+```
+
+查看（只读，任意设备可读）：
+
+```
+display dhcp relay                      # 等价 all
+display dhcp relay all
+display dhcp relay interface Vlanif10
+```
+
+输出含单接口详情块（`Relay mode` / `Server IP address(es)` / `Option82 (information)` / `Option82 strategy` / `Source IP address` / `Interface status` 真实值 + `Forwarding statistics` 6 字段）与汇总表。**转发统计为仿真诚实占位，恒显示 `-`**（仿真无真实 DHCP 报文转发引擎，不编造数字；`Source IP` 未配恒 `-`，不推导接口主 IP）。
+
+**保存与重载**：上述配置随 `save` → `display current-configuration` / `display saved-configuration` 自动往返；`reload` 后配置完整复现。
+
+**相关代码**：`internal/cli/dhcp_relay_eval.go`（纯函数评估器）/ `dhcp_relay_cmd.go`（命令落地）/ `dhcp_relay_display.go`（渲染 + 持久化）；单一事实源 `interface:<iface>:dhcp-select` + `interface:<iface>:dhcp-relay:<field>`。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。

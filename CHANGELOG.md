@@ -2,6 +2,20 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.7.0] - 2026-08-07
+
+本轮延续 P2 协议特性累积发布（续 v0.6.0），继续「纯函数仿真评估 + 诚实占位」路线，全部经独立 QA 两轮验收。
+
+### Added
+- **P2 链路聚合 Eth-Trunk（course 63）**：`internal/cli/lag_eval.go` / `lag_cmd.go` / `lag_display.go` 三件套；DeviceConfig 单一事实源 `interface:<iface>:lag:<field>`；纯函数 `EvaluateLAG` + `lagSimNote()` 诚实占位；根治「幽灵组」（`Bridge-Aggregation` 残留）save→reload 缺陷；真实成员接口聚合 / 负载分担 / 展示。
+- **P2 DHCP 中继 DHCP Relay（course 27）**：`internal/cli/dhcp_relay_eval.go` / `dhcp_relay_cmd.go` / `dhcp_relay_display.go` 三件套；`dhcp select` 从系统视图迁移至接口视图并删除只写不读死字段 `DHCPSelectMode`；DeviceConfig 单一事实源 `interface:<iface>:dhcp-select` + `interface:<iface>:dhcp-relay:<field>`；三层守卫（接口视图 / l3Devices() / relay 前置）、三态互斥级联清理（精确前缀，不误伤 `dhcp-pool`）；诚实占位（转发统计 6 字段恒 `-`，Source IP 未配恒 `-` 不推导主 IP）；`display dhcp relay` 只读、任意设备可读；current-configuration 差异值口径 + save→reload 贯通。
+
+### Fixed
+- `display current-configuration` VLAN 块按 vlan-id 升序输出（修正既有 map 随机遍历导致的快照非确定性，保障 AC7 字节级一致）。
+
+### Security
+- 链路聚合 / DHCP 中继均为纯函数仿真评估，lite 引擎对「真实转发」标记为诚实占位（非内核级真实转发），避免误导。
+
 ## [v0.6.0] - 2026-08-07
 
 本轮为 P2 协议特性累积发布（自 v0.5.0 起落地的 NAT / 端口安全 / VRRP / STP·RSTP·MSTP），延续「纯函数仿真评估 + 诚实占位」路线，全部经独立 QA 两轮验收。

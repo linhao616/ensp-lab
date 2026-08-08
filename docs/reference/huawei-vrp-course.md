@@ -87,8 +87,8 @@
 | 端口安全 | `port-security` | 📋 Roadmap | 安全特性，建议 P2 |
 | STP / RSTP / MSTP | 生成树 | 📋 Roadmap | 视频 55/56/57 |
 | VRRP | `vrrp vrid` | 📋 Roadmap | 视频 60/61 |
-| 链路聚合 | `eth-trunk` | 📋 Roadmap | 视频 63 |
-| DHCP 中继 | `dhcp relay` | 📋 Roadmap | 视频 27 |
+| 链路聚合 | `eth-trunk` | ✅ 已实现 | 视频 63 |
+| DHCP 中继 | `dhcp relay` | ✅ 已实现 | 视频 27 |
 | GRE | `tunnel gre` | 📋 Roadmap | 视频 69 |
 | AAA | `aaa` / `local-user` | 📋 Roadmap | 视频 71（安全相关） |
 | PAP / CHAP | `ppp` 认证 | 📋 Roadmap | 视频 29/30 |

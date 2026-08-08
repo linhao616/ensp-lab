@@ -10,7 +10,7 @@
 
 **当前状态**：API handler 拆分重构（`router.go` → `topology_/device_/link_/cli_/annotation_/system_handlers.go`）已完成，`router.go` 仅保留 `NewRouter()` 路由注册，`internal/api` 可正常编译，根目录 `ensp-lab.exe` 为最新构建（含嵌入前端）。
 
-**近期更新（v0.6.0）**：P2 协议特性累积发布——NAT 真实过滤（course 38）、端口安全（course 49）、VRRP（course 60/61）、STP·RSTP·MSTP（course 55/56/57）均已交付并通过独立 QA 两轮回归；延续「纯函数仿真评估 + 诚实占位」路线（lite 引擎明确标注非内核级真实过滤）。此前 v0.5.0 已交付 P1-C Firewall 真实过滤与华为 VRP 实训课程参考索引。
+**近期更新（v0.7.0）**：P2 协议特性累积发布（续）——链路聚合 Eth-Trunk（course 63）、DHCP 中继（course 27）、NAT 真实过滤（course 38）、端口安全（course 49）、VRRP（course 60/61）、STP·RSTP·MSTP（course 55/56/57）均已交付并通过独立 QA 两轮回归；延续「纯函数仿真评估 + 诚实占位」路线（lite 引擎明确标注非内核级真实过滤）。此前 v0.5.0 已交付 P1-C Firewall 真实过滤与华为 VRP 实训课程参考索引。
 
 ## 三、短中期计划（3~6 个月）
 
@@ -52,7 +52,7 @@
 | v0.3.1 | ✅ 已完成 | 2026-07 | 稳定性加固：IP 合法性校验（HTTP 400）+ dbgSim 限流 + 低资源测试报告 + 最小启动配置 |
 | v0.4.0 | ✅ 已完成 | 2026-08 | 安全加固(P0: V-01~V-04 / F1-F10) + protoSim 多拓扑修复 + 真实诊断(P1-D) + VRP CLI 广度(P1-F) + Firewall 路线定调 |
 | v0.5.0 | ✅ 已完成 | 2026-08 | P1-C Firewall 真实过滤（路线 B 仿真 ACL：隐式 deny-any + 方向模型，介入 ping/tracert/可达性全路径 + 诊断 blockedBy）+ 华为 VRP 实训课程参考索引 |
-| v0.6.0 | ✅ 已完成 | 2026-08 | P2 协议特性累积发布：NAT 真实过滤（course 38）/ 端口安全（course 49）/ VRRP（course 60/61）/ STP·RSTP·MSTP（course 55/56/57），纯函数仿真评估 + 诚实占位，独立 QA 两轮回归全绿。待续：链路聚合 / DHCP 中继 / GRE / AAA / IPv6 + P2 CLI 增强 |
+| v0.7.0 | ✅ 已完成 | 2026-08 | P2 协议特性累积发布（续）：链路聚合 Eth-Trunk（course 63）/ DHCP 中继（course 27）已交付并通过独立 QA 两轮回归；叠加 v0.6.0 的 NAT / 端口安全 / VRRP / STP·RSTP·MSTP。纯函数仿真评估 + 诚实占位。待续：GRE（course 69）/ AAA（course 71）/ IPv6（course 43/44）+ P2 CLI 增强 |
 | v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（延迟 / 丢包 / 带宽） |
 
 ## 六、贡献指南
