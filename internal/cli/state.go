@@ -25,8 +25,8 @@ const (
 	ViewBGP       ViewType = "bgp"
 	ViewVTY       ViewType = "vty"
 	ViewDHCPPool  ViewType = "dhcp-pool"
-	ViewISIS      ViewType = "isis" // IS-IS 协议视图（P1-F）
-	ViewMSTRegion  ViewType = "mst-region" // MSTP 域配置视图（P2 第四项 STP）
+	ViewISIS      ViewType = "isis"       // IS-IS 协议视图（P1-F）
+	ViewMSTRegion ViewType = "mst-region" // MSTP 域配置视图（P2 第四项 STP）
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -41,10 +41,10 @@ type CLIState struct {
 	CurrentView    ViewType
 	CurrentSub     string
 	DeviceType     topology.DeviceType
-	DeviceName     string            // 设备名称
-	DeviceID       string            // 设备ID
+	DeviceName     string             // 设备名称
+	DeviceID       string             // 设备ID
 	Topology       *topology.Topology // 拓扑引用（dis vxlan tunnel 等需读取拓扑链路时由 api 层注入；可为 nil）
-	DeviceConfig   map[string]string // 设备配置键值对
+	DeviceConfig   map[string]string  // 设备配置键值对
 	DefaultGateway string
 	HostIP         string // PC 主机 IP 地址
 	HostSubnet     string // PC 主机子网掩码
@@ -81,14 +81,16 @@ type CLIState struct {
 	MACTable       []*MACEntry
 	Interfaces     map[string]*InterfaceConfig
 	DHCP           *DHCPConfig
-	DHCPSelectMode string                 // DHCP 模式: global 或 interface
-	History        []*topology.HistoryEntry // CLI 命令历史（FIFO，上限见 maxCLIHistory）
+	// 注：接口 DHCP 模式（dhcp select）已迁移至接口视图，单一事实源为
+	// DeviceConfig["interface:<iface>:dhcp-select"]（P2 #6，save/reload 自动往返）。
+	// ⚠️ 架构铁律：本结构体严禁新增任何 DHCP 中继内嵌结构体或模式字段。
+	History []*topology.HistoryEntry // CLI 命令历史（FIFO，上限见 maxCLIHistory）
 
 	// save 命令相关（贴近华为 eNSP 体验）
-	Saved       bool   `json:"saved"`         // 是否已执行 save（写入启动配置）
-	SaveTime    string `json:"save_time"`     // 最近一次 save 时间
-	SavedConfig string `json:"saved_config"`  // 已保存配置的 VRP 风格快照
-	PendingSave bool   `json:"pending_save"`  // save  awaiting Y/N 确认
+	Saved       bool   `json:"saved"`        // 是否已执行 save（写入启动配置）
+	SaveTime    string `json:"save_time"`    // 最近一次 save 时间
+	SavedConfig string `json:"saved_config"` // 已保存配置的 VRP 风格快照
+	PendingSave bool   `json:"pending_save"` // save  awaiting Y/N 确认
 
 	// ResolveTraceroute 是可选的真实引擎解析钩子（P1-F，风险1）。
 	// 直连 ExecuteCommandOn 执行 tracert/traceroute 时若已注入，则通过它走

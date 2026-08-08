@@ -827,6 +827,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			if msg, handled := applyUndoLAGInterface(state, cmd.Args); handled {
 				return msg
 			}
+			// undo dhcp select / undo dhcp relay ...（P2 #6，T2：DHCP 中继接口视图 undo 语义）。
+			// handled 模式：未命中 dhcp 前缀时交回下方既有 undo 分支，零回归。
+			if msg, handled := applyUndoDHCPInterface(state, cmd.Args); handled {
+				return msg
+			}
 			switch sub {
 			case "shutdown":
 				// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
@@ -1551,6 +1556,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				return "Error: invalid DHCP pool command"
 			}
 		}
+		// 接口视图下的 DHCP 命令（P2 #6 DHCP 中继）：
+		// dhcp select global|interface|relay 与 dhcp relay <sub> 均在接口视图生效，
+		// 统一由 applyDHCPInterfaceCmd 做三层守卫（视图/设备/relay 前置条件）并落
+		// DeviceConfig 键（单一事实源）。二层交换机等不支持设备在此被拒绝。
+		if state.CurrentView == ViewInterface {
+			return applyDHCPInterfaceCmd(state, cmd.Args)
+		}
 		// 系统视图下的 DHCP 命令
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -1586,15 +1598,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			state.CurrentSub = poolName
 			return fmt.Sprintf("Enter DHCP pool %s view", poolName)
 		case "select":
-			if len(cmd.Args) < 2 {
-				return "Error: usage: dhcp select global|interface"
-			}
-			mode := strings.ToLower(cmd.Args[1])
-			if mode != "global" && mode != "interface" {
-				return "Error: usage: dhcp select global|interface"
-			}
-			state.DHCPSelectMode = mode
-			return fmt.Sprintf("DHCP %s selected", mode)
+			// P2 #6 / T0：dhcp select 已迁移到**接口视图**（对齐官方 VRP 课程 27），
+			// 以 interface:<if>:dhcp-select 为单一事实源，支持 global|interface|relay 三态。
+			// 系统视图旧用法一律报错引导（拍板 #2，原 state.DHCPSelectMode 死字段已删除）。
+			return errDHCPSelectInterfaceView
 		}
 		return "Error: invalid DHCP command"
 	case "ip pool":
@@ -3274,6 +3281,15 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// 忠实展示 VRRP 组（P2 第三项）：支持 brief / interface <if> / vrid <id> / 全接口。
 			// 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附诚实占位注记。
 			return buildVRRPDisplay(state, arg1, cmd.Args)
+		case "dhcp":
+			// P2 #6（T3）：display dhcp relay [all | interface <if>]。
+			// 只读渲染，唯一数据源 = EvaluateDHCPRelay；拍板 #5「display 任意设备可读」，
+			// 故此处**不做设备类型守卫**（二层交换机读到的就是「无中继接口」，忠实呈现）。
+			if strings.EqualFold(arg1, "relay") {
+				return buildDHCPRelayDisplay(state, cmd.Args[2:])
+			}
+			// 其它 display dhcp <x> 本期未实现，明确拒绝而非静默返回空。
+			return errUnrecognizedCommand
 		case "ipsec":
 			var out strings.Builder
 			if len(state.IPsec) > 0 {
@@ -5029,6 +5045,11 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 		// undo lacp priority|preempt|timeout（系统视图，P2 #5 T04 改动点 13）。
 		return applyUndoLACPFeature(state, args[1:])
 	case "dhcp":
+		// P2 #6 / 设计 A8：undo dhcp select 已迁至接口视图，系统视图报错引导，
+		// 避免用户在系统视图静默拿到 "DHCP disabled" 这种答非所问的回显。
+		if len(args) >= 2 && strings.EqualFold(args[1], "select") {
+			return errUndoDHCPSelectInterfaceView
+		}
 		if state.DHCP != nil {
 			state.DHCP.Enabled = false
 		}
@@ -5409,6 +5430,11 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			if lagLines := buildSavedLAGInterfaceConfig(state, ifc.Name); lagLines != "" {
 				b.WriteString(lagLines)
 			}
+			// DHCP 中继（P2 #6，T4）：输出 dhcp select <mode> 与 dhcp relay 差异值行
+			// （strategy 为生效缺省 replace 时不输出，遵循 VRP「只落差异值」口径）。
+			if dhcpLines := buildSavedDHCPRelayInterfaceConfig(state, ifc.Name); dhcpLines != "" {
+				b.WriteString(dhcpLines)
+			}
 		}
 		b.WriteString("#\n")
 	}
@@ -5431,12 +5457,30 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 	if lagLines := buildSavedLAGConfig(state); lagLines != "" {
 		b.WriteString(lagLines)
 	}
+	// 独立 DHCP 中继输出通道（P2 #6，T4）：同上范式，对「拥有 dhcp-select / dhcp-relay 键
+	// 但 state.Interfaces 未重建」的接口补齐 interface 块，保证 save→reload 后
+	// display current-configuration 完整复现中继配置（AC7 字节级一致）。
+	if dhcpLines := buildSavedDHCPRelayConfig(state); dhcpLines != "" {
+		b.WriteString(dhcpLines)
+	}
 
 	for _, r := range state.Routes {
 		b.WriteString(fmt.Sprintf("ip route-static %s %s %s\n", r.Destination, r.Mask, r.NextHop))
 	}
 
-	for id, v := range state.VLANs {
+	// VLAN 段按 vlan-id 升序输出。原实现直接 range map，导致
+	// display current-configuration 每次调用 VLAN 块顺序随机（既有缺陷，P2 #6 T6 回归中发现）。
+	// 与上方 ifaceNames 的 sort.Strings 同口径修正，保证快照字节级确定性（AC7）。
+	vlanIDs := make([]int, 0, len(state.VLANs))
+	for id := range state.VLANs {
+		vlanIDs = append(vlanIDs, id)
+	}
+	sort.Ints(vlanIDs)
+	for _, id := range vlanIDs {
+		v := state.VLANs[id]
+		if v == nil {
+			continue
+		}
 		b.WriteString(fmt.Sprintf("vlan %d\n", id))
 		if v.Name != "" {
 			b.WriteString(fmt.Sprintf(" description %s\n", v.Name))
