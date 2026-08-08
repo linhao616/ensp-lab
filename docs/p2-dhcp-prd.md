@@ -29,7 +29,7 @@
 在严守 P2「CLIState 层纯函数、单一事实源 `DeviceConfig`、诚实占位、零改动 `sim` 引擎、零新增第三方依赖」架构基线的前提下，把 DHCP 中继从**完全缺失**补齐为一条学员可完整走通的实验链路：
 
 1. **命令面对齐官方 VRP**：学员能在接口视图按课程 27 的真实命令序列敲 `dhcp select relay` → `dhcp relay server-ip 10.1.1.1` → `dhcp relay information enable`，把三层接口配成中继代理；命令形态、报错文案、`undo` 语义均对齐真机，学员的肌肉记忆可平移到 eNSP / 真实设备。
-2. **配置真实落地且持久**：修复既有 `dhcp select` 的「系统视图错位 + 全局死状态」缺陷，把接口 DHCP 模式与全部中继参数迁移到 `DeviceConfig["interface:<iface>:dhcp:*"]` 单一事实源；`display dhcp relay` 与 `display current-configuration` 忠实复现，`save`→`reload` 后配置不丢。
+2. **配置真实落地且持久**：修复既有 `dhcp select` 的「系统视图错位 + 全局死状态」缺陷，把接口 DHCP 模式与全部中继参数迁移到 `DeviceConfig["interface:<iface>:dhcp-select"]` / `DeviceConfig["interface:<iface>:dhcp-relay:*"]` 单一事实源；`display dhcp relay` 与 `display current-configuration` 忠实复现，`save`→`reload` 后配置不丢。
 3. **展示忠实、边界诚实**：新增 `display dhcp relay { interface <if> | all }`，配置态字段（模式、server-ip 列表、option82、source-ip）**如实展示**；转发计数、服务器可达性、地址分配结果等仿真无法产出的运行态字段**一律 `-` + `dhcpRelaySimNote()` 注记**，让学员清楚知道"哪些是我配对了、哪些是仿真给不了的"——绝不用假数字换取观感。
 
 ---
@@ -97,7 +97,7 @@
   - `parseRelayServerIPs(raw string) []string`：解析逗号分隔列表，保序去重、过滤空串。
   - `EvaluateDHCPRelay(state, iface) DHCPRelayResult`：返回 `Interface / Mode / ServerIPs[] / Option82Enabled / Option82Strategy / SourceIP / Status`。其中 `Status` 仅由**本地可判定条件**派生（见 §6 #4），不臆造服务器可达性。
   - `dhcpRelaySimNote() string`：诚实占位注记（P0-9）。
-- **[P0-12 能力矩阵与视图守卫]**：`capabilities.go:64` 已有 `"dhcp": switchAndL3()`，覆盖 Router/L3Switch/Switch/Firewall/AC/AP/VTEP。中继是**三层特性**，二层 Switch 上配 relay 无意义，收窄粒度见 §6 #5（**PM 建议：`dhcp` 顶层保持 `switchAndL3()` 不动，仅在 `select relay` / `relay *` 子命令内部做三层设备守卫**，避免误伤既有二层设备的 `dhcp enable`/`dhcp pool` 用例）。PC / Server 执行 → 沿用 `parser.go:245` `isCommandSupported` 能力拒绝。
+- **[P0-12 能力矩阵与视图守卫]**：`capabilities.go:64` 已有 `"dhcp": switchAndL3()`，覆盖 Router/L3Switch/Switch/Firewall/AC/AP/VTEP。中继是**三层特性**，二层 Switch 上配 relay 无意义，收窄粒度见 §6 #5（**PM 建议：`dhcp` 顶层保持 `switchAndL3()` 不动，仅在 `select relay` / `relay *` 子命令内部做三层设备守卫**，避免误伤既有二层设备的 `dhcp enable`/`dhcp pool` 用例）。PC / Server 执行 → 沿用 `parser.go:245` `isCommandSupported` 能力拒绝（**仅限 `select relay` / `relay *` 配置命令**——在 PC / Server / 二层 Switch 上拒绝；`display dhcp relay` 为只读命令、任意设备可读、空态放行）。
 
 ### P1（增强真实语义 · 建议默认纳入）
 
@@ -197,7 +197,7 @@ DHCP relay information of interface GigabitEthernet0/0/1
 | `Server IP address(es)` | `interface:<if>:dhcp-relay:server-ips` | **真实**（配置态，保序） | `-` |
 | `Option82 (information)` | `...:dhcp-relay:option82` | **真实**（配置态） | `Disabled` |
 | `Option82 strategy` | `...:dhcp-relay:option82-strategy` | **真实**（配置态） | **`replace`（生效缺省值，非 `-`）**〔拍板 #6〕 |
-| `Source IP address` | `...:relay:source-ip` | **真实**（配置态） | `-`（**不推导接口主 IP**，见 §6 #4） |
+| `Source IP address` | `...:dhcp-relay:source-ip` | **真实**（配置态） | `-`（**不推导接口主 IP**，见 §6 #4） |
 | `Interface status` | `interface:<if>:status` | **真实**（本地可判定，复用 `shutdown`/`undo shutdown`） | `Up` |
 | `DHCP packets forwarded` | — | 🔴 **诚实占位 `-`** | `-` |
 | `DISCOVER forwarded` | — | 🔴 **诚实占位 `-`** | `-` |
@@ -260,7 +260,7 @@ interface GigabitEthernet0/0/1
 
 - **AC3（多 server-ip 保序、去重、上限）**：依次配 `10.1.1.1` → `10.1.1.2` → `10.1.1.3`，断言列表为 `10.1.1.1,10.1.1.2,10.1.1.3`（**严格保序**，非 map/set 打乱）；重复配 `10.1.1.2` 后列表长度仍为 3 且顺序不变（去重）；连续配至第 9 个地址 → `Error: ...exceeds the upper limit (8)`（P1-5，上限值以 §6 #6 拍板为准）。
 
-- **AC4（IPv4 合法性校验，P0-5）**：`dhcp relay server-ip 300.1.1.1` / `10.1.1` / `abc` / `10.1.1.1/24` / `2001:db8::1`（IPv6）**全部**返回含 `Invalid IP address` 的 `Error:`，且断言 `DeviceConfig` 中 server-ip 键**未被写入或未被污染**；合法地址 `10.1.1.1` / `172.16.0.254` / `192.168.1.1` 全部成功。校验实现须使用 `net.ParseIP(x) != nil && x.To4() != nil`（对照 `parser.go:4539`）。
+- **AC4（IPv4 合法性校验，P0-5）**：`dhcp relay server-ip 300.1.1.1` / `10.1.1` / `abc` / `10.1.1.1/24` / `2001:db8::1`（IPv6）**全部**返回含 `Invalid IP address` 的 `Error:`，且断言 `DeviceConfig["interface:<if>:dhcp-relay:server-ips"]` 键**未被写入或未被污染**（非法地址不得追加进列表、不得留下空串键）；合法地址 `10.1.1.1` / `172.16.0.254` / `192.168.1.1` 全部成功。校验实现须使用 `net.ParseIP(x) != nil && x.To4() != nil`（对照 `parser.go:4539`）。
 
 - **AC5（前置条件守卫与拒错，P0-7）**：逐条断言：① **〔2026-08-09 按拍板 #6 修订〕** 未 `dhcp enable` 时 `dhcp select relay` → **软提示不阻断**：断言输出含 `Info:` 与 `DHCP is not enabled` **且** 断言 `interface:<if>:dhcp-select` 键**已写入**为 `relay`（证明未被阻断）；后续补敲 `dhcp enable` 后配置直接生效、无需重配。**原稿"返回 `Error:` 硬拒绝"的断言作废。** ② 已 `dhcp enable` 但未 `dhcp select relay` 时 `dhcp relay server-ip 10.1.1.1` → 含 `dhcp select relay` 引导文案的 `Error:`，**且断言 `dhcp-relay:server-ips` 键未写入**（证明未静默成功）；③ 系统视图执行 `dhcp select relay` → 含 `interface view`；④ 用户视图执行 `dhcp relay server-ip 10.1.1.1` → 视图拒绝；⑤ `dhcp relay server-ip`（缺参）→ 含 `usage:`。**每条断言具体子串，不得用"返回非空"这类恒真断言。**
 
@@ -377,6 +377,8 @@ interface GigabitEthernet0/0/1
 - 需求池 **27 条**（P0 12 / P1 8 / P2 7），验收标准 **AC1–AC12**（AC10 拆为 10a/10b/10c），其中 **AC8 为诚实占位红线断言**（六个转发统计字段恒 `-`，正则断言不含数字与可达性词）。
 - **§6 的 6 项待确认已于 2026-08-09 全部拍板闭合**，结论汇总见 §6 开头表格。其中 #1/#2/#3/#4/#5 采纳 PM 建议（#3 并将三态互斥从 P2-1 **上提至 P0**），#6 **部分推翻 PM 建议**——"未 `dhcp enable` 配 relay"由硬拒绝改为**软提示 `Info:` 不阻断、键照写**。
 - **本次修订（2026-08-09，架构师 §9.2 C1/C2 反馈同步）**：① **AC5 ①** 由"断言 `Error:` 硬拒绝"改写为"断言 `Info:` 提示存在 **且** `dhcp-select` 键已写入"；② **AC10** 拆分为 10a（配置命令按 `l3Devices()` 守卫拒绝）/ 10b（`display dhcp relay` 只读放行、PC 上输出空态 `Info:`）/ 10c（二层 Switch 既有 DHCP 行为零回归 + `capabilities.go` 零改动）；③ 全文**键名对齐设计文档定稿**：`dhcp:select`→`dhcp-select`、`dhcp:relay:<field>`→`dhcp-relay:<field>`，字段名统一为 `server-ips` / `option82` / `option82-strategy` / `source-ip`，并明确**不得落 `dhcp-relay:mode` 键**（双写事实源）；④ P1-2 补齐拍板 #6 的 strategy 缺省展示口径（未配显示 `replace` 而非 `-`，`current-configuration` 不输出缺省行）。
+- **键名对齐补漏（2026-08-09 第二轮，架构师复核发现）**：首轮批量替换只覆盖了完整形态键名，**遗漏 3 处缩写/通配形态**，已全部修正——① §4.2 真实性标注表 `Source IP address` 行的来源 `...:relay:source-ip` **漏 `dhcp-` 前缀** → 改为 `...:dhcp-relay:source-ip`（架构师指出：照此写测试会按错键断言，或导致 source-ip 永不命中）；② §1 产品目标的 `DeviceConfig["interface:<iface>:dhcp:*"]` 通配 → 拆为 `dhcp-select` / `dhcp-relay:*`；③ AC4 的"`DeviceConfig` 中 server-ip 键"模糊表述 → 明确为 `DeviceConfig["interface:<if>:dhcp-relay:server-ips"]` 并补"不得留下空串键"。**现全文键引用已 100% 收敛**（仅 3 处"原稿→新键"迁移留痕行保留旧写法，属刻意留痕）。
+- **display 渲染标签归属（架构师 §7 绑定条款）**：设计文档明确「display 渲染标签/列宽以 **PRD §4.2/§4.3** 为准，设计不另定列宽」，且 `RelayStats` 结构体字段名已 1:1 对齐 PRD §4.2 的 VRP 显示标签（`DHCPPacketsForwarded`/`DiscoverForwarded`/`OfferReceived`/`RequestForwarded`/`AckReceived`/`ServerReachability`），渲染时直拼标签、杜绝二次翻译错配 AC8。**故 PRD §4.2/§4.3 为 display 输出的唯一权威源，工程师严格照样例实现。** `Interface status` 读既有 `interface:<if>:status` 键，**不归入 `RelayStats`**。
 - 需求条目**无增减**（仍 27 条），本次仅文案与键名同步，PRD 与设计文档验收口径现已一致。
 
 _Last updated: 2026-08-09 · 产品经理 许清楚（Xu）_
