@@ -27,6 +27,18 @@ const (
 	ViewDHCPPool  ViewType = "dhcp-pool"
 	ViewISIS      ViewType = "isis"       // IS-IS 协议视图（P1-F）
 	ViewMSTRegion ViewType = "mst-region" // MSTP 域配置视图（P2 第四项 STP）
+
+	// —— AAA 视图三档（P2 第八项 AAA 本地认证，课程 71，设计 T1 / P0-1）——
+	//
+	// 真机 VRP 层级：[R1] → aaa → [R1-aaa] → authentication-scheme sch1
+	// → [R1-aaa-authen-sch1]；域同理 domain huawei → [R1-aaa-domain-huawei]。
+	//
+	// 🔴 quit 链红线（设计 A3 / AC1③）：子视图 quit 必须回 ViewAAA（**不是** ViewSystem），
+	// ViewAAA quit 才回 ViewSystem。parser.go 的 quit if-else 链末尾 else 会兜底弹回
+	// ViewSystem，因此这三档**必须**在链中显式列出分支，否则子视图会越级弹回。
+	ViewAAA       ViewType = "aaa"        // AAA 视图 [<dev>-aaa]
+	ViewAAAAuthen ViewType = "aaa-authen" // AAA 方案子视图 [<dev>-aaa-authen-<name>] 等
+	ViewAAADomain ViewType = "aaa-domain" // AAA 域子视图 [<dev>-aaa-domain-<name>]
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -62,13 +74,18 @@ type CLIState struct {
 	NTP            *NTPConfig
 	SSH            *SSHConfig
 	VTY            *VTYConfig
-	LocalUsers     map[string]*LocalUser
-	VXLAN          *VXLANConfig
-	BGP            *BGPConfig
-	ISIS           *ISISConfig // IS-IS 配置（P1-F，最小启用 + 真实 network/import-route）
-	BFD            *BFDConfig
-	VRF            map[string]*VRFConfig
-	PBR            map[string][]*PBRRule
+	// 注：AAA 本地用户 / 认证方案 / 域配置已迁移至 DeviceConfig 的 "aaa:" 命名空间，
+	// 单一事实源为 DeviceConfig["aaa:local-user:<name>:*"] / ["aaa:authen-scheme:<name>:mode"]
+	// / ["aaa:domain:<name>:*"]（P2 第八项 AAA，save/reload 自动往返）。
+	// ⚠️ 架构铁律：本结构体严禁新增任何 AAA / 本地用户 / 域 / 方案 的内嵌结构体或字段
+	// （设计 §7.1 / P0-2）。旧的本地用户结构体字段与类型已彻底删除，其名字禁止复用；
+	// 相关只读派生视图一律定义在 aaa_eval.go，并且只从 DeviceConfig 即时派生、不缓存。
+	VXLAN *VXLANConfig
+	BGP   *BGPConfig
+	ISIS  *ISISConfig // IS-IS 配置（P1-F，最小启用 + 真实 network/import-route）
+	BFD   *BFDConfig
+	VRF   map[string]*VRFConfig
+	PBR   map[string][]*PBRRule
 	// 注：GRE 隧道配置已迁移至接口视图，单一事实源为
 	// DeviceConfig["interface:<if>:tunnel-protocol"] 与 "interface:<if>:gre-*"（P2 GRE，save/reload 自动往返）。
 	// ⚠️ 架构铁律：本结构体严禁新增任何 GRE / Tunnel 内嵌结构体或字段（设计 §3.1 / AC12）。
@@ -314,14 +331,6 @@ type VTYConfig struct {
 	ProtocolInbound    string // ssh, telnet, all
 }
 
-type LocalUser struct {
-	Name           string
-	Password       string
-	PasswordCipher string
-	ServiceType    string
-	PrivilegeLevel int
-}
-
 type VXLANConfig struct {
 	Enabled     bool
 	VNI         int
@@ -495,7 +504,6 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 			UserPrivilegeLevel: 0,
 			ProtocolInbound:    "all",
 		},
-		LocalUsers: make(map[string]*LocalUser),
 		VXLAN: &VXLANConfig{
 			VSIs:        make(map[string]*VSIConfig),
 			EvpnEnabled: false,

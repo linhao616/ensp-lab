@@ -287,6 +287,15 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		} else if state.CurrentView == ViewDHCPPool {
 			state.CurrentView = ViewSystem
 			state.CurrentSub = ""
+		} else if state.CurrentView == ViewAAAAuthen || state.CurrentView == ViewAAADomain {
+			// 🔴 AAA 嵌套子视图必须在链中**显式列出**（设计 A3 / AC1③）：
+			// 本 if-else 链末尾的 else 会把任何未列出的视图兜底弹回 ViewSystem，
+			// 导致 [R1-aaa-authen-sch1] quit 越级直接回到 [R1]，而真机应回 [R1-aaa]。
+			state.CurrentView = ViewAAA
+			state.CurrentSub = ""
+		} else if state.CurrentView == ViewAAA {
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
 		} else if state.CurrentView == ViewSystem {
 			state.CurrentView = ViewUser
 		} else {
@@ -891,6 +900,18 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				return "Error: incomplete command"
 			}
 			return applyUndoSystemFeature(state, cmd.Args)
+		case ViewAAA, ViewAAAAuthen, ViewAAADomain:
+			// undo local-user / undo {authentication|authorization|accounting}-scheme /
+			// undo domain / undo state（P2 第八项，T5：AAA 视图 undo 语义）。
+			// handled 模式：未命中 AAA 命令族时落到下方统一的 not supported 文案，
+			// 与其它视图口径一致，零回归。
+			if len(cmd.Args) == 0 {
+				return "Error: incomplete command"
+			}
+			if msg, handled := applyUndoAAAInView(state, cmd.Args); handled {
+				return msg
+			}
+			return fmt.Sprintf("Error: undo '%s' is not supported", strings.ToLower(strings.Join(cmd.Args, " ")))
 		default:
 			return "Error: must be in interface view"
 		}
@@ -1739,19 +1760,30 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return fmt.Sprintf("NTP server %s:%d configured", state.NTP.ServerIP, state.NTP.ServerPort)
 	case "authentication-mode":
-		// VTY 视图下设置认证模式
-		if state.CurrentView != ViewVTY {
-			return "Error: must be in VTY user interface view"
+		// 🔴 设计 A2（本期最高危改动）：`authentication-mode` 在真机 VRP 中同时存在于
+		// VTY 用户界面视图与 AAA 认证方案视图。Go 的 switch **不允许**两个同名 case，
+		// 因此本 case 是全仓**唯一**的 authentication-mode 顶层入口，
+		// 严禁为 AAA 另起一个同名 case（编译期 duplicate case 错误）。
+		//
+		// 改为按 CurrentView 分派；ViewVTY 分支逻辑与错误文案**逐字保持**既有实现，
+		// 保证既有 VTY 用例零回归。注意 VRRP 的 authentication-mode 位于
+		// `case "vrrp"` 的内层 switch，不受本改动影响（设计 §1.8 已复核）。
+		switch state.CurrentView {
+		case ViewAAA, ViewAAAAuthen:
+			return applyAAAAuthenticationMode(state, cmd.Args)
+		case ViewVTY:
+			if len(cmd.Args) < 1 {
+				return "Error: usage: authentication-mode aaa|password|none"
+			}
+			authMode := strings.ToLower(cmd.Args[0])
+			if authMode != "aaa" && authMode != "password" && authMode != "none" {
+				return "Error: usage: authentication-mode aaa|password|none"
+			}
+			state.VTY.AuthenticationMode = authMode
+			return fmt.Sprintf("Authentication-mode set to %s", authMode)
+		default:
+			return ErrMustBeInVTY
 		}
-		if len(cmd.Args) < 1 {
-			return "Error: usage: authentication-mode aaa|password|none"
-		}
-		authMode := strings.ToLower(cmd.Args[0])
-		if authMode != "aaa" && authMode != "password" && authMode != "none" {
-			return "Error: usage: authentication-mode aaa|password|none"
-		}
-		state.VTY.AuthenticationMode = authMode
-		return fmt.Sprintf("Authentication-mode set to %s", authMode)
 	case "user privilege":
 		// VTY 视图下设置用户优先级
 		if state.CurrentView != ViewVTY {
@@ -1781,37 +1813,32 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		state.VTY.ProtocolInbound = protocol
 		return fmt.Sprintf("Protocol inbound set to %s", protocol)
 	case "local-user":
-		// 系统视图下创建本地用户
-		if state.CurrentView != ViewSystem {
-			return "Error: must be in system view"
-		}
-		if len(cmd.Args) < 1 {
-			return "Error: usage: local-user <name> [password cipher <pwd>|service-type <type>]"
-		}
-		userName := cmd.Args[0]
-		if state.LocalUsers == nil {
-			state.LocalUsers = make(map[string]*LocalUser)
-		}
-		if _, ok := state.LocalUsers[userName]; !ok {
-			state.LocalUsers[userName] = &LocalUser{Name: userName}
-		}
-		// 解析后续参数
-		for i := 1; i < len(cmd.Args); i++ {
-			switch strings.ToLower(cmd.Args[i]) {
-			case "password":
-				if i+2 < len(cmd.Args) && strings.ToLower(cmd.Args[i+1]) == "cipher" {
-					state.LocalUsers[userName].PasswordCipher = cmd.Args[i+2]
-					state.LocalUsers[userName].Password = cmd.Args[i+2]
-					i += 2
-				}
-			case "service-type":
-				if i+1 < len(cmd.Args) {
-					state.LocalUsers[userName].ServiceType = cmd.Args[i+1]
-					i++
-				}
-			}
-		}
-		return fmt.Sprintf("Local user %s created", userName)
+		// P2 第八项 AAA（拍板 C1）：本地用户不再是系统视图的自造命令。
+		// 旧实现在系统视图直接写 CLIState 的本地用户结构体 map（不落盘，save→reload 100% 丢失），
+		// 且成功时回显自造的欢快文案（非 VRP 风格，真机为静默）——两者一并整改。
+		// 现统一由 AAA 视图承载；非 AAA 视图一律返回 ErrAAAViewFirst 引导，且不写任何键。
+		return applyAAALocalUser(state, cmd.Args)
+	case "aaa":
+		// 系统视图进入 AAA 视图（P0-1）。VRP 风格：成功静默。
+		return applyAAAEnterView(state)
+	case "authentication-scheme":
+		// 双语义按视图分派：AAA 视图=建方案并进子视图；域子视图=绑定（引用完整性硬校验）。
+		return applyAAAAuthenticationScheme(state, cmd.Args)
+	case "authorization-scheme":
+		return applyAAAAuthorizationScheme(state, cmd.Args)
+	case "accounting-scheme":
+		return applyAAAAccountingScheme(state, cmd.Args)
+	case "authorization-mode":
+		return applyAAAAuthorizationMode(state, cmd.Args)
+	case "accounting-mode":
+		return applyAAAAccountingMode(state, cmd.Args)
+	case "domain":
+		// 注：m-lag 的 `domain <id>` 位于 `case "m-lag"` 的**内层** switch（parser.go:1282），
+		// 与本顶层 case 无命名冲突（设计 §1.8 已复核）。
+		return applyAAADomain(state, cmd.Args)
+	case "state":
+		// AAA 域子视图：state { active | block }。
+		return applyAAADomainState(state, cmd.Args)
 	case "stelnet":
 		// 系统视图下启用 STelnet 服务
 		if state.CurrentView != ViewSystem {
@@ -3414,17 +3441,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 						out.WriteString(fmt.Sprintf("User: %s, Auth-Type: %s\n", user.Name, user.AuthType))
 					}
 				}
-				if len(state.LocalUsers) > 0 {
-					out.WriteString("\nLocal Users:\n")
-					out.WriteString("----------------------------------------------------\n")
-					for _, user := range state.LocalUsers {
-						svcType := user.ServiceType
-						if svcType == "" {
-							svcType = "None"
-						}
-						out.WriteString(fmt.Sprintf("User: %s, Service-Type: %s, Privilege: %d\n", user.Name, svcType, user.PrivilegeLevel))
-					}
-				}
+				// Local Users 段改读 AAA 新事实源（P2 第八项 T7 / A11）：
+				// 旧实现随机遍历本地用户结构体 map 且 `Privilege: %d` 恒打印假 0，
+				// 现由 fixSSHLocalUsersDisplay 统一输出（名称升序 + 口令脱敏 + 诚实注记）。
+				out.WriteString(fixSSHLocalUsersDisplay(state))
 				return out.String()
 			}
 			var out strings.Builder
@@ -3546,6 +3566,21 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// GRE 隧道汇总（P2 第七项，C6 重定向落点）：旧自造 display gre 重定向到
 			// display gre tunnel 新实现（只读，无副作用，确定性升序，AC7）。
 			return buildGREDisplay(state, cmd.Args[1:])
+		case "aaa":
+			// AAA 汇总（P2 第八项，P0-12）：只读、名称升序、末尾附诚实注记。
+			return buildAAADisplay(state)
+		case "local-user":
+			// 本地用户表（P0-12/P0-13）：口令恒脱敏 ****，未配口令显示 -，
+			// privilege 未配显示 - 而非假 0。
+			return buildAAALocalUserDisplay(state)
+		case "domain":
+			// AAA 域汇总 / 详情（P1-7）。域名大小写敏感，故取原始 cmd.Args[1]
+			// 而非已 ToLower 的 arg1。
+			domainName := ""
+			if len(cmd.Args) > 1 {
+				domainName = cmd.Args[1]
+			}
+			return buildAAADomainDisplay(state, domainName)
 		case "qos":
 			var out strings.Builder
 			out.WriteString(fmt.Sprintf("QoS: %s\n", func() string {
@@ -5016,6 +5051,15 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 	}
 	feature := strings.ToLower(args[0])
 	switch feature {
+	case "aaa":
+		// 🔴 P2 第八项 T5 / AC12：级联清理整个 aaa: 命名空间。
+		// 实现内部使用**精确前缀** "aaa:"（含尾冒号），绝不误伤端口安全的
+		// interface:...:port-security-sticky-learned:00e0-fc12-0aaa 等含 "aaa" 子串的异族键。
+		msg, _ := applyUndoAAA(state, args)
+		return msg
+	case "local-user":
+		// C1 一致性：本地用户已迁至 AAA 视图，系统视图下的 undo 同样引导而非静默处理。
+		return ErrAAAViewFirst
 	case "ospf":
 		state.OSPF.Enabled = false
 		state.OSPF.ProcessID = 0
@@ -5140,6 +5184,15 @@ func GetPrompt(state *CLIState, deviceName string) string {
 		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
 	case ViewDHCPPool:
 		return fmt.Sprintf("[%s-dhcp-pool-%s]", deviceName, state.CurrentSub)
+	case ViewAAA:
+		// [<dev>-aaa]
+		return fmt.Sprintf("[%s-aaa]", deviceName)
+	case ViewAAAAuthen:
+		// CurrentSub 形如 "authen-sch1" / "author-x" / "acct-y"，
+		// 故提示符恰为 [<dev>-aaa-authen-sch1]（PRD §4.1）。
+		return fmt.Sprintf("[%s-aaa-%s]", deviceName, state.CurrentSub)
+	case ViewAAADomain:
+		return fmt.Sprintf("[%s-aaa-domain-%s]", deviceName, state.CurrentSub)
 	}
 	return fmt.Sprintf("[%s]", deviceName)
 }
@@ -5391,6 +5444,13 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 
 	// 系统级 STP 配置块（方案 A：单事实源 DeviceConfig，随快照完整复现，修 P0-1 丢配置）。
 	if s := buildSavedSTPConfig(state); s != "" {
+		b.WriteString(s)
+	}
+
+	// 系统级 AAA 配置块（P2 第八项 P1-5）：单事实源 DeviceConfig 的 "aaa:" 命名空间，
+	// 位于接口块循环**之前**，与 STP 块同属系统级块区。
+	// 🔴 口令行输出 `password cipher ****`（P0-13），该快照不可回灌。
+	if s := buildSavedAAAConfig(state); s != "" {
 		b.WriteString(s)
 	}
 
