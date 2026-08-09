@@ -2962,14 +2962,23 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 
 			if isBrief {
-				out.WriteString("Interface                   PHY   Protocol   Rate      Description\n")
-				out.WriteString("------------------------------------------------------------------------\n")
+				// 对齐真机华为 VRP：`display interface brief` 输出「图例块 + 表头 + 数据行」，
+				// 既没有破折号分隔线，也没有 Rate / Description 两列（那是本项目早期自造的），
+				// 真机列为 PHY / Protocol / InUti / OutUti / inErrors / outErrors。
+				out.WriteString(interfaceBriefLegend)
+				out.WriteString(interfaceBriefHeader)
+				// 确定性排序：LoopBack → Vlanif → 其余物理口，同类内按**自然序**
+				// （接口编号做数值比较，0/0/3 在 0/0/24 之前，对齐真机 VRP）。
+				// 与 display ip interface brief 共用 sortInterfaceNames，口径完全一致，
+				// 同时避免 map 迭代顺序随机导致输出抖动。
+				briefNames := make([]string, 0, len(ifaceMap))
+				for name := range ifaceMap {
+					briefNames = append(briefNames, name)
+				}
+				sortInterfaceNames(briefNames)
 				tunnelSeen := false
-				for _, iface := range ifaceMap {
-					ip := iface.IP
-					if ip == "" {
-						ip = "unassigned"
-					}
+				for _, name := range briefNames {
+					iface := ifaceMap[name]
 					physical := "up"
 					if iface.Status == "Down" || iface.Status == "down" {
 						physical = "down"
@@ -2980,25 +2989,14 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 						protocol = greLineProtocolBrief(EvaluateGRE(state, iface.Name).Config)
 						tunnelSeen = true
 					}
-					speed := iface.Speed
-					if speed == "" {
-						if strings.Contains(iface.Name, "10GE") || strings.Contains(iface.Name, "10ge") {
-							speed = "10G"
-						} else if strings.Contains(iface.Name, "GE") || strings.Contains(iface.Name, "ge") {
-							speed = "1G"
-						} else if strings.Contains(iface.Name, "Ethernet") {
-							speed = "100M"
-						} else {
-							speed = "-"
-						}
-					}
-					desc := iface.Description
-					if desc == "" {
-						desc = "-"
-					}
-					out.WriteString(fmt.Sprintf("%-27s %-5s %-10s %-10s %s\n", iface.Name, physical, protocol, speed, desc))
+					// 诚实占位：lite 引擎不做真实数据平面，无法统计真实利用率与错误计数，
+					// 故一律输出零值（0% / 0），严禁编造随机数字。
+					out.WriteString(fmt.Sprintf(interfaceBriefRowFormat,
+						iface.Name, physical, protocol,
+						interfaceBriefZeroUtil, interfaceBriefZeroUtil,
+						interfaceBriefZeroCount, interfaceBriefZeroCount))
 				}
-				// 仅当输出中存在至少一个 Tunnel 口时才追加脚注；无 Tunnel 口时输出逐字不变（零回归）。
+				// 仅当输出中存在至少一个 Tunnel 口时才追加脚注；无 Tunnel 口时不输出（零回归）。
 				if tunnelSeen {
 					out.WriteString("* Tunnel protocol state is derived from local configuration only.\n")
 				}
@@ -5688,6 +5686,45 @@ func buildSavedVRRPConfig(state *CLIState, iface string) string {
 // displayIPInterface 渲染 `display ip interface [brief]` 的输出。
 // brief=true 时输出华为 VRP 风格的简表（含 IP/Mask、Physical、Protocol），
 // 否则输出含 Description 的明细表。输出格式与历史版本保持一致。
+// —— display interface brief 的真机 VRP 输出规格 ——
+//
+// 真机（华为 AR/S 系列 VRP）`display interface brief` 的输出结构为：
+//
+//	<图例块>
+//	Interface                   PHY   Protocol InUti OutUti   inErrors  outErrors
+//	GigabitEthernet0/0/0        up    up          0%     0%          0          0
+//
+// 注意真机**没有**破折号分隔线，也**没有** Rate / Description 两列。
+// 表头与数据行共用同一个格式串（interfaceBriefRowFormat），从而在编译期就保证
+// 每一列的表头与取值严格对齐（列起始位：Interface=0 / PHY=28 / Protocol=34 /
+// InUti=43 / OutUti=49 / inErrors=58 / outErrors=68）。
+const (
+	// interfaceBriefRowFormat 是 brief 表头与数据行共用的列格式串。
+	interfaceBriefRowFormat = "%-27s %-5s %-8s %5s %6s %10s %10s\n"
+	// interfaceBriefZeroUtil / interfaceBriefZeroCount 是诚实占位值：
+	// Windows 侧 lite 引擎不实现真实数据平面，无法统计真实利用率与错误计数，
+	// 因此统一输出零值，而不是编造随机数字。
+	interfaceBriefZeroUtil  = "0%"
+	interfaceBriefZeroCount = "0"
+	// interfaceBriefLegend 是真机 brief 输出开头的图例块（逐行对齐真机文案）。
+	interfaceBriefLegend = "PHY: Physical\n" +
+		"*down: administratively down\n" +
+		"^down: standby\n" +
+		"(l): loopback\n" +
+		"(s): spoofing\n" +
+		"(b): BFD down\n" +
+		"(e): ETHOAM down\n" +
+		"(d): Dampening Suppressed\n" +
+		"(p): port alarm down\n" +
+		"(dl): DLDP down\n" +
+		"InUti/OutUti: input utility rate/output utility rate\n"
+)
+
+// interfaceBriefHeader 由 interfaceBriefRowFormat 渲染表头 token 得到，
+// 与数据行使用完全相同的列宽，因此不存在"表头与数据错位"的可能。
+var interfaceBriefHeader = fmt.Sprintf(interfaceBriefRowFormat,
+	"Interface", "PHY", "Protocol", "InUti", "OutUti", "inErrors", "outErrors")
+
 // ifaceCategory 用于 display ip interface 的确定性排序：
 // 0=LoopBack，1=Vlanif/Vlan，2=其余物理口。贴近华为 VRP 输出顺序。
 func ifaceCategory(name string) int {
@@ -5699,6 +5736,84 @@ func ifaceCategory(name string) int {
 	default:
 		return 2
 	}
+}
+
+// naturalLess 对接口名做「自然序」比较（natural order / human order）。
+//
+// 真机华为 VRP 按接口编号的**数值**排序，而不是字符串字典序。若用字典序，
+// GigabitEthernet0/0/24 会排在 GigabitEthernet0/0/3 之前（因为字符 '2' < '3'），
+// 与真机不符，会误导照着课程练习的用户。
+//
+// 实现：把字符串切成「非数字段」与「数字段」交替的序列，逐段比较——
+// 非数字段按字节串比较，数字段按数值比较（因此 3 < 10 < 24）。
+// 数字段用 strings 逐字符扫描而不 strconv.Atoi，可天然容忍任意长度的编号
+// （不会因超出 int64 而溢出），前导零也不影响数值比较。
+func naturalLess(a, b string) bool {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		ai, bi := isASCIIDigit(a[i]), isASCIIDigit(b[j])
+		if ai != bi {
+			// 一边是数字一边不是：直接按字节比较，保证结果确定。
+			return a[i] < b[j]
+		}
+		if !ai {
+			// 都是非数字：逐字符比较。
+			if a[i] != b[j] {
+				return a[i] < b[j]
+			}
+			i++
+			j++
+			continue
+		}
+		// 都是数字：各自取完整数字段，先比有效长度（跳过前导零）再比字面。
+		as, ae := i, i
+		for ae < len(a) && isASCIIDigit(a[ae]) {
+			ae++
+		}
+		bs, be := j, j
+		for be < len(b) && isASCIIDigit(b[be]) {
+			be++
+		}
+		// 跳过前导零后的有效数字串。
+		for as < ae-1 && a[as] == '0' {
+			as++
+		}
+		for bs < be-1 && b[bs] == '0' {
+			bs++
+		}
+		aNum, bNum := a[as:ae], b[bs:be]
+		if len(aNum) != len(bNum) {
+			// 有效位数不同 → 位数少的数值小。
+			return len(aNum) < len(bNum)
+		}
+		if aNum != bNum {
+			// 位数相同 → 字典序即数值序。
+			return aNum < bNum
+		}
+		i, j = ae, be
+	}
+	// 一方是另一方的前缀 → 短的在前。
+	return len(a)-i < len(b)-j
+}
+
+// isASCIIDigit 判断字节是否为 ASCII 数字。
+func isASCIIDigit(c byte) bool {
+	return c >= '0' && c <= '9'
+}
+
+// sortInterfaceNames 就地按华为 VRP 口径排序接口名：
+// 先按类别（LoopBack → Vlanif → 物理口），同类内按自然序（数字段做数值比较）。
+//
+// display interface brief 与 display ip interface brief 共用此函数，
+// 保证两个命令的接口顺序完全一致。
+func sortInterfaceNames(names []string) {
+	sort.Slice(names, func(i, j int) bool {
+		ci, cj := ifaceCategory(names[i]), ifaceCategory(names[j])
+		if ci != cj {
+			return ci < cj
+		}
+		return naturalLess(names[i], names[j])
+	})
 }
 
 // parseInterface 在已有接口列表中做大小写不敏感匹配，返回规范（原大小写）的接口名。
@@ -5832,18 +5947,14 @@ func displayIPInterface(state *CLIState, brief bool, filterIface string) string 
 		ifaceIPMap = map[string]*ifaceIPInfo{filterIface: info}
 	}
 
-	// 确定性排序：LoopBack → Vlanif → 其余物理口（同类按名称）
+	// 确定性排序：LoopBack → Vlanif → 其余物理口，同类内按**自然序**
+	// （接口编号做数值比较，0/0/3 在 0/0/24 之前，对齐真机 VRP）。
+	// 与 display interface brief 共用 sortInterfaceNames，口径完全一致。
 	names := make([]string, 0, len(ifaceIPMap))
 	for n := range ifaceIPMap {
 		names = append(names, n)
 	}
-	sort.Slice(names, func(i, j int) bool {
-		ci, cj := ifaceCategory(names[i]), ifaceCategory(names[j])
-		if ci != cj {
-			return ci < cj
-		}
-		return names[i] < names[j]
-	})
+	sortInterfaceNames(names)
 
 	var out strings.Builder
 	if brief {

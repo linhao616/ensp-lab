@@ -1878,13 +1878,14 @@ body.resizing-ns * {
   z-index: 2;
 }
 
-/* 确保最大化/最小化/关闭等控制按钮始终位于最上层且可点击，
-   避免被任何可能覆盖标题栏区域的浮层拦截（修复“放大后无法缩小”） */
+/* 控制按钮条：右对齐（margin-left:auto），含最小化/最大化还原/关闭三个按钮。
+   合并了原文件中两处重复定义（1883 行与 1929 行）为单一声明块。 */
 .fw-ctrls {
-  position: relative;
-  z-index: 3;
+  margin-left: auto;
   display: flex;
   gap: 2px;
+  position: relative;
+  z-index: 3;
 }
 .fw-ctrls .fw-btn {
   position: relative;
@@ -1924,12 +1925,6 @@ body.resizing-ns * {
 .fw-check {
   color: #4caf50;
   font-weight: 700;
-}
-
-.fw-ctrls {
-  margin-left: auto;
-  display: flex;
-  gap: 2px;
 }
 
 .fw-btn {
@@ -2583,7 +2578,11 @@ body.resizing-ns * {
 .win-taskbar {
   position: fixed;
   top: 54px;
-  right: 14px;
+  /* 当任意窗口最大化时，FloatWindow 通过 --fw-ctrls-width 自属性通知
+     控制按钮条宽度（76px），任务栏据此左移避让，避免 z-index=100000
+     的任务栏覆盖窗口控制按钮（最小化/最大化还原/关闭）。
+     未定义时（无窗口最大化）回退到原始 right 值。 */
+  right: calc(14px + var(--fw-ctrls-width, 0px));
   z-index: 100000;
   display: flex;
   flex-wrap: wrap;
