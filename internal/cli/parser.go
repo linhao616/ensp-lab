@@ -1771,6 +1771,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		switch state.CurrentView {
 		case ViewAAA, ViewAAAAuthen:
 			return applyAAAAuthenticationMode(state, cmd.Args)
+		case ViewAAADomain:
+			// OBS-1：域子视图下敲 authentication-mode 属误用（正确命令是
+			// `authentication-scheme <name>` 绑定方案），引导到正确入口，
+			// 不得回 VTY 文案（教学误导）。系统视图仍走下方 default → ErrMustBeInVTY。
+			return ErrAuthSchemeFirst
 		case ViewVTY:
 			if len(cmd.Args) < 1 {
 				return "Error: usage: authentication-mode aaa|password|none"

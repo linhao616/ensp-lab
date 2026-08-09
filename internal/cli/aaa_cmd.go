@@ -115,8 +115,14 @@ func applyAAALocalUser(state *CLIState, args []string) string {
 		return errAAANotSupported(string(state.DeviceType))
 	}
 	// ③ 前置条件守卫：必须有用户名 + 至少一个属性。
+	//
+	// 🔴 AC7⑥：仅敲 `local-user` 或只给用户名未给属性（如 `local-user admin`）
+	// 属「缺参」，统一给 usage: 文案（而非 "unrecognized command"），
+	// 与 password / state / service-type 的缺参口径一致（PRD §5 AC7⑥）。
+	// 仍保留：用户名 + 属性都给了但属性非法（如 `local-user admin foobar x`）
+	// → ErrUnrecognized（不创建用户、不写键，AC7⑤）。
 	if len(args) < 2 {
-		return ErrUnrecognized
+		return ErrLocalUserUsage
 	}
 	name := args[0]
 	if name == "" || strings.ContainsAny(name, ":\t ") {
@@ -162,8 +168,17 @@ func applyAAALocalUserPassword(state *CLIState, name string, rest []string) stri
 
 // applyAAALocalUserPrivilege 处理 `local-user <name> privilege level <0..15>`。
 func applyAAALocalUserPrivilege(state *CLIState, name string, rest []string) string {
-	if len(rest) < 2 || strings.ToLower(rest[0]) != "level" {
+	if len(rest) == 0 {
+		// 缺整个 `level <n>` → 缺参，给 usage:（AC7⑥）。
+		return ErrPrivilegeUsage
+	}
+	if strings.ToLower(rest[0]) != "level" {
+		// 给了非 level 关键字（如 `privilege 16`）→ 未知属性，不写键（AC7⑤）。
 		return ErrUnrecognized
+	}
+	if len(rest) < 2 {
+		// 有 level 关键字但缺级别值（如 `privilege level`）→ 缺参，给 usage:（AC7⑥）。
+		return ErrPrivilegeUsage
 	}
 	if !aaaValidPrivilege(rest[1]) {
 		return ErrPrivilegeRange

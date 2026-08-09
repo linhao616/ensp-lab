@@ -773,13 +773,13 @@ func TestAAAITMissingArgsUsage(t *testing.T) {
 		line string
 		want string
 	}{
-		{"local-user", ErrUnrecognized},
-		{"local-user admin", ErrUnrecognized},
+		{"local-user", ErrLocalUserUsage},
+		{"local-user admin", ErrLocalUserUsage},
 		{"local-user admin password", ErrPasswordUsage},
 		{"local-user admin password cipher", ErrPasswordUsage},
-		// privilege 缺 level 关键字 / 缺取值 → 语法不完整，按未知子属性口径硬拒绝。
-		{"local-user admin privilege", ErrUnrecognized},
-		{"local-user admin privilege level", ErrUnrecognized},
+		// privilege 缺 level 关键字 / 缺取值 → 缺参，按 AC7⑥ 统一口径给 usage:。
+		{"local-user admin privilege", ErrPrivilegeUsage},
+		{"local-user admin privilege level", ErrPrivilegeUsage},
 		{"local-user admin state", ErrStateUsage},
 		// service-type 缺参走独立 usage 文案（不得复用 ErrServiceType 渲染出空类型名）。
 		{"local-user admin service-type", ErrServiceTypeUsage},
