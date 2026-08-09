@@ -397,6 +397,25 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return "Enter interface view"
 		}
 
+		// —— Tunnel 逻辑口分支（P2 GRE，改动点 #10 / A4）——
+		// Tunnel 是逻辑口，协议态（Protocol）一律 display 期派生（greLineProtocolState），
+		// **绝不在此硬编码 "Protocol":"Up"**（旧基线即此缺陷，AC9③）。
+		// 仅写管理态 :status="Up"（真实，shutdown 可改写）；不写 Protocol 字段。
+		if isTunnelInterface(ifName) {
+			state.CurrentView = ViewInterface
+			state.CurrentSub = ifName
+			if _, ok := state.DeviceConfig[fmt.Sprintf("interface:%s:status", ifName)]; !ok {
+				state.DeviceConfig[fmt.Sprintf("interface:%s:status", ifName)] = "Up"
+			}
+			if state.Interfaces == nil {
+				state.Interfaces = make(map[string]*InterfaceConfig)
+			}
+			if _, ok := state.Interfaces[ifName]; !ok {
+				state.Interfaces[ifName] = &InterfaceConfig{Name: ifName, Status: "Up"}
+			}
+			return "Enter interface view"
+		}
+
 		state.CurrentView = ViewInterface
 		state.CurrentSub = ifName
 		// 初始化接口配置（如果不存在）
@@ -830,6 +849,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// undo dhcp select / undo dhcp relay ...（P2 #6，T2：DHCP 中继接口视图 undo 语义）。
 			// handled 模式：未命中 dhcp 前缀时交回下方既有 undo 分支，零回归。
 			if msg, handled := applyUndoDHCPInterface(state, cmd.Args); handled {
+				return msg
+			}
+			// undo tunnel-protocol / undo source / undo destination / undo gre key /
+			// undo gre checksum / undo keepalive（P2 第七项，T2：GRE 接口视图 undo 语义）。
+			// handled 模式：未命中 GRE 前缀时交回下方既有 undo 分支，零回归。
+			if msg, handled := applyUndoGREInterface(state, cmd.Args); handled {
 				return msg
 			}
 			switch sub {
@@ -2260,36 +2285,23 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return fmt.Sprintf("PBR rule %d added to policy %s%s", ruleID, policyName, warn.String())
 		}
 		return "Error: invalid PBR config"
+	case "tunnel-protocol", "source", "destination", "keepalive":
+		// GRE 隧道配置命令族（P2 第七项，T2 改动点 #3）：全部为 Tunnel 接口视图命令。
+		// 顶层合并 case → applyGREInterfaceCmd 分派；三态守卫（视图→设备→GRE 前置）在其内施加。
+		return applyGREInterfaceCmd(state, strings.ToLower(cmd.Command), cmd.Args)
 	case "gre":
-		if state.CurrentView != ViewSystem {
-			return "Error: must be in system view"
+		// GRE 隧道命令族（P2 第七项，华为 VRP 课程 69，T0 改动点 #1 / C1）。
+		// 自造系统视图命令（旧 baseline）已废除：系统视图执行 → 报错引导，
+		// 不写任何 DeviceConfig 键（AC3）；接口视图 → 分派到 applyGREInterfaceCmd
+		// 处理 gre key / gre checksum（tunnel-protocol / source / destination / keepalive
+		// 由顶层合并 case 分派）。
+		if state.CurrentView == ViewInterface {
+			return applyGREInterfaceCmd(state, "gre", cmd.Args)
 		}
-		if len(cmd.Args) >= 3 {
-			tunnelName := cmd.Args[0]
-			srcIP := cmd.Args[1]
-			destIP := cmd.Args[2]
-			key := 0
-			keepalive := false
-			var warn strings.Builder
-			if len(cmd.Args) >= 4 {
-				if n, err := parseNum(cmd.Args[3]); err == nil {
-					key = n
-				} else {
-					warn.WriteString(fmt.Sprintf(" [warn: invalid key %q, used 0]", cmd.Args[3]))
-				}
-			}
-			if len(cmd.Args) >= 5 && strings.ToLower(cmd.Args[4]) == "keepalive" {
-				keepalive = true
-			}
-			state.GRE[tunnelName] = &GREConfig{
-				SourceIP:  srcIP,
-				DestIP:    destIP,
-				Key:       key,
-				Keepalive: keepalive,
-			}
-			return fmt.Sprintf("GRE tunnel %s created%s", tunnelName, warn.String())
+		if state.CurrentView == ViewSystem {
+			return errGRESystemViewGuide
 		}
-		return "Error: invalid GRE config"
+		return errGREMustBeInterface
 	case "qos":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2952,6 +2964,7 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			if isBrief {
 				out.WriteString("Interface                   PHY   Protocol   Rate      Description\n")
 				out.WriteString("------------------------------------------------------------------------\n")
+				tunnelSeen := false
 				for _, iface := range ifaceMap {
 					ip := iface.IP
 					if ip == "" {
@@ -2962,6 +2975,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 						physical = "down"
 					}
 					protocol := physical
+					// 改动点 #11：Tunnel 口协议态改为诚实短态（up*/down），非 Tunnel 口逐字不变。
+					if isTunnelInterface(iface.Name) {
+						protocol = greLineProtocolBrief(EvaluateGRE(state, iface.Name).Config)
+						tunnelSeen = true
+					}
 					speed := iface.Speed
 					if speed == "" {
 						if strings.Contains(iface.Name, "10GE") || strings.Contains(iface.Name, "10ge") {
@@ -2979,6 +2997,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 						desc = "-"
 					}
 					out.WriteString(fmt.Sprintf("%-27s %-5s %-10s %-10s %s\n", iface.Name, physical, protocol, speed, desc))
+				}
+				// 仅当输出中存在至少一个 Tunnel 口时才追加脚注；无 Tunnel 口时输出逐字不变（零回归）。
+				if tunnelSeen {
+					out.WriteString("* Tunnel protocol state is derived from local configuration only.\n")
 				}
 			} else if specifiedIface != "" {
 				// 显示指定接口的详细信息
@@ -2998,7 +3020,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 					status = "UP"
 				}
 				out.WriteString(fmt.Sprintf("%s current state : %s\n", targetIface.Name, status))
-				out.WriteString("Line protocol current state : UP\n")
+				// A11：Tunnel 口协议态 display 期诚实派生（C4），不写键；非 Tunnel 口逐字不变。
+				if isTunnelInterface(targetIface.Name) {
+					out.WriteString(fmt.Sprintf("Line protocol current state : %s\n", EvaluateGRE(state, targetIface.Name).LineProtocol))
+				} else {
+					out.WriteString("Line protocol current state : UP\n")
+				}
 				out.WriteString("Last line protocol up time : 0 days 0 hours 0 minutes\n")
 				out.WriteString("\n")
 				out.WriteString("Description : ")
@@ -3038,6 +3065,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				} else {
 					out.WriteString("not set\n")
 				}
+				// A11：Tunnel 口在 Internet Address 行后追加 GRE 详情块（含 --- Tunnel runtime
+				// statistics --- 5 字段恒 - 与 greSimNote()）；非 Tunnel 口返回 ""，逐字不变。
+				out.WriteString(buildGREInterfaceSection(state, targetIface.Name))
 				out.WriteString("\n")
 				out.WriteString("Statistics last cleared: Never\n")
 				out.WriteString("\n")
@@ -3515,20 +3545,9 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "gre":
-			var out strings.Builder
-			if len(state.GRE) > 0 {
-				out.WriteString("GRE Tunnels:\n")
-				for name, tunnel := range state.GRE {
-					out.WriteString(fmt.Sprintf("  %s:\n", name))
-					out.WriteString(fmt.Sprintf("    Source: %s\n", tunnel.SourceIP))
-					out.WriteString(fmt.Sprintf("    Destination: %s\n", tunnel.DestIP))
-					out.WriteString(fmt.Sprintf("    Key: %d\n", tunnel.Key))
-					out.WriteString(fmt.Sprintf("    Keepalive: %t\n", tunnel.Keepalive))
-				}
-			} else {
-				out.WriteString("GRE: Not configured\n")
-			}
-			return out.String()
+			// GRE 隧道汇总（P2 第七项，C6 重定向落点）：旧自造 display gre 重定向到
+			// display gre tunnel 新实现（只读，无副作用，确定性升序，AC7）。
+			return buildGREDisplay(state, cmd.Args[1:])
 		case "qos":
 			var out strings.Builder
 			out.WriteString(fmt.Sprintf("QoS: %s\n", func() string {
@@ -5038,6 +5057,11 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 	case "stp":
 		return applyUndoSTP(state, args)
 	case "interface":
+		// undo interface Tunnel<x>（P2 GRE，改动点 #8 / AC10③）：
+		// 在调用 applyUndoInterfaceTrunk 之前拦截 Tunnel 口，lag_cmd.go 零改动 → Eth-Trunk 结构性零回归。
+		if msg, handled := applyUndoInterfaceTunnel(state, args); handled {
+			return msg
+		}
 		// undo interface Eth-Trunk <id>（P2 #5，T04 改动点 12 / AC11）：
 		// 存在成员时必须拒绝，无成员才允许删除并清理 interface:Eth-Trunk<id>:* 全部键。
 		return applyUndoInterfaceTrunk(state, args)
@@ -5435,6 +5459,11 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			if dhcpLines := buildSavedDHCPRelayInterfaceConfig(state, ifc.Name); dhcpLines != "" {
 				b.WriteString(dhcpLines)
 			}
+			// GRE 隧道（P2 第七项，T4 改动点 #9）：输出 tunnel-protocol / source / destination /
+			// gre key / keepalive / gre checksum 差异值行（缺省值不冗余）。
+			if greLines := buildSavedGREInterfaceConfig(state, ifc.Name); greLines != "" {
+				b.WriteString(greLines)
+			}
 		}
 		b.WriteString("#\n")
 	}
@@ -5462,6 +5491,12 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 	// display current-configuration 完整复现中继配置（AC7 字节级一致）。
 	if dhcpLines := buildSavedDHCPRelayConfig(state); dhcpLines != "" {
 		b.WriteString(dhcpLines)
+	}
+	// 独立 GRE 隧道输出通道（P2 第七项，T4 改动点 #9）：对「拥有 GRE 配置但
+	// state.Interfaces 未重建」的 Tunnel 口补齐 interface 块，保证 save→reload 后
+	// display current-configuration 完整复现 GRE 配置（AC2 ③）。
+	if greLines := buildSavedGREConfig(state); greLines != "" {
+		b.WriteString(greLines)
 	}
 
 	for _, r := range state.Routes {

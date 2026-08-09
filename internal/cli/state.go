@@ -69,18 +69,20 @@ type CLIState struct {
 	BFD            *BFDConfig
 	VRF            map[string]*VRFConfig
 	PBR            map[string][]*PBRRule
-	GRE            map[string]*GREConfig
-	QoS            *QoSConfig
-	Dot1x          *Dot1xConfig
-	RADIUS         *RADIUSConfig
-	NetFlow        *NetFlowConfig
-	ARPTable       []*ARPEntry
-	NATTable       []*NATEntry
-	NAT            *NATConfig
-	VLANs          map[int]*VLANConfig
-	MACTable       []*MACEntry
-	Interfaces     map[string]*InterfaceConfig
-	DHCP           *DHCPConfig
+	// 注：GRE 隧道配置已迁移至接口视图，单一事实源为
+	// DeviceConfig["interface:<if>:tunnel-protocol"] 与 "interface:<if>:gre-*"（P2 GRE，save/reload 自动往返）。
+	// ⚠️ 架构铁律：本结构体严禁新增任何 GRE / Tunnel 内嵌结构体或字段（设计 §3.1 / AC12）。
+	QoS        *QoSConfig
+	Dot1x      *Dot1xConfig
+	RADIUS     *RADIUSConfig
+	NetFlow    *NetFlowConfig
+	ARPTable   []*ARPEntry
+	NATTable   []*NATEntry
+	NAT        *NATConfig
+	VLANs      map[int]*VLANConfig
+	MACTable   []*MACEntry
+	Interfaces map[string]*InterfaceConfig
+	DHCP       *DHCPConfig
 	// 注：接口 DHCP 模式（dhcp select）已迁移至接口视图，单一事实源为
 	// DeviceConfig["interface:<iface>:dhcp-select"]（P2 #6，save/reload 自动往返）。
 	// ⚠️ 架构铁律：本结构体严禁新增任何 DHCP 中继内嵌结构体或模式字段。
@@ -379,13 +381,6 @@ type PBRRule struct {
 	Interface string
 }
 
-type GREConfig struct {
-	SourceIP  string
-	DestIP    string
-	Key       int
-	Keepalive bool
-}
-
 type QoSClassifier struct {
 	Name string
 	ACL  string
@@ -518,7 +513,6 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 		},
 		VRF: make(map[string]*VRFConfig),
 		PBR: make(map[string][]*PBRRule),
-		GRE: make(map[string]*GREConfig),
 		QoS: &QoSConfig{
 			Enabled:     false,
 			Classifiers: make(map[string]*QoSClassifier),

@@ -81,15 +81,15 @@
 | OSPF（多区域 / DR / cost / 认证） | OSPF 模拟、`display ospf peer/route` | ✅ 已实现 | P1-F；输出格式待逐帧校验 |
 | BGP / ISIS | 路由协议 | ✅ 已实现 | P1-F（`undo isis`、reload 已修） |
 | **高级ACL + 防火墙** | `acl_eval.go` 路径 ACL、隐式 deny any、方向模型 | ✅ 已实现 | **P1-C 交付**；视频 37 为验收 oracle |
-| 静态 / 动态 NAT | `evaluateNATACL` | 🟠 部分（P2 空桩） | 设计就位，未实现匹配逻辑 |
+| 静态 / 动态 NAT | `evaluateNATACL` | ✅ 已实现 | **P2 交付**（v0.6.0）；视频 38 为验收 oracle |
 | VLAN / Hybrid / MAC-VLAN | `vlan`、access/trunk/hybrid、`display vlan` | 🟡 待校验 | 需据视频 50/51/52 校验输出 |
 | IPv6 / OSPFv3 | `ipv6 address`、`ospfv3` | 📋 Roadmap | — |
-| 端口安全 | `port-security` | 📋 Roadmap | 安全特性，建议 P2 |
-| STP / RSTP / MSTP | 生成树 | 📋 Roadmap | 视频 55/56/57 |
-| VRRP | `vrrp vrid` | 📋 Roadmap | 视频 60/61 |
+| 端口安全 | `port-security` | ✅ 已实现 | **P2 交付**（v0.6.0）；视频 49 |
+| STP / RSTP / MSTP | 生成树 | ✅ 已实现 | **P2 交付**（v0.6.0）；视频 55/56/57 |
+| VRRP | `vrrp vrid` | ✅ 已实现 | **P2 交付**（v0.6.0）；视频 60/61 |
 | 链路聚合 | `eth-trunk` | ✅ 已实现 | 视频 63 |
 | DHCP 中继 | `dhcp relay` | ✅ 已实现 | 视频 27 |
-| GRE | `tunnel gre` | 📋 Roadmap | 视频 69 |
+| GRE | `tunnel-protocol gre` | ✅ 已实现 | **P2 交付**（v0.8.0，course 69）；纠正式重构 |
 | AAA | `aaa` / `local-user` | 📋 Roadmap | 视频 71（安全相关） |
 | PAP / CHAP | `ppp` 认证 | 📋 Roadmap | 视频 29/30 |
 | SNMP / eSight | `snmp-agent` | 📋 Roadmap | 视频 41/42 |

@@ -2,6 +2,23 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.8.0] - 2026-08-07
+
+P2 GRE 隧道（course 69）纠正式重构，延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 验收（NoOne，零源码缺陷）。
+
+### Added
+- **P2 GRE 隧道 GRE Tunnel（course 69）**：`internal/cli/gre_eval.go` / `gre_cmd.go` / `gre_display.go` 三件套；Tunnel 接口视图配置 `tunnel-protocol gre` → `source`/`destination`（IP 或接口名双形态，原样保存）/ `gre key`（0–4294967295，未配显示 `-`）/ `keepalive period <p> retry-times <r>`（仅配置态，缺省 p5/r3）；DeviceConfig 单一事实源 `interface:<if>:tunnel-protocol` + `interface:<if>:gre-{source,destination,key,keepalive-period,keepalive-retry}`；三态守卫（接口视图 / l3Devices() / GRE 前置，未 `tunnel-protocol gre` 直接配源/目的被拒且不写键）；`undo tunnel-protocol gre` 级联清 `interface:<if>:gre-*` 精确前缀；`display gre tunnel`（重定向自 `display gre`）/ `display interface Tunnel<x>` 真实渲染；current-configuration 差异值口径 + save→reload 贯通（`buildSavedGREConfig` 独立通道 + `savedInterfaceIPLine` 还原 `ip address` 行）。
+- **纠正式重构（删除技术债）**：移除早期自创系统视图 `gre <name> <src> <dst>` 命令与 `state.GRE` / `GREConfig` 字段（只写不读、形态不符 VRP）；删除死代码 `protocol.AddGRETunnel`；`display gre` 重定向至 `display gre tunnel`。
+
+### Fixed
+- GRE 配置 save→reload 丢 `ip address` 行：因 `LoadFromDeviceConfigData` 不重建 Tunnel 逻辑口进 `state.Interfaces`，reload 改走 `buildSavedGREConfig` 独立通道读取 `interface:<if>:ip` 还原（AC2 字节级一致）。
+
+### Security
+- GRE 为纯函数仿真评估，lite 引擎对「真实 GRE 数据平面」标记为诚实占位（运行时字段恒 `-`，不编造统计/MTU）；`greSimNote()` 与 `dhcpRelaySimNote()` 口径一致；**键碰撞红线**——采用精确前缀/后缀匹配，禁用 `strings.Contains(k, "gre")`，避免误伤 H3C `Bridge-Aggregation` 聚合口键（已单元测试锁死）。
+
+### Known Issues
+- 既有技术债（非本轮引入，建议单独 ticket）：`prefixToSubnet`（`internal/cli/tools.go`）为分类网近似（仅 /8 /16 /24 /32），`/30` 会算成 `255.255.255.0` 而非 `255.255.255.252`；另 `Internet Address is ...` mask 重复渲染（物理口亦受影响）。GRE save→reload 不经此路径（ip 以空格形式存储），不触发。
+
 ## [v0.7.0] - 2026-08-07
 
 本轮延续 P2 协议特性累积发布（续 v0.6.0），继续「纯函数仿真评估 + 诚实占位」路线，全部经独立 QA 两轮验收。

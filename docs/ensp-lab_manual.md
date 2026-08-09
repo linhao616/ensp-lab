@@ -564,6 +564,54 @@ display dhcp relay interface Vlanif10
 
 **相关代码**：`internal/cli/dhcp_relay_eval.go`（纯函数评估器）/ `dhcp_relay_cmd.go`（命令落地）/ `dhcp_relay_display.go`（渲染 + 持久化）；单一事实源 `interface:<iface>:dhcp-select` + `interface:<iface>:dhcp-relay:<field>`。
 
+#### 4.8.2 GRE 隧道（GRE Tunnel）命令参考
+
+对应华为 VRP 实训课程 69。GRE（Generic Routing Encapsulation）在公网建立隧道承载私网报文，实现站点互联。本实现为**纠正式重构**——早期版本曾自带一条"野路子"系统视图 `gre <name> <src> <dst>` 命令并写入 `state.GRE` 字段（只写不读、与华为 VRP 形态不符），本轮已删除该命令与字段，改为标准的 Tunnel 接口视图配置。
+
+**前置**：必须先进入 Tunnel 接口视图（`interface Tunnel0/0/1`）；若未进入 Tunnel 接口直接敲 `tunnel-protocol gre` 等命令，会提示 `Error: Please configure GRE in the Tunnel interface view. Run 'interface Tunnel0/0/1' first.` 仅 Router / L3Switch / Firewall / VTEP 支持创建 Tunnel 接口；二层 Switch / PC / Server 会被拒。
+
+```
+# 进入 Tunnel 接口并指定隧道协议（未先 tunnel-protocol gre 配置 source/destination 等会被拒绝且不写任何键）
+interface Tunnel0/0/1
+tunnel-protocol gre
+# 隧道源 / 目的（支持 IP 地址或接口名两种形态，原样保存、不做推导）
+source 10.0.0.1
+source GigabitEthernet0/0/1          # 接口名形态
+destination 10.0.0.2
+# GRE key（范围 0–4294967295；未配时在 display 显示 '-' 而非 0）
+gre key 100
+# Keepalive（仅配置态，仿真不真正收发探测报文；缺省 period 5 / retry 3）
+keepalive period 5 retry-times 3
+```
+
+撤销：
+
+```
+undo tunnel-protocol gre              # 级联清 interface:<if>:gre-* 精确前缀键
+undo source
+undo destination
+undo gre key
+undo keepalive
+```
+
+查看：
+
+```
+display gre tunnel                   # 等价 display gre（已重定向到本命令）；空态输出 Info: No GRE tunnel configured.
+display interface Tunnel0/0/1        # 接口详情含 GRE 段落（隧道协议 / 源 / 目的 / key / keepalive）
+```
+
+**诚实占位与口径**：
+- `display gre tunnel` 的 `State` 列在隧道已配置且源/目的齐全时带 `*` 标记（如 `*Up`），空态为 `Info: No GRE tunnel configured.`；汇总按接口名升序、确定性输出。
+- `display interface Tunnel<x>` 的 GRE 段落含 5 个运行时字段（统计 / MTU 等），**恒显示 `-`**——仿真无真实 GRE 数据平面，不编造数字；隧道协议状态（`up/down`）在 display 时**实时派生**（仅当 `tunnel-protocol gre` + 源/目的齐全才判定 up），不写状态键。
+- 末尾固定输出 `greSimNote()`：lite 引擎（如 Windows ns-x）标注"部分结果基于拓扑模拟"，full 引擎（Linux + gont）标注真实协议栈已就绪；与 `dhcpRelaySimNote()` 口径一致。
+- GRE over IPv6 暂未实现（out-of-scope）；同源/同目的地址会被拒（`Error: The destination address cannot be the same as the source address.`，仅比较 IP 字面量）。
+- **键碰撞红线**：本特性存储键采用精确前缀/后缀匹配（`interface:<if>:tunnel-protocol` / `interface:<if>:gre-`），**不使用** `strings.Contains(k, "gre")`；否则 H3C `Bridge-Aggregation`（聚合口键含 "gre" 子串）会被误判为 GRE 隧道而被级联清除，已用单元测试锁死。
+
+**保存与重载**：上述配置随 `save` → `display current-configuration` / `display saved-configuration` 自动往返；`reload` 后配置完整复现（隧道逻辑口经独立输出通道 `buildSavedGREConfig` 重建，`ip address` 等接口行通过 `savedInterfaceIPLine` 读 `interface:<if>:ip` 还原，不丢行）。
+
+**相关代码**：`internal/cli/gre_eval.go`（纯函数评估器）/ `gre_cmd.go`（命令落地）/ `gre_display.go`（渲染 + 持久化）；单一事实源 `interface:<if>:tunnel-protocol` + `interface:<if>:gre-source` + `interface:<if>:gre-destination` + `interface:<if>:gre-key` + `interface:<if>:gre-keepalive-{period,retry}`。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。
@@ -1249,6 +1297,7 @@ done
 - ✅ Linux + FRR 真实下发 OSPF/BGP（gont 模式）
 - ✅ CLI 终端：每设备独立命令历史（持久化）、`save` 保存配置（VRP Y/N 确认 + `display saved-configuration`）；双击设备 / 右键「查看详情」弹出可拖动的浮动窗口（类 eNSP），支持多窗口、最小化 / 最大化 / 关闭、位置持久化
 - ✅ 左侧面板 2 Tab（设备库 / 连线种类）：连线种类选择器含 auto + 4 种线路、拖拽创建链路自动分配端口；右上角浮动窗口任务栏（设备名 ✓ 点击聚焦）
+- ✅ GRE 隧道（course 69）：Tunnel 接口视图配置 `tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`，`display gre tunnel` / `display interface Tunnel`；纠正式重构（删除野路子 `gre` 系统视图命令与 `state.GRE` 字段），纯函数仿真评估 + 诚实占位
 
 ### 计划中
 
