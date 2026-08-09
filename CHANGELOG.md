@@ -2,6 +2,27 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+## [v0.9.0] - 2026-08-07
+
+P2 第八项 AAA 本地认证（course 71）纠正式重构，延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 两轮验收（PASS，零源码缺陷）。
+
+### Added
+- **P2 AAA 本地认证 AAA Local Auth（course 71）**：`internal/cli/aaa_eval.go` / `aaa_cmd.go` / `aaa_display.go` 三件套；标准 `[R1-aaa]` 视图 + 方案子视图 `[R1-aaa-authen-<name>]` / 域子视图 `[R1-aaa-domain-<name>]`，`quit` 正确回退层级（子视图→ViewAAA→ViewSystem）；`local-user <name> password cipher` / `privilege level <0-15>` / `service-type`（多值规范化去重）/ `state active|block`；`authentication-scheme` + `authentication-mode local|radius|none`（**`authentication-mode` 改为按视图分派**，复用 VTY 既有逻辑、不新增重复顶层 case，闭合 VTY `authentication-mode aaa` 悬空引用）；`domain` + 方案绑定 + 引用完整性守卫（绑不存在的方案硬拒、删被引用的方案硬拒）；授权 P1 `authorization-scheme` / 计费 P2 `accounting-scheme` 同构扩展。
+- **事实源迁移（删技术债）**：删除不落盘的 `state.LocalUsers` / `LocalUser` 结构体与读写路径，全配置改 DeviceConfig 单一事实源 `aaa:local-user:<name>:<field>` / `aaa:authen-scheme:<name>:mode` / `aaa:author-scheme:*` / `aaa:acct-scheme:*` / `aaa:domain:<name>:<field>`（精确前缀 + 精确分段）；`display ssh` 的 Local Users 段改读新事实源 + 确定性排序 + 脱敏。
+- **展示与诚实占位**：`display aaa` / `display local-user` / `display domain [<name>]` 真实渲染（用户/方案/域按名称升序）；口令恒脱敏 `****`（且明确声明未实现 VRP 密文算法、明文存本地配置），严禁伪造 `%^%#` 密文串；认证运行态（成功/失败次数、在线会话、计费流量、最后登录时间、访问接受/拒绝）一律 `-` + `aaaSimNote()` 注记（lite/full 两态），绝不编造数字/时间/`Online`/`Never`；`display current-configuration` 新增 `aaa` 块（缺省值不冗余输出）+ save→reload 字节级贯通。
+- **键碰撞红线（最高危）**：`aaa` 是合法十六进制串，禁用 `strings.Contains(k,"aaa")` / `strings.Contains(k,"domain")` 模糊扫描，全部走 `aaaLocalUserKey` / `aaaSchemeKey` / `aaaDomainKey` / `aaaKeyPrefix` 精确 helper；端口安全粘滞 MAC 键（`interface:...:port-security-sticky-learned:00e0-fc12-0aaa` / `aaaa-bbbb-cccc`）不被 `collectAAALocalUsers` 误判、不被 `undo aaa` 级联清理误删（AC13 专项断言锁死）。
+- **能力守卫**：配置命令按 `l3Devices()` 在分支内守卫（PC/Server/二层 Switch 拒绝），`display` 只读命令任意设备可读空态；`capabilities.go` 零改动。
+
+### Fixed
+- BUG-QA-01（AC7⑥）：`local-user` 缺参（`local-user` / `local-user <name>` / `local-user <name> privilege` / `local-user <name> privilege level`）原返回 `unrecognized command`，改为按统一口径回 `usage:` 文案（接上既有声明但此前零使用的 `ErrLocalUserUsage` / `ErrPrivilegeUsage` 常量）。
+
+### Security
+- AAA 为纯函数仿真评估，lite 引擎对「真实登录握手 / RADIUS 协议交互 / 计费采集 / 在线会话」标记为诚实占位（恒 `-`，不编造统计）；口令展示层脱敏 `****`，明文仅存于本地 JSON 配置文件并如实声明；**键碰撞红线**——精确前缀匹配，避免误伤端口安全粘滞 MAC 键（已单元测试锁死）。
+
+### Known Issues
+- OBS-2：本期新增顶层 `case "state"` 会捕获任意视图下裸 `state` 命令（当前无冲突命令，影响面小），后续单独确认是否有意。
+- 既有技术债（独立 ticket）：`prefixToSubnet`（`internal/cli/tools.go`）分类网近似（`/30` 误算 `255.255.255.0`）；`Internet Address` mask 重复渲染。
+
 ## [v0.8.0] - 2026-08-07
 
 P2 GRE 隧道（course 69）纠正式重构，延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 验收（NoOne，零源码缺陷）。

@@ -90,7 +90,7 @@
 | 链路聚合 | `eth-trunk` | ✅ 已实现 | 视频 63 |
 | DHCP 中继 | `dhcp relay` | ✅ 已实现 | 视频 27 |
 | GRE | `tunnel-protocol gre` | ✅ 已实现 | **P2 交付**（v0.8.0，course 69）；纠正式重构 |
-| AAA | `aaa` / `local-user` | 📋 Roadmap | 视频 71（安全相关） |
+| AAA | `aaa` / `local-user` | ✅ 已实现 | **P2 交付**（v0.9.0，course 71）；认证 P0 + 授权 P1 + 计费 P2 |
 | PAP / CHAP | `ppp` 认证 | 📋 Roadmap | 视频 29/30 |
 | SNMP / eSight | `snmp-agent` | 📋 Roadmap | 视频 41/42 |
 | 帧中继 | `fr map` | 📋 Roadmap | 视频 31（legacy） |

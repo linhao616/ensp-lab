@@ -10,7 +10,7 @@
 
 **当前状态**：API handler 拆分重构（`router.go` → `topology_/device_/link_/cli_/annotation_/system_handlers.go`）已完成，`router.go` 仅保留 `NewRouter()` 路由注册，`internal/api` 可正常编译，根目录 `ensp-lab.exe` 为最新构建（含嵌入前端）。
 
-**近期更新（v0.8.0）**：P2 协议特性累积发布（续）——链路聚合 Eth-Trunk（course 63）、DHCP 中继（course 27）、NAT 真实过滤（course 38）、端口安全（course 49）、VRRP（course 60/61）、STP·RSTP·MSTP（course 55/56/57）均已交付并通过独立 QA 两轮回归；**v0.8.0 进一步交付 GRE 隧道（course 69）**——为纠正式重构（删除早期野路子系统视图 `gre` 命令与 `state.GRE` 字段，改为标准 Tunnel 接口视图配置），延续「纯函数仿真评估 + 诚实占位」路线，通过独立 QA 验收（NoOne，零源码缺陷）。此前 v0.5.0 已交付 P1-C Firewall 真实过滤与华为 VRP 实训课程参考索引。
+**近期更新（v0.9.0）**：P2 第八项 **AAA 本地认证（course 71）** 交付——延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 两轮验收（PASS，零源码缺陷）。本期将社区半截且形态错误的 AAA（守卫在系统视图的 `local-user` + 不落盘的 `state.LocalUsers` + 只读不写的 `PrivilegeLevel` 死字段 + 名为 cipher 实为明文的双写 + `display` 里 map 随机遍历 + 指向空气的 VTY `authentication-mode aaa` 悬空引用）纠正式重构为：标准 `[R1-aaa]` 视图 + `local-user` / `authentication-scheme` / `domain` 三级链路、授权 P1（authorization-scheme）+ 计费 P2（accounting-scheme）同构扩展、DeviceConfig 单一事实源（`aaa:local-user:<name>:<field>` 等精确前缀键，删除 `state.LocalUsers`）、`display aaa` / `display local-user` / `display domain` 真实渲染 + 口令脱敏 `****` + `aaaSimNote()` 诚实占位（运行态恒 `-`）；**键碰撞红线**——`aaa` 是合法十六进制串，禁用 `strings.Contains(k,"aaa")`/`Contains(k,"domain")`，端口安全粘滞 MAC 键（`00e0-fc12-0aaa`/`aaaa-bbbb-cccc`）不被误判/误删。v0.8.0 已交付 GRE 隧道（course 69），此前 v0.5.0 已交付 P1-C Firewall 与华为 VRP 实训课程参考索引。
 
 ## 三、短中期计划（3~6 个月）
 
@@ -53,7 +53,8 @@
 | v0.4.0 | ✅ 已完成 | 2026-08 | 安全加固(P0: V-01~V-04 / F1-F10) + protoSim 多拓扑修复 + 真实诊断(P1-D) + VRP CLI 广度(P1-F) + Firewall 路线定调 |
 | v0.5.0 | ✅ 已完成 | 2026-08 | P1-C Firewall 真实过滤（路线 B 仿真 ACL：隐式 deny-any + 方向模型，介入 ping/tracert/可达性全路径 + 诊断 blockedBy）+ 华为 VRP 实训课程参考索引 |
 | v0.7.0 | ✅ 已完成 | 2026-08 | P2 协议特性累积发布（续）：链路聚合 Eth-Trunk（course 63）/ DHCP 中继（course 27）已交付并通过独立 QA 两轮回归；叠加 v0.6.0 的 NAT / 端口安全 / VRRP / STP·RSTP·MSTP。纯函数仿真评估 + 诚实占位 |
-| v0.8.0 | ✅ 已完成 | 2026-08 | P2 GRE 隧道（course 69）纠正式重构：删除野路子系统视图 `gre` 命令与 `state.GRE` 字段，改为标准 Tunnel 接口视图（`tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`）；`display gre tunnel` / `display interface Tunnel`；纯函数仿真评估 + 诚实占位 + 键碰撞红线（精确前缀匹配，不误伤 Bridge-Aggregation）；独立 QA 验收 NoOne。待续：AAA（course 71）/ IPv6（course 43/44）+ P2 CLI 增强 |
+| v0.8.0 | ✅ 已完成 | 2026-08 | P2 GRE 隧道（course 69）纠正式重构：删除野路子系统视图 `gre` 命令与 `state.GRE` 字段，改为标准 Tunnel 接口视图（`tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`）；`display gre tunnel` / `display interface Tunnel`；纯函数仿真评估 + 诚实占位 + 键碰撞红线（精确前缀匹配，不误伤 Bridge-Aggregation）；独立 QA 验收 NoOne |
+| v0.9.0 | ✅ 已完成 | 2026-08 | P2 AAA 本地认证（course 71）纠正式重构：标准 `[R1-aaa]` 视图 + `local-user` / `authentication-scheme` / `domain` 三级链路（认证 P0 + 授权 P1 + 计费 P2 同构）；删除不落盘的 `state.LocalUsers` 结构体、改 DeviceConfig 单一事实源 `aaa:` 精确前缀键；`display aaa` / `display local-user` / `display domain` 真实渲染 + 口令脱敏 `****` + `aaaSimNote()` 诚实占位（运行态恒 `-`）；CLI 端到端浏览器验证；键碰撞红线（禁用 `strings.Contains(k,"aaa"/"domain")`，端口安全 MAC 不被误伤）；独立 QA 两轮验收 PASS。待续：IPv6（course 43/44）+ P2 CLI 增强（Tab 补全 / 历史 / EVPN display） |
 | v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（延迟 / 丢包 / 带宽） |
 
 ## 六、贡献指南
