@@ -612,6 +612,84 @@ display interface Tunnel0/0/1        # 接口详情含 GRE 段落（隧道协议
 
 **相关代码**：`internal/cli/gre_eval.go`（纯函数评估器）/ `gre_cmd.go`（命令落地）/ `gre_display.go`（渲染 + 持久化）；单一事实源 `interface:<if>:tunnel-protocol` + `interface:<if>:gre-source` + `interface:<if>:gre-destination` + `interface:<if>:gre-key` + `interface:<if>:gre-keepalive-{period,retry}`。
 
+#### 4.8.3 AAA 本地认证（AAA Local Auth）命令参考
+
+对应华为 VRP 实训课程 71。AAA（Authentication / Authorization / Accounting）把"谁能登录、能干什么、用了多少"从本地硬编码口令中解耦出来：用户建在 `local-user` 库、认证方式由 `authentication-scheme` 决定、方案由 `domain` 绑定。本实现为**纠正式重构**——早期版本 `local-user` 被错误守卫在系统视图、且写入不落盘的 `state.LocalUsers` 结构体（save→reload 用户 100% 丢失），本轮已删除该结构体、改为标准 `[R1-aaa]` 视图配置，并将授权（P1）/ 计费（P2）以同构方案子视图扩展。
+
+> 本工具为单机 VRP CLI 仿真器，**无真实登录会话、无 RADIUS 协议栈、无计费采集**。配置面 100% 真实可 `display` / `save`→`reload` 复现；运行面（认证成功/失败计数、在线会话、计费流量、最后登录时间等）一律显示 `-` 并附 `aaaSimNote()` 诚实注记——**绝不编造数字、绝不伪造 `Online` / `0 online` / `Never`**。
+
+**前置**：在系统视图执行 `aaa` 进入 `[R1-aaa]` 视图；`local-user` / `authentication-scheme` / `authorization-scheme` / `accounting-scheme` / `domain` 均须在该视图内配置（系统视图直接敲 → `Error: Please configure it in the AAA view. Run 'aaa' first.`）。仅 Router / L3Switch / Firewall / VTEP 支持；PC / Server / 二层 Switch 会被拒（`display local-user` / `display domain` 任意设备可读，空态输出 `Info:` 而非能力拒绝）。
+
+```
+# 进入 AAA 视图
+[R1] aaa
+[R1-aaa]
+
+# 本地用户（四级属性；用户名允许含 '@'，仅合法性校验不做域解析）
+[R1-aaa] local-user admin password cipher Huawei@123      # 口令，长度 8..128
+[R1-aaa] local-user admin privilege level 15              # 级别 0..15
+[R1-aaa] local-user admin service-type telnet ssh         # 覆盖语义，规范化后按固定枚举排序落盘
+[R1-aaa] local-user admin state block                     # 缺省 active（键不落盘），block 为配置态标记
+
+# 认证方案 + 模式（进入方案子视图 [R1-aaa-authen-<name>]）
+[R1-aaa] authentication-scheme sch1
+[R1-aaa-authen-sch1] authentication-mode local            # local / radius / none；radius 仅配置态，不联动 RADIUS
+[R1-aaa-authen-sch1] quit
+
+# 授权方案（P1，与认证方案同构；mode 仅 local / none）
+[R1-aaa] authorization-scheme author1
+[R1-aaa-author-author1] authorization-mode local
+[R1-aaa-author-author1] quit
+
+# 计费方案（P2，纯配置态；mode 仅 none / radius）
+[R1-aaa] accounting-scheme acct1
+[R1-aaa-acct-acct1] accounting-mode none
+[R1-aaa-acct-acct1] quit
+
+# 域 + 方案绑定（被绑方案必须已存在，否则硬拒绝且不写键）
+[R1-aaa] domain huawei
+[R1-aaa-domain-huawei] authentication-scheme sch1
+[R1-aaa-domain-huawei] authorization-scheme author1
+[R1-aaa-domain-huawei] accounting-scheme acct1
+[R1-aaa-domain-huawei] quit
+[R1-aaa] quit
+[R1]
+```
+
+撤销：
+
+```
+undo local-user admin                  # 整用户级联删
+undo local-user admin service-type     # 属性级删（password / privilege / service-type / state）
+undo authentication-scheme sch1        # 删方案（仍被域引用则硬拒绝，方案键原样保留）
+undo domain huawei                     # 删域
+# 域子视图内：undo authentication-scheme → 解除当前域对该方案的绑定（不校验存在性）
+undo aaa                               # 系统视图级联清整个 aaa: 命名空间
+```
+
+查看：
+
+```
+display local-user                     # 用户表 + 运行态统计（恒 '-'）；空态 Info: No local user configured.
+display aaa                            # 配置总览：计数 + 三类方案小表 + 域表 + VTY 引用
+display domain                         # 域汇总表
+display domain huawei                  # 单域详情（含跨对象解引用的方案 mode）
+display current-configuration          # 含 AAA 配置块（见下「保存与重载」）
+display ssh                            # 含 Local Users 段（脱敏 + 升序）
+```
+
+**诚实占位与口径**：
+- `display local-user` 的运行态统计（Successful / Failed authentications、Online sessions、Last login time）恒 `-`；`display domain <name>` 的 Online users / Access accepts / rejects 同样恒 `-`。严禁出现 `time.Now()`、计数器或 `0 online` / `Never` 之类的编造值。
+- 口令脱敏：Password 列已配显示 `****`、未配显示 `-`（两者必须可区分）；`display current-configuration` 的口令行同样恒 `****`，**该快照因此不可回灌**（与 STP / GRE 快照定位一致）。
+- 方案 mode 的「生效缺省」与「显式配置」是两件事：从未配过 mode 的方案在 `display aaa` 回退渲染成缺省（认证 = local），但在 `display current-configuration` 中**不输出** `*-mode` 子行；显式配置过 mode（哪怕配的就是 local）才输出子行。
+- 引用完整性：被域引用的方案不得删除（`Error: Scheme <name> is referenced by domain <d>.`），方案键原样保留；域内绑定方案时被绑方案必须已存在，否则硬拒绝（`Error: Scheme <name> does not exist.`），严禁隐式创建。
+- **键碰撞红线**：存储键采用精确前缀 `aaa:`（含尾冒号）匹配，**不使用** `strings.Contains(k, "aaa")` / `Contains(k, "domain")`；否则端口安全粘滞 MAC 键 `interface:GE0/0/1:port-security-sticky-learned:00e0-fc12-0aaa` 与 MAC 值 `aaaa-bbbb-cccc` 会在 `undo aaa` 后被误删，已用单元测试锁死。
+- 缺省值不冗余输出：`local-user state active`（缺省不落盘）、`authentication-mode local`（未显式配不输出子行）。
+
+**保存与重载**：上述配置随 `save` → `display current-configuration` / `display saved-configuration` 自动往返；`reload` 后配置完整复现。输出顺序固定：方案（认证 → 授权 → 计费，各类内按名升序）→ 本地用户（按名升序，每用户内 password → privilege → service-type → state）→ 域（按名升序，含绑定行）。生效缺省值（active / 未显式配的 mode）不落行。
+
+**相关代码**：`internal/cli/aaa_eval.go`（纯函数评估器）/ `aaa_cmd.go`（命令落地，AAA 配置唯一写 state 出口）/ `aaa_display.go`（渲染 + 持久化）；单一事实源 `aaa:local-user:<name>:{password,privilege,service-type,state}` + `aaa:{authen,author,acct}-scheme:<name>:mode` + `aaa:domain:<name>:{state,authen-scheme,author-scheme,acct-scheme}`。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。
@@ -1298,6 +1376,7 @@ done
 - ✅ CLI 终端：每设备独立命令历史（持久化）、`save` 保存配置（VRP Y/N 确认 + `display saved-configuration`）；双击设备 / 右键「查看详情」弹出可拖动的浮动窗口（类 eNSP），支持多窗口、最小化 / 最大化 / 关闭、位置持久化
 - ✅ 左侧面板 2 Tab（设备库 / 连线种类）：连线种类选择器含 auto + 4 种线路、拖拽创建链路自动分配端口；右上角浮动窗口任务栏（设备名 ✓ 点击聚焦）
 - ✅ GRE 隧道（course 69）：Tunnel 接口视图配置 `tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`，`display gre tunnel` / `display interface Tunnel`；纠正式重构（删除野路子 `gre` 系统视图命令与 `state.GRE` 字段），纯函数仿真评估 + 诚实占位
+- ✅ AAA 本地认证（course 71）：`aaa` / `local-user` 系统视图 + authentication / authorization / accounting-scheme + domain；纠正式重构（删除不落盘的 `state.LocalUsers`，改为标准 `[R1-aaa]` 视图 + `aaa:` 精确前缀键），纯函数仿真评估 + 诚实占位（运行时认证统计恒 `-`）+ 键碰撞红线（禁 `Contains(k,"aaa"/"domain")`，不误伤端口安全粘滞 MAC 键）；独立 QA 两轮验收 PASS
 
 ### 计划中
 
