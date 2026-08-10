@@ -1,13 +1,13 @@
 # eNSP Lab 子项目忽略规则
 
-# 编译产物
+# 编译产物（根锚定：仅忽略根目录二进制，避免误伤 cmd/server/ 等目录）
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-ensp-lab
-server
+/ensp-lab
+/server
 
 # 调试截图与临时图片
 screenshot_*.png

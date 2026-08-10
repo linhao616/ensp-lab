@@ -92,12 +92,16 @@ graph TD
 git clone <repository-url>
 cd ensp-lab
 
-# 构建二进制文件（包含嵌入式前端）
-go build -o ensp-lab cmd/server/main.go
+# 构建二进制文件（自动先构建前端，再嵌入并注入版本信息）
+make build            # Linux / macOS / CI
+# ./build.ps1         # Windows（未安装 make 时的等价入口）
 
-# 运行
+# 运行（Windows 产物为 ensp-lab.exe）
 ./ensp-lab
 ```
+
+> ⚠️ **禁止直接 `go build`**：绕过构建入口不会注入版本信息，二进制会在启动日志与
+> `/version` 中自报 `stale=true`，且容易误跑成陈旧产物。
 
 ### 2.3 运行前置条件
 
@@ -899,20 +903,36 @@ Ping 测试。
 
 #### GET /version
 
-版本信息。
+版本与构建信息。所有构建元信息由构建入口（`make build` / `./build.ps1`）
+通过 ldflags 注入 `internal/buildinfo`，是排查「跑的是不是旧产物」的第一入口。
 
 **响应（200 OK）：**
 
 ```json
 {
-  "version": "string (版本号)",
-  "build_time": "string (构建时间)",
+  "version": "string (git describe 版本号，未注入时为 dev)",
+  "build_time": "string (UTC 构建时间，未注入时为 unknown)",
+  "commit": "string (构建时的 git 短 SHA，未注入时为 unknown)",
+  "dirty": "bool (构建时工作树是否有未提交改动)",
+  "stale": "bool (当前二进制是否可能已落后于源码)",
+  "stale_reason": "string (stale 的成因，不陈旧时为空串)",
   "status": "ok",
   "platform": "string (操作系统)",
   "engine_count": "int (引擎数量)",
   "timestamp": "string (时间戳)"
 }
 ```
+
+**`stale=true` 的三种成因：**
+
+| stale_reason | 含义 | 处理 |
+|---|---|---|
+| 构建信息未注入 | 绕过构建入口直接 `go build` / `go run` | 改用 `make build` 或 `./build.ps1` |
+| 二进制构建自 X，当前 HEAD 为 Y | 二进制落后于当前分支 | 重新构建 |
+| 工作树存在未提交改动 | 源码已改但可能未重建 | 重新构建 |
+
+git 不可用、或二进制被拷到其他仓库目录下运行时，自检会自动跳过（`stale` 保持 `false`），
+不会误报。自检失败**不会**阻断服务启动。
 
 #### GET /api/topologies
 
