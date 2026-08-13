@@ -64,7 +64,7 @@ export default function AnnotationLayer(props: AnnotationLayerProps) {
       const maxLen = Math.max(...lines.map((l) => Array.from(l).length), 1);
       const rawW = anno.width ?? 0;
       const rawH = anno.height ?? 0;
-      const width = rawW > 0 ? rawW : Math.min(maxLen * 7 + 16, 640);
+      const width = rawW > 0 ? rawW : Math.min(maxLen * 14 + 24, 640);
       const height = rawH > 0 ? rawH : lines.length * 15 + 12;
       initialSizes[anno.id] = { width: Math.max(width, 70), height: Math.max(height, 34) };
     });
