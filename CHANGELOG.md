@@ -2,11 +2,11 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
-> **发布状态注记**：本地已打 tag 至 `v0.11.0`，但**远端最高 tag 仍为 `v0.9.0`**，`v0.10.0`/`v0.11.0` 待 push；且当前工作树仍有未提交修复（见 `[Unreleased]`）。提交 + 打 tag 前 `/version` 会持续 `stale=true`（详见手册 7.5.1 / 7.5.6）。
+> **发布状态注记（2026-08-17 校订）**：早前注记所称「本地已打 tag 至 `v0.11.0`」**不成立**。经核实，`v0.10.0`/`v0.11.0` 的源码此前只存在于一个孤儿 worktree（分支零 commit），**从未进入任何分支、也从未真正打过 tag**；仓库内最新版本历史实际停在 `v0.9.0`。2026-08-17 已将 v0.11.0 全树导入并与主线做三方合并（合并点 `b67e68b`，共同祖先 `ca8aa87`）。远端最高 tag 仍为 `v0.9.0`。待开发机执行 `./build.ps1` + 浏览器 e2e 复验后打 tag 并 push，`/version` 的 `stale=true` 随之解除（详见手册 7.5.1 / 7.5.6）。
 
-## [Unreleased]（工作树已落地，待 commit + 打 tag 解除 stale）
+## [Unreleased]（已提交至 `b67e68b`，待打 tag 解除 stale）
 
-> 以下改动均已通过 `go test` / `go vet` 验证、尚未进入版本历史。发布前须在开发机执行 commit + 打 tag（建议 `v0.11.1` 或 `v0.12.0`）。
+> 以下改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 `go build`（含 embed 前端，链接通过）验证，并已提交到主线；尚未打 tag。发布前须在开发机执行 `./build.ps1` + 浏览器 e2e 复验，再打 tag（建议 `v0.11.1`）。
 
 ### Added
 - 文档优化：开发者指南新增 7.5 开发机制（构建与版本 / CLI 三件套 / 引擎模式 / 质量门禁 / 安全约束 / 提交发布纪律）；术语基线、错误码与安全合规章节筹划。
@@ -17,9 +17,18 @@
 - **F2 限流器淘汰**：修正 token-bucket 淘汰逻辑。
 - **补全表漂移**：CLI 补全候选表与 `parser.go` 实际 case 对齐（无退化）。
 - **IPv6 命令 / 显示 / undo 分发接线**：`parser.go` 顶层 `ipv6`/`ripng`/`ospfv3`、display `ipv6`/`ripng`/`ospfv3`、undo 各分支、`buildSavedConfigSnapshot` 挂载全部接到既有 `ipv6_*.go` 三件套，13 个 IPv6 AC 测试由红灯转绿，并经 Playwright 浏览器端到端复验。
+- **`display registry` 从未被真正接线（v0.11.0 号称单一事实源却是孤儿）**：`parser.go` 内层 `switch arg0` 补 `case "evpn"` / `case "ndp"` 调 `regEvpnDisplay` / `regNdpDisplay`，`display bgp` 补 `arg1 == "evpn"` 分支调 `buildEVPNBGPDisplay`；此前这三条命令均回 unrecognized command。
+- **前端视图提示符缺失 8 个**：`CliTerminal.tsx` 的 `buildPrompt` 补 `aaa` / `aaa-authen` / `aaa-domain` / `vty` / `mlag` / `isis` / `dhcp-pool` / `mst-region`，进入这些视图后提示符不再退化。
+- **手册 4.8.4 缺 legend**：IPv6 示例补 legend 块与中文 `ipv6SimNote()` 口径，与其他章节一致。
 
 ### Security
-- 安全审计（2026-08-12）17 项问题中 **V-1~V-5** 已带回归测试修复（详见 `.workbuddy/安全审计与质量报告_真实代码v0.11_修复记录_2026-08-15.md`）。
+- 安全审计（2026-08-12）17 项问题：**V-2 / V-3 / V-5 与 P0-R1 / P0-R2** 已带回归测试修复（详见 `.workbuddy/安全审计与质量报告_真实代码v0.11_修复记录_2026-08-15.md`）。⚠️ **口径更正**：**V-1 / V-4 此前只入库了红灯用例、修复代码并未落地**（`go test ./...` 实测为 FAIL），2026-08-17 补齐：
+  - **V-1 context / cancelFunc 泄漏（gosec G118）**：`nsxEngine` 的 `e.cancelFunc` 此前只被赋值、全文件从未调用，每轮 `Start()` 都在 `context.Background()` 上挂一个永不释放的子节点。修复：`Stop()` 持锁取出 `cancelFunc`、置 nil、锁外调用（天然幂等）；`Start()` 派生新 ctx 前先取消上一轮遗留句柄；`NewNSxEngine` 的 `build` 失败路径补 `cancel()`。`internal/sim/engine_ctxleak_test.go` 5 个用例转绿。
+  - **V-4 指标负耗时回绕**：`metrics.Collector.RecordRebuild` 直接 `uint64(dur.Nanoseconds())`，负耗时（时钟回拨）会回绕成天文数字并永久污染累计值。修复：负值夹断为 0。`internal/metrics/metrics_negdur_test.go` 4 个用例转绿。
+- **P0-R3 HTTP 超时加固（Slowloris）**：`cmd/server/main.go` 设 `ReadHeaderTimeout=10s` / `IdleTimeout=120s`；刻意不设 `WriteTimeout`（会掐断 `/api/sim/events` SSE 长连接）与 `ReadTimeout`（请求体已由 10MB 限制兜底，叠加读超时可能误伤大拓扑导入）。此加固曾因 `cmd/server/main.go` 未被 git 跟踪而在合并中丢失，已恢复。
+
+### Build
+- **v0.11.0 全树入库**：将只存在于孤儿 worktree 的 v0.11.0 源码导入分支（`f81e209`），以共同祖先 `ca8aa87` 与主线三方合并（`b67e68b`），自动并回 BUILD-01（`dd9aec1`：双入口构建 + `internal/buildinfo` 版本注入 + 运行期 stale 自检 + 修复 `.gitignore` 未根锚定误伤 `cmd/server`）与 VXLAN 标注空白修复（`cdc1e0e`）。3 处冲突（`CONTRIBUTING.md` / `build.ps1` / `docs/ensp-lab_manual.md`）均保留主线更准确内容 + 孤儿版关键注释。
 
 ## [v0.11.0] - 2026-08-11
 

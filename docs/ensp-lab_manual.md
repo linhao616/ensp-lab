@@ -1646,7 +1646,7 @@ ensp-lab 定位为**本地单用户网络实验工具**，非远程多租户服�
 - **v0.6.0**：NAT/端口安全/VRRP/STP 诚实占位 + 密钥脱敏。
 - **v0.5.0**：ACL 默认 `deny any` + lite 引擎诚实占位。
 - **v0.4.0**：写类 handler 全量深拷贝、CORS 收紧、集中校验器、统一错误响应、pprof token 守卫、CI 安全门禁（SAST/依赖扫描/secrets 扫描）。
-- **[Unreleased]**：安全审计（2026-08-12）V-1~V-5 带回归测试修复。
+- **[Unreleased]**：安全审计（2026-08-12）V-2/V-3/V-5 + P0-R1/P0-R2 带回归测试修复；V-1（`nsxEngine` context/cancelFunc 泄漏）、V-4（指标负耗时回绕）此前只入库红灯用例、修复于 2026-08-17 补齐；P0-R3 HTTP 超时加固（Slowloris）恢复。
 
 
 ---
