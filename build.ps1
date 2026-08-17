@@ -139,11 +139,12 @@ try {
 
     $pkg = 'ensp-lab/internal/buildinfo'
     # 关于引号：cmd/go 用 quoted.Split 解析 -ldflags 的值，会自行剥离成对的单/双引号，
-    # 因此 "-X 'pkg.V=1'" 与 "-X pkg.V=1" 注入效果等价（经 A/B 实测确认）。
-    # 这里采用无引号写法仅因四个值均保证不含空格（git describe / 短 SHA /
-    # RFC3339 时间戳 / true|false）。
-    # 若将来某个值可能含空格，必须改回加引号，否则会被拆成多个 token 而损坏参数。
-    $ldflags = "-X $pkg.Version=$gitVersion -X $pkg.BuildTime=$buildTime -X $pkg.Commit=$gitCommit -X $pkg.Dirty=$gitDirty"
+    # 因此 "-X 'pkg.V=1'" 与 "-X pkg.V=1" 注入效果等价（经 A/B 实测确认）——
+    # 曾有一次"去掉单引号"的改动其实是 no-op，勿再当成 bug 反复"修复"。
+    # 这里保留加引号写法：四个值当前均不含空格（git describe / 短 SHA /
+    # RFC3339 时间戳 / true|false），但加引号在将来某个值含空格时也不会被拆成
+    # 多个 token，属更防御的写法。
+    $ldflags = "-X '$pkg.Version=$gitVersion' -X '$pkg.BuildTime=$buildTime' -X '$pkg.Commit=$gitCommit' -X '$pkg.Dirty=$gitDirty'"
 
     Write-Host '[build] 编译 Go 二进制 ...' -ForegroundColor Cyan
     Invoke-Checked -File 'go' -Arguments @('build', '-ldflags', $ldflags, '-o', $bin, './cmd/server')

@@ -15,26 +15,24 @@ go run cmd/server/main.go
 
 服务启动后默认监听 `http://localhost:8080`（端口可经 `-port` 参数或 `PORT` 环境变量修改，详见下文「配置项说明」）。
 
-> 项目使用 `go build -a -o ensp-lab.exe ./cmd/server` 构建，前端 `frontend/dist` 通过 `embed.go` 一并嵌入二进制；Windows 下直接运行 `ensp-lab.exe` 即可，无需额外依赖。
+> 项目使用 `make build` 构建（Windows 未装 make 时用等价的 `./build.ps1`），前端 `frontend/dist` 通过 `embed.go` 一并嵌入二进制；Windows 下直接运行 `ensp-lab.exe` 即可，无需额外依赖。
 
 ### 从源码构建（产出含前端的独立二进制）
 
-仓库默认忽略 `frontend/dist`，因此**从零克隆后须先构建前端、再构建 Go 二进制**，否则嵌入的前端是空的（页面无样式/无交互）：
+仓库默认忽略 `frontend/dist`，构建入口会自动先构建前端再嵌入 Go 二进制（前端为增量构建，源码没变则跳过）：
 
 ```bash
-# 1. 构建前端（产物写入 frontend/dist）
-cd frontend
-npm install
-npm run build
-cd ..
+make build            # Linux / macOS / CI
+./build.ps1           # Windows（未安装 make 时的等价入口）
 
-# 2. 构建 Go 二进制（将 frontend/dist 通过 embed.go 嵌入）
-go build -a -o ensp-lab.exe ./cmd/server     # Windows
-# go build -a -o ensp-lab      ./cmd/server   # Linux / macOS
-
-# 3. 运行
+# 运行（产物名在 Windows 上自动带 .exe）
 ./ensp-lab.exe        # 默认监听 http://localhost:8080（可用 -port 9090 改端口）
 ```
+
+> ⚠️ **禁止直接 `go build`。** 构建入口会通过 ldflags 把版本、构建时间、git commit 注入
+> `internal/buildinfo`；绕过它直接 `go build` 出来的二进制没有这些信息，会在启动日志与
+> `/version` 中自报 **`stale=true`**。这条防线专治「跑的是旧产物、源码其实早修好了」的幽灵 bug——
+> 排查任何"改了没生效"的问题时，请先 `curl http://localhost:8080/version` 看 `stale` 字段。
 
 > 本地调试也可直接 `go run cmd/server/main.go`——同样会触发前端嵌入，但每次运行都重新编译，速度较慢。
 
@@ -756,7 +754,7 @@ GET    /api/sim/queue-depth  # 事件队列深度（?topology=）
 
 ```
 GET    /health    # 健康检查（status / platform / engine_count / 资源读数 / timestamp）
-GET    /version   # 版本与构建信息（version / build_time）
+GET    /version   # 版本与构建信息（version / build_time / commit / dirty / stale / stale_reason）
 GET    /api/system/status    # 后端全局状态（engine_mode: full/lite、platform、资源读数）
 GET    /api/system/metrics   # 进程资源使用率与引擎活动计数（CPU%/goroutine/heap/GC + 业务计数 + 尖峰诊断）
 GET    /          # 前端入口（embed 静态资源）

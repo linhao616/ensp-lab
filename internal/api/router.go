@@ -29,9 +29,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var version = "dev"
-var buildTime = "unknown"
-
 func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)

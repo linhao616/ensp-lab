@@ -516,7 +516,7 @@ func applyUndoIPv6RouteStatic(state *CLIState, args []string) (string, bool) {
 //
 //   - 带 <pid>：清 ipv6:ripng:<pid>:enabled（精确键）；pid 非法 → ErrRIPngUsage；
 //   - 无 pid：清 `ipv6:ripng:` 前缀全部键。
-//   接口 :ripng-<pid>-enable 键不在清理范围（§7.5 只列全局进程键）。
+//     接口 :ripng-<pid>-enable 键不在清理范围（§7.5 只列全局进程键）。
 func applyUndoRIPng(state *CLIState, args []string) (string, bool) {
 	if state == nil || len(args) == 0 {
 		return "", false
@@ -557,7 +557,7 @@ func applyUndoRIPng(state *CLIState, args []string) (string, bool) {
 //
 //   - 带 <pid>：清 ipv6:ospfv3:<pid>:enabled（精确键）；pid 非法 → ErrOSPFv3Usage；
 //   - 无 pid：清 `ipv6:ospfv3:` 前缀全部键。
-//   接口 :ospfv3-<pid>-area 键不在清理范围（§7.5 只列全局进程键）。
+//     接口 :ospfv3-<pid>-area 键不在清理范围（§7.5 只列全局进程键）。
 func applyUndoOSPFv3(state *CLIState, args []string) (string, bool) {
 	if state == nil || len(args) == 0 {
 		return "", false

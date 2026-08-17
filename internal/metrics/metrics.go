@@ -120,8 +120,19 @@ func (c *Collector) IncrPing(timeout bool) {
 }
 
 // RecordRebuild 记录一次引擎重建及其耗时（含 Clone+build）。
+//
+// 负耗时夹断（V-4，2026-08-12 发布前审计）：Nanoseconds() 返回 int64，负值直接
+// 转 uint64 会回绕成约 1.8e19 ns。而 rebuildBusyNs 是 atomic.AddUint64 的只增
+// 累加量、lastRebuildNs 无自愈路径 —— 一次负值即永久污染指标，
+// /api/system/status 会显示天文数字的重建耗时。
+// 负耗时只可能来自时钟回拨或调用方传了零值 start，语义上等价于「无耗时」，
+// 故夹断为 0；重建次数仍照常累加，不丢失该次重建的事实。
 func (c *Collector) RecordRebuild(dur time.Duration) {
-	ns := uint64(dur.Nanoseconds())
+	nsSigned := dur.Nanoseconds()
+	if nsSigned < 0 {
+		nsSigned = 0
+	}
+	ns := uint64(nsSigned)
 	atomic.AddUint64(&c.rebuilds, 1)
 	atomic.AddUint64(&c.rebuildBusyNs, ns)
 	atomic.StoreUint64(&c.lastRebuildNs, ns)

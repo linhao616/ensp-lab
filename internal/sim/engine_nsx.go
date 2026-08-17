@@ -315,6 +315,9 @@ func NewNSxEngine(topo *topology.Topology) (Engine, error) {
 	}
 	snap, err := e.build(topo.Clone())
 	if err != nil {
+		// V-1（2026-08-12 审计）：构造失败路径也必须释放已派生的 context，
+		// 否则每次构造失败都在 context.Background() 上挂一个永不回收的子节点。
+		cancel()
 		return nil, fmt.Errorf("sim: build ns-x network: %w", err)
 	}
 	e.graph.Store(snap)
@@ -921,10 +924,19 @@ func (e *nsxEngine) Start() {
 	e.closed = false
 	e.eventCh = make(chan *PacketEvent, 128)
 	e.pendingEvents = make(chan base.Event, 32)
+	// V-1（2026-08-12 审计）：派生新 context 之前，先取消上一轮遗留的句柄
+	// （构造期派生的，或上次 Start 派生但未经 Stop 释放的），避免反复启停
+	// 时在 context.Background() 上线性累积永不释放的子节点。
+	// 采用「持锁取出、锁外调用」写法，cancel 不在临界区内执行。
+	prevCancel := e.cancelFunc
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancelCtx = ctx
 	e.cancelFunc = cancel
 	e.mu.Unlock()
+
+	if prevCancel != nil {
+		prevCancel()
+	}
 
 	e.wg.Add(1)
 	go func() {
@@ -952,15 +964,31 @@ func (e *nsxEngine) Start() {
 //     事件循环 goroutine 会继续运行最多 24h；close channel 不会终止该循环，
 //     反而会使并发的 emit() → send on closed channel panic。set closed=true
 //     后 goroutine 空转无害，重启时 Start() 会创建新通道、旧通道被遗弃。
+//   - V-1（2026-08-12 审计）：释放生命周期 context（e.cancelFunc）。此前该字段
+//     只被赋值、从未调用，导致每轮启停都泄漏一个 context 子节点。cancelFunc
+//     持锁取出后置 nil、锁外调用，既保证幂等（第二次取到 nil 直接跳过），也
+//     避免在临界区内触发下游回调造成锁序依赖。
 func (e *nsxEngine) Stop() {
 	e.mu.Lock()
 	if !e.started {
+		// 未启动也要释放构造期派生的 context（V-1 的第二处泄漏点）。
+		cancel := e.cancelFunc
+		e.cancelFunc = nil
 		e.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		return
 	}
 	e.started = false
 	e.closed = true
+	cancel := e.cancelFunc
+	e.cancelFunc = nil
 	e.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 
 	e.wg.Wait() // Start goroutine 已返回（network.Run 非阻塞）
 

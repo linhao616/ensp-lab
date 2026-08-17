@@ -28,13 +28,13 @@ func TestAC3ValidateIPv6Address(t *testing.T) {
 	}
 
 	invalid := []string{
-		"2001:db8::gg",      // 非法十六进制
-		"2001:db8::1%eth0",  // zone（A10，AC3 断言）
-		"::ffff:1.2.3.4",    // IPv4-mapped（A10 收敛）
-		"::1.2.3.4",         // IPv4-compatible（A10 收敛）
-		"2001:db8::1/64",    // 地址带前缀不是纯地址
-		"",                  // 空串
-		"not-an-address",    // 非地址
+		"2001:db8::gg",     // 非法十六进制
+		"2001:db8::1%eth0", // zone（A10，AC3 断言）
+		"::ffff:1.2.3.4",   // IPv4-mapped（A10 收敛）
+		"::1.2.3.4",        // IPv4-compatible（A10 收敛）
+		"2001:db8::1/64",   // 地址带前缀不是纯地址
+		"",                 // 空串
+		"not-an-address",   // 非地址
 	}
 	for _, s := range invalid {
 		if err := ValidateIPv6Address(s); err == nil {
@@ -71,13 +71,13 @@ func TestAC3ValidateIPv6Prefix(t *testing.T) {
 
 func TestAC3CompressIPv6(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"},   // 全展开 → 压缩（AC3）
-		{"2001:db8:0:0:0:0:0:1", "2001:db8::1"},                       // 全零段压缩（AC3，:: 仅一次）
-		{"2001:db8::1", "2001:db8::1"},                                 // 幂等（AC3）
-		{"2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"},    // 大小写归一
-		{"fe80:0000:0000:0000:0000:0000:0000:0001", "fe80::1"},         // link-local 压缩
-		{"::", "::"},                                                   // 未指定
-		{"::1", "::1"},                                                 // 回环
+		{"2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"}, // 全展开 → 压缩（AC3）
+		{"2001:db8:0:0:0:0:0:1", "2001:db8::1"},                    // 全零段压缩（AC3，:: 仅一次）
+		{"2001:db8::1", "2001:db8::1"},                             // 幂等（AC3）
+		{"2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"}, // 大小写归一
+		{"fe80:0000:0000:0000:0000:0000:0000:0001", "fe80::1"},     // link-local 压缩
+		{"::", "::"},   // 未指定
+		{"::1", "::1"}, // 回环
 	}
 	for _, c := range cases {
 		if got := CompressIPv6(c.in); got != c.want {
@@ -110,8 +110,8 @@ func TestAC3IPv6AddressType(t *testing.T) {
 		want IPv6AddrType
 	}{
 		{"fe80::1", IPv6AddrLinkLocal},
-		{"fe80::", IPv6AddrLinkLocal},   // fe80::/10
-		{"ff02::1", IPv6AddrMulticast},  // ff00::/8
+		{"fe80::", IPv6AddrLinkLocal},  // fe80::/10
+		{"ff02::1", IPv6AddrMulticast}, // ff00::/8
 		{"ff00::", IPv6AddrMulticast},
 		{"::1", IPv6AddrLoopback},
 		{"::", IPv6AddrUnspecified},
@@ -130,9 +130,9 @@ func TestAC3IPv6AddressType(t *testing.T) {
 
 func TestAC3IPv6EUI64InterfaceID(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"00e0-fc12-0aaa", "02e0:fcff:fe12:0aaa"},   // 连字符形态 + 翻转 U/L 位（AC3）
-		{"00e0fc120aaa", "02e0:fcff:fe12:0aaa"},     // 无分隔形态（C9，AC3）
-		{"00E0-FC12-0AAA", "02e0:fcff:fe12:0aaa"},   // 大小写不敏感（C9，AC3）
+		{"00e0-fc12-0aaa", "02e0:fcff:fe12:0aaa"},    // 连字符形态 + 翻转 U/L 位（AC3）
+		{"00e0fc120aaa", "02e0:fcff:fe12:0aaa"},      // 无分隔形态（C9，AC3）
+		{"00E0-FC12-0AAA", "02e0:fcff:fe12:0aaa"},    // 大小写不敏感（C9，AC3）
 		{"00-0C-29-01-02-03", "020c:29ff:fe01:0203"}, // VRP 划线 MAC 形态（宽容分隔）
 		{"00:0c:29:01:02:03", "020c:29ff:fe01:0203"}, // 冒号分隔形态（宽容分隔）
 	}
@@ -156,7 +156,7 @@ func TestAC3IPv6EUI64InterfaceID(t *testing.T) {
 
 func TestAC3IPv6NetworkFromPrefix(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"2001:db8::1/64", "2001:db8::"},   // AC3
+		{"2001:db8::1/64", "2001:db8::"}, // AC3
 		{"2001:db8:2::1/64", "2001:db8:2::"},
 		{"2001:db8::1/128", "2001:db8::1"}, // /128 网络即自身
 		{"fe80::1/10", "fe80::"},           // 链路本地 /10 网络
@@ -260,15 +260,15 @@ func TestAC12ParseIPv6RouteStaticKey(t *testing.T) {
 
 	// 非路由键必须不被误判为路由键（AC12 ②）
 	for _, k := range []string{
-		"ipv6:enabled",                                                    // 全局使能键
-		"interface:GE0/0/1:ipv6-address",                                  // 接口地址键
-		"ipv6:route-static:2001:db8:2::/64",                               // 缺 nexthop
-		"ipv6:route-static:2001:db8:2::/64:",                              // nexthop 空
-		"ipv6:route-static:bad",                                           // 无 '/'
-		"ipv6:route-static:2001:db8::/xx:2001:db8::1",                     // 长度段非数字
-		"ipv6:route-static:2001:db8::/1234:2001:db8::1",                   // 长度段 4 位
-		"ipv6:ripng:1:enabled",                                            // RIPng 键
-		"ipv6:ospfv3:1:enabled",                                           // OSPFv3 键
+		"ipv6:enabled",                                  // 全局使能键
+		"interface:GE0/0/1:ipv6-address",                // 接口地址键
+		"ipv6:route-static:2001:db8:2::/64",             // 缺 nexthop
+		"ipv6:route-static:2001:db8:2::/64:",            // nexthop 空
+		"ipv6:route-static:bad",                         // 无 '/'
+		"ipv6:route-static:2001:db8::/xx:2001:db8::1",   // 长度段非数字
+		"ipv6:route-static:2001:db8::/1234:2001:db8::1", // 长度段 4 位
+		"ipv6:ripng:1:enabled",                          // RIPng 键
+		"ipv6:ospfv3:1:enabled",                         // OSPFv3 键
 	} {
 		if p, nh, ok := parseIPv6RouteStaticKey(k); ok {
 			t.Errorf("parseIPv6RouteStaticKey(%q) = (%q, %q, true) — must not be a route key", k, p, nh)
@@ -282,16 +282,16 @@ func TestAC12IPv6CollectorsExactMatch(t *testing.T) {
 	st := NewCLIStateWithType(topology.DeviceRouter)
 	// 构造 AC12 ①–③ 并存状态：IPv4 键 / IPv6 键 / 全局键 / 静态路由键 / 异族键
 	dc := map[string]string{
-		"interface:GigabitEthernet0/0/1:ip":                     "10.0.0.1 255.255.255.0", // IPv4 键（含 :ip 子串）
-		"interface:GigabitEthernet0/0/1:ipv6-address":           "2001:db8::1/64",         // IPv6 键
-		"interface:GigabitEthernet0/0/2:ipv6-enable":            "true",                   // IPv6 使能键
-		"ipv6:enabled":                                          "true",                   // 全局键
-		"ipv6:route-static:2001:db8:2::/64:2001:db8:1::2":       "true",                   // 多键形态路由键
-		"interface:Bridge-Aggregation1:lag:mode":                "manual",                 // 异族键（gre 历史教训同源）
-		"ipv6:ripng:1:enabled":                                  "true",
-		"ipv6:ospfv3:1:enabled":                                 "true",
-		"interface:GigabitEthernet0/0/1:ripng-1-enable":         "true",
-		"interface:GigabitEthernet0/0/1:ospfv3-1-area":          "0",
+		"interface:GigabitEthernet0/0/1:ip":           "10.0.0.1 255.255.255.0", // IPv4 键（含 :ip 子串）
+		"interface:GigabitEthernet0/0/1:ipv6-address": "2001:db8::1/64",         // IPv6 键
+		"interface:GigabitEthernet0/0/2:ipv6-enable":  "true",                   // IPv6 使能键
+		"ipv6:enabled": "true", // 全局键
+		"ipv6:route-static:2001:db8:2::/64:2001:db8:1::2": "true",   // 多键形态路由键
+		"interface:Bridge-Aggregation1:lag:mode":          "manual", // 异族键（gre 历史教训同源）
+		"ipv6:ripng:1:enabled":                            "true",
+		"ipv6:ospfv3:1:enabled":                           "true",
+		"interface:GigabitEthernet0/0/1:ripng-1-enable":   "true",
+		"interface:GigabitEthernet0/0/1:ospfv3-1-area":    "0",
 	}
 	st.DeviceConfig = dc
 
@@ -332,8 +332,8 @@ func TestAC13IPv6PureFunctionsNoSideEffects(t *testing.T) {
 	st := NewCLIStateWithType(topology.DeviceRouter)
 	st.DeviceConfig = map[string]string{
 		"interface:GigabitEthernet0/0/1:ipv6-address": "2001:db8::1/64",
-		"ipv6:enabled":                                "true",
-		"sysname":                                     "R1",
+		"ipv6:enabled": "true",
+		"sysname":      "R1",
 	}
 	before := cloneDeviceConfig(t, st)
 

@@ -13,15 +13,22 @@
 仓库默认忽略 `frontend/dist`，因此**克隆后必须先构建前端，再构建 Go 二进制**：
 
 ```bash
-# 方式一：直接用 Make
-make build                 # 等同于下方两步
+make build                 # Linux / macOS / CI
+./build.ps1                # Windows（未安装 make 时的等价入口）
 
-# 方式二：手动
-cd frontend && npm install && npm run build && cd ..
-go build -o ensp-lab ./cmd/server   # 注：直接 go build 跳过版本注入，/version 会报 stale=true；待发布须改用 make build / build.ps1
+# 禁止用直接 `go build` 产出交付物：那样会跳过 ldflags 版本注入，
+# /version 与 /api/system/status 将自报 stale=true（功能可用但版本不可信）。
 ```
 
-本地调试可直接 `go run cmd/server/main.go`（同样会嵌入前端构建产物）。
+两个入口等价：都会先增量构建前端（源码没变则跳过），再把版本信息注入
+`internal/buildinfo` 并产出唯一交付物 `ensp-lab`（Windows 上为 `ensp-lab.exe`）。
+
+> ⚠️ **禁止直接 `go build`。** 绕过构建入口就不会注入版本/commit/构建时间，
+> 二进制会在启动日志与 `/version` 中自报 `stale=true`。同理，运行期若发现
+> 二进制的 commit 与当前 HEAD 不一致、或工作树有未提交改动，也会标记 `stale`——
+> 看到这个告警请重新 `make build`，不要忽略它。
+
+本地调试可直接 `go run cmd/server/main.go`（同样会嵌入前端构建产物，但同样不注入版本信息，会显示 `stale=true`，属预期）。
 
 ## 运行测试
 
