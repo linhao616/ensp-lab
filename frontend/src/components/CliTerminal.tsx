@@ -56,6 +56,14 @@ function buildPrompt(device: Device | null, state: CliState): string {
   if (state.view === 'acl') return `[${sysname}-acl-basic-${state.sub || '2000'}] `;
   if (state.view === 'ospf') return `[${sysname}-ospf-${state.sub || '1'}] `;
   if (state.view === 'bgp') return `[${sysname}-bgp] `;
+  if (state.view === 'aaa') return `[${sysname}-aaa] `;
+  if (state.view === 'aaa-authen') return `[${sysname}-aaa-authen-${state.sub || ''}] `;
+  if (state.view === 'aaa-domain') return `[${sysname}-aaa-domain-${state.sub || ''}] `;
+  if (state.view === 'vty') return `[${sysname}-vty${state.sub || ''}] `;
+  if (state.view === 'mlag') return `[${sysname}-mlag] `;
+  if (state.view === 'isis') return `[${sysname}-isis] `;
+  if (state.view === 'dhcp-pool') return `[${sysname}-dhcp-pool-${state.sub || ''}] `;
+  if (state.view === 'mst-region') return `[${sysname}-mst-region] `;
   return `<${sysname}> `;
 }
 

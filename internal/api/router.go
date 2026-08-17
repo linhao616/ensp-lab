@@ -203,7 +203,7 @@ func NewRouter(store storage.Storage, staticFS fs.FS, cfg ServerConfig) *gin.Eng
 	// 安全（V-04）：对高成本 / 可被滥用的端点施加每客户端固定窗口限流，
 	// 纯标准库实现，无需额外依赖。限流宽松（本地单用户足够），主要用于
 	// 防资源耗尽 DoS 与诊断网关放大。
-	diagLimiter := newRateLimiter(120, time.Minute)   // 诊断网关：120 次/分/IP
+	diagLimiter := newRateLimiter(120, time.Minute)    // 诊断网关：120 次/分/IP
 	metricsLimiter := newRateLimiter(300, time.Minute) // 指标轮询：300 次/分/IP
 
 	router := &Router{
@@ -234,6 +234,8 @@ func NewRouter(store storage.Storage, staticFS fs.FS, cfg ServerConfig) *gin.Eng
 	r.DELETE("/api/topologies/:id/links/:linkId", router.deleteLink)
 
 	r.POST("/api/topologies/:id/devices/:deviceId/cli", router.executeCLI)
+	// F11 修复：CLI Tab 补全端点（纯只读、零副作用；复用 executeCLI 的设备串行列）。
+	r.POST("/api/topologies/:id/devices/:deviceId/cli/complete", router.completeCLI)
 	r.GET("/api/topologies/:id/devices/:deviceId/ip-config", router.getIPConfig)
 	r.POST("/api/topologies/:id/devices/:deviceId/ip-config", router.setIPConfig)
 
@@ -383,13 +385,18 @@ type clientWindow struct {
 	resetAt time.Time
 }
 
+// sweepEveryN 是限流器惰性回收的触发间隔：每这么多次 allow 调用回收一轮过期窗口，
+// 防止 windows map 在高基数源 IP 下单调增长（F2：内存泄漏 / 放大型 DoS 面）。
+const sweepEveryN = 256
+
 // rateLimiter 是纯标准库实现的「固定窗口」每客户端限流器（无外部依赖）。
 // 用于在不引入 golang.org/x/time 的前提下，对高成本端点做基础防滥用。
 type rateLimiter struct {
-	mu      sync.Mutex
-	windows map[string]*clientWindow
-	limit   int
-	window  time.Duration
+	mu         sync.Mutex
+	windows    map[string]*clientWindow
+	limit      int
+	window     time.Duration
+	sweepCount int
 }
 
 // securityHeadersMiddleware 为所有响应统一附加安全响应头（纵深防御）。
@@ -441,13 +448,31 @@ func (rl *rateLimiter) allow(key string) bool {
 	w, ok := rl.windows[key]
 	if !ok || now.After(w.resetAt) {
 		rl.windows[key] = &clientWindow{count: 1, resetAt: now.Add(rl.window)}
+		rl.tickSweep(now)
 		return true
 	}
-	if w.count >= rl.limit {
-		return false
+	allowed := w.count < rl.limit
+	if allowed {
+		w.count++
 	}
-	w.count++
-	return true
+	// 放行/拒绝都推进回收计数：保证高基数源 IP（含被限流的洪泛）下 sweeper 仍按期触发。
+	rl.tickSweep(now)
+	return allowed
+}
+
+// tickSweep 每 sweepEveryN 次 allow 调用惰性回收一轮过期窗口（F2 修复）。
+// 仅在已持有 rl.mu 时调用；只删除 resetAt 已过期的窗口，不影响活跃限流语义。
+func (rl *rateLimiter) tickSweep(now time.Time) {
+	rl.sweepCount++
+	if rl.sweepCount < sweepEveryN {
+		return
+	}
+	rl.sweepCount = 0
+	for k, w := range rl.windows {
+		if now.After(w.resetAt) {
+			delete(rl.windows, k)
+		}
+	}
 }
 
 // middleware 返回 gin 限流中间件；超限返回 429。

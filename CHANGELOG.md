@@ -2,6 +2,55 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
+> **发布状态注记**：本地已打 tag 至 `v0.11.0`，但**远端最高 tag 仍为 `v0.9.0`**，`v0.10.0`/`v0.11.0` 待 push；且当前工作树仍有未提交修复（见 `[Unreleased]`）。提交 + 打 tag 前 `/version` 会持续 `stale=true`（详见手册 7.5.1 / 7.5.6）。
+
+## [Unreleased]（工作树已落地，待 commit + 打 tag 解除 stale）
+
+> 以下改动均已通过 `go test` / `go vet` 验证、尚未进入版本历史。发布前须在开发机执行 commit + 打 tag（建议 `v0.11.1` 或 `v0.12.0`）。
+
+### Added
+- 文档优化：开发者指南新增 7.5 开发机制（构建与版本 / CLI 三件套 / 引擎模式 / 质量门禁 / 安全约束 / 提交发布纪律）；术语基线、错误码与安全合规章节筹划。
+
+### Fixed
+- **P0R1 `executeCLI` 数据竞争**：入口改为 `t.Clone()` 工作副本后再写 `DeviceConfig`/`Interfaces`，消除与后台 `StartAutoSave`（每 5s）并发读写共享 map 的不可恢复 fatal；`TestP0R1CLIMustNotMutateSharedTopologyInPlace` / `TestP0R1CLINonTerminalDeviceAlsoUsesClone` 锁死。
+- **F11 CLI 补全 endpoint**：`POST .../cli/complete` 仅计算候选不执行；回归 `TestCompletionNoDrift`。
+- **F2 限流器淘汰**：修正 token-bucket 淘汰逻辑。
+- **补全表漂移**：CLI 补全候选表与 `parser.go` 实际 case 对齐（无退化）。
+- **IPv6 命令 / 显示 / undo 分发接线**：`parser.go` 顶层 `ipv6`/`ripng`/`ospfv3`、display `ipv6`/`ripng`/`ospfv3`、undo 各分支、`buildSavedConfigSnapshot` 挂载全部接到既有 `ipv6_*.go` 三件套，13 个 IPv6 AC 测试由红灯转绿，并经 Playwright 浏览器端到端复验。
+
+### Security
+- 安全审计（2026-08-12）17 项问题中 **V-1~V-5** 已带回归测试修复（详见 `.workbuddy/安全审计与质量报告_真实代码v0.11_修复记录_2026-08-15.md`）。
+
+## [v0.11.0] - 2026-08-11
+
+P2 CLI 增强，统一命令注册与补全体系，经独立 QA 验收（NoOne，零源码缺陷）。
+
+### Added
+- **P2 CLI 显示统一注册表 `display_registry`**：`internal/cli/display_registry.go` 将 `display`/`dis` 巨型 switch（约 1300 行）收敛为单一事实源 `displayRegistry`，每个原 case 逐字迁移为 `regXxxDisplay(state, cmd, arg0, arg1)`（统一 `reg` 前缀，禁与既有 `buildXxxDisplay` 重名）；新增 display 命令只改一处。`TestDisplayRegistryDispatch` 锁死迁移无回归。
+- **Tab 补全**：后端 `cli.Complete(state, tokens)` 计算候选（注册表 key + 视图感知关键字表 `userViewCommands`/`systemViewCommands`/... + 真实接口名）；前端 `CliTerminal.tsx` Tab 分支 + 候选浮层，零命令提交；`POST .../cli/complete` 仅计算不执行；`TestCompletionNoDrift` 锁死候选表每个 token 必为 parser 实际 case 标签。
+- **历史分层**：localStorage（UI/历史，默认去重 + 上限 200）与 DeviceConfig（拓扑，save 落盘，`RecordHistory`→`SerializeToDeviceConfigData`→`LoadFromDeviceConfigData`，FIFO 256）两层共存，注释澄清边界。
+- **EVPN / NDP 只读诚实占位**：`dis evpn` / `dis bgp evpn`（`regBgpDisplay` 的 `arg1=="evpn"` 分支）/ `dis ndp`，运行态恒 `-` + `evpnSimNote`/`ndpSimNote`；手册补 4.8.5 专章。
+
+### Deprecated
+- 早期散落的 `display` 巨型 switch 分支（已收敛至 `displayRegistry`，原 case 标签逐一迁移，无行为变更）。
+
+### Compatibility
+- 无破坏性 API 变更；CLI 补全为新增能力，不影响既有命令语义；`display` 输出格式与该注册表前逐字一致。
+
+## [v0.10.0] - 2026-08-11
+
+P2 IPv6 支持（course 43-44），延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 验收（NoOne，零源码缺陷）。
+
+### Added
+- **P2 IPv6（course 43-44）**：`internal/cli/ipv6_eval.go` / `ipv6_cmd.go` / `ipv6_display.go` 三件套；全局 `ipv6` 使能 + 接口 `ipv6 enable` / `ipv6 address` / `ipv6 route-static` + RIPng（course 33 形态）/ OSPFv3（course 43 形态）华为真机形态；DeviceConfig 精确前缀键——`ipv6:enabled`、`interface:<if>:ipv6-enable`、`interface:<if>:ipv6-address`、`ipv6:route-static:<prefix>:<nexthop>`、`ipv6:ripng:<pid>:enabled`、`interface:<if>:ripng-<pid>-enable`、`ipv6:ospfv3:<pid>:enabled`、`interface:<if>:ospfv3-<pid>-area`；禁用 `strings.Contains(k,"ip"/"ipv6")` 子串碰撞；`display ipv6 interface brief` / `display ipv6 interface <if>` / `display ipv6 routing-table` / `display ripng` / `display ospfv3` 真实渲染；current-configuration 差异值口径（`buildSavedIPv6InterfaceConfig` / `buildSavedIPv6RouteConfig`） + save→reload 字节级贯通；手册 4.8.4 专章 + PRD/设计文档入库。
+- **诚实占位**：IPv6 协议状态 / ND / DAD / 统计恒 `-`；link-local 仅真实 MAC 才 EUI-64 派生，否则 `SimulatedLinkLocal`；`ipv6SimNote()` 与既有口径一致。
+
+### Deprecated
+- 早期 `ipv6` 顶层残桩（直接写 `ipv6:enabled` + 无子命令派发的旧实现，仅返回 "IPv6 enabled"），由 `applyIPv6*` 精确派发取代。
+
+### Compatibility
+- 无破坏性 API 变更；IPv6 为新增能力，不影响 IPv4 路径；与 v0.9.0 配置键（`interface:<if>:ip` 等）共存、互不为前缀误伤（`undo ipv6` 仅清 `ipv6:` 前缀键，保留 `:ip`/`:lag:mode` 等异族键）。
+
 ## [v0.9.0] - 2026-08-07
 
 P2 第八项 AAA 本地认证（course 71）纠正式重构，延续「纯函数仿真评估 + 诚实占位」路线，经独立 QA 两轮验收（PASS，零源码缺陷）。

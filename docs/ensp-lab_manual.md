@@ -87,12 +87,19 @@ graph TD
 
 ### 2.2 从源码构建
 
+> **版本注入约定**：推荐 `make build`（Linux/macOS）或 `.\build.ps1`（Windows），二者经 `-ldflags` 向 `internal/buildinfo` 注入版本（详见 7.5.1）。直接 `go build` 虽能编译，但**跳过版本注入**，使 `/version` 自报 `stale=true`——仅本地临时调试、不在意版本号时可容忍。此外 `go build` 不会自动构建前端，需先用 `make build` / `.\build.ps1` 或手动 `cd frontend && npm install && npm run build` 生成 `frontend/dist`。
+
 ```bash
 # 克隆项目
 git clone <repository-url>
 cd ensp-lab
 
-# 构建二进制文件（包含嵌入式前端）
+# 推荐：经构建脚本注入版本（并自动构建前端）
+make build            # Linux/macOS
+# 或（Windows）
+.\build.ps1
+
+# 快速本地调试（跳过版本注入，/version 显示 stale=true；需 frontend/dist 已存在）
 go build -o ensp-lab cmd/server/main.go
 
 # 运行
@@ -614,81 +621,127 @@ display interface Tunnel0/0/1        # 接口详情含 GRE 段落（隧道协议
 
 #### 4.8.3 AAA 本地认证（AAA Local Auth）命令参考
 
-对应华为 VRP 实训课程 71。AAA（Authentication / Authorization / Accounting）把"谁能登录、能干什么、用了多少"从本地硬编码口令中解耦出来：用户建在 `local-user` 库、认证方式由 `authentication-scheme` 决定、方案由 `domain` 绑定。本实现为**纠正式重构**——早期版本 `local-user` 被错误守卫在系统视图、且写入不落盘的 `state.LocalUsers` 结构体（save→reload 用户 100% 丢失），本轮已删除该结构体、改为标准 `[R1-aaa]` 视图配置，并将授权（P1）/ 计费（P2）以同构方案子视图扩展。
+对应华为 VRP 实训课程 71。提供本地用户、认证/授权/计费方案与域的标准配置，延续「纯函数仿真评估 + 诚实占位」路线。
 
-> 本工具为单机 VRP CLI 仿真器，**无真实登录会话、无 RADIUS 协议栈、无计费采集**。配置面 100% 真实可 `display` / `save`→`reload` 复现；运行面（认证成功/失败计数、在线会话、计费流量、最后登录时间等）一律显示 `-` 并附 `aaaSimNote()` 诚实注记——**绝不编造数字、绝不伪造 `Online` / `0 online` / `Never`**。
-
-**前置**：在系统视图执行 `aaa` 进入 `[R1-aaa]` 视图；`local-user` / `authentication-scheme` / `authorization-scheme` / `accounting-scheme` / `domain` 均须在该视图内配置（系统视图直接敲 → `Error: Please configure it in the AAA view. Run 'aaa' first.`）。仅 Router / L3Switch / Firewall / VTEP 支持；PC / Server / 二层 Switch 会被拒（`display local-user` / `display domain` 任意设备可读，空态输出 `Info:` 而非能力拒绝）。
+**前置**：`aaa` 为**系统视图**命令（`aaa` → `[R1-aaa]` 视图，`quit` 逐级回退）；`local-user` 仅在 `[R1-aaa]` 下配置。仅 Router / L3Switch / Firewall / VTEP 支持；二层 Switch / PC / Server 配置会被拒（`Error: AAA is not supported on <dt>`）。
 
 ```
-# 进入 AAA 视图
-[R1] aaa
-[R1-aaa]
-
-# 本地用户（四级属性；用户名允许含 '@'，仅合法性校验不做域解析）
-[R1-aaa] local-user admin password cipher Huawei@123      # 口令，长度 8..128
-[R1-aaa] local-user admin privilege level 15              # 级别 0..15
-[R1-aaa] local-user admin service-type telnet ssh         # 覆盖语义，规范化后按固定枚举排序落盘
-[R1-aaa] local-user admin state block                     # 缺省 active（键不落盘），block 为配置态标记
-
-# 认证方案 + 模式（进入方案子视图 [R1-aaa-authen-<name>]）
-[R1-aaa] authentication-scheme sch1
-[R1-aaa-authen-sch1] authentication-mode local            # local / radius / none；radius 仅配置态，不联动 RADIUS
-[R1-aaa-authen-sch1] quit
-
-# 授权方案（P1，与认证方案同构；mode 仅 local / none）
-[R1-aaa] authorization-scheme author1
-[R1-aaa-author-author1] authorization-mode local
-[R1-aaa-author-author1] quit
-
-# 计费方案（P2，纯配置态；mode 仅 none / radius）
-[R1-aaa] accounting-scheme acct1
-[R1-aaa-acct-acct1] accounting-mode none
-[R1-aaa-acct-acct1] quit
-
-# 域 + 方案绑定（被绑方案必须已存在，否则硬拒绝且不写键）
-[R1-aaa] domain huawei
-[R1-aaa-domain-huawei] authentication-scheme sch1
-[R1-aaa-domain-huawei] authorization-scheme author1
-[R1-aaa-domain-huawei] accounting-scheme acct1
-[R1-aaa-domain-huawei] quit
-[R1-aaa] quit
-[R1]
+system-view
+aaa
+ # 创建本地用户并设口令（cipher 为密钥形态标识，未实现 VRP 密文算法，明文存本地配置）
+ local-user admin password cipher Admin@123
+ local-user admin privilege level 15
+ local-user admin service-type telnet                      # 多值可重复累加（ssh https telnet ...）
+ # 认证方案 + 模式
+ authentication-scheme default
+  authentication-mode local                                  # local | radius | none
+ # 域绑定方案
+ domain huawei
+  authentication-scheme default
 ```
 
-撤销：
+查看（只读，任意设备可读）：
 
 ```
-undo local-user admin                  # 整用户级联删
-undo local-user admin service-type     # 属性级删（password / privilege / service-type / state）
-undo authentication-scheme sch1        # 删方案（仍被域引用则硬拒绝，方案键原样保留）
-undo domain huawei                     # 删域
-# 域子视图内：undo authentication-scheme → 解除当前域对该方案的绑定（不校验存在性）
-undo aaa                               # 系统视图级联清整个 aaa: 命名空间
-```
-
-查看：
-
-```
-display local-user                     # 用户表 + 运行态统计（恒 '-'）；空态 Info: No local user configured.
-display aaa                            # 配置总览：计数 + 三类方案小表 + 域表 + VTY 引用
-display domain                         # 域汇总表
-display domain huawei                  # 单域详情（含跨对象解引用的方案 mode）
-display current-configuration          # 含 AAA 配置块（见下「保存与重载」）
-display ssh                            # 含 Local Users 段（脱敏 + 升序）
+display aaa                 # 认证/授权/计费方案 + 域概览（按名称升序）
+display local-user          # 用户列表，口令恒脱敏 ****（绝不伪造 %^%# 密文串）
+display domain huawei       # 单域详情
 ```
 
 **诚实占位与口径**：
-- `display local-user` 的运行态统计（Successful / Failed authentications、Online sessions、Last login time）恒 `-`；`display domain <name>` 的 Online users / Access accepts / rejects 同样恒 `-`。严禁出现 `time.Now()`、计数器或 `0 online` / `Never` 之类的编造值。
-- 口令脱敏：Password 列已配显示 `****`、未配显示 `-`（两者必须可区分）；`display current-configuration` 的口令行同样恒 `****`，**该快照因此不可回灌**（与 STP / GRE 快照定位一致）。
-- 方案 mode 的「生效缺省」与「显式配置」是两件事：从未配过 mode 的方案在 `display aaa` 回退渲染成缺省（认证 = local），但在 `display current-configuration` 中**不输出** `*-mode` 子行；显式配置过 mode（哪怕配的就是 local）才输出子行。
-- 引用完整性：被域引用的方案不得删除（`Error: Scheme <name> is referenced by domain <d>.`），方案键原样保留；域内绑定方案时被绑方案必须已存在，否则硬拒绝（`Error: Scheme <name> does not exist.`），严禁隐式创建。
-- **键碰撞红线**：存储键采用精确前缀 `aaa:`（含尾冒号）匹配，**不使用** `strings.Contains(k, "aaa")` / `Contains(k, "domain")`；否则端口安全粘滞 MAC 键 `interface:GE0/0/1:port-security-sticky-learned:00e0-fc12-0aaa` 与 MAC 值 `aaaa-bbbb-cccc` 会在 `undo aaa` 后被误删，已用单元测试锁死。
-- 缺省值不冗余输出：`local-user state active`（缺省不落盘）、`authentication-mode local`（未显式配不输出子行）。
+- 认证运行态（成功/失败次数、在线会话、计费流量、最后登录、访问接受/拒绝）一律 `-` + `aaaSimNote()` 注记（lite/full 两态），**不编造数字 / 时间 / `Online` / `Never`**。
+- 口令展示层脱敏 `****`，明文仅存于本地 JSON 配置并如实声明（见 7.5.5 安全约束）；未实现 VRP 密文算法，不输出伪密文。
+- **键碰撞红线**：`aaa` / `domain` 均为合法十六进制串，禁用 `strings.Contains(k,"aaa"/"domain")`，全部走 `aaaLocalUserKey` / `aaaSchemeKey` / `aaaDomainKey` 精确 helper；端口安全粘滞 MAC 键（`00e0-fc12-0aaa` / `aaaa-bbbb-cccc`）不被误判、不被 `undo aaa` 级联清理误删。
+- 引用完整性守卫：绑定不存在的方案硬拒、删被引用的方案硬拒。
 
-**保存与重载**：上述配置随 `save` → `display current-configuration` / `display saved-configuration` 自动往返；`reload` 后配置完整复现。输出顺序固定：方案（认证 → 授权 → 计费，各类内按名升序）→ 本地用户（按名升序，每用户内 password → privilege → service-type → state）→ 域（按名升序，含绑定行）。生效缺省值（active / 未显式配的 mode）不落行。
+**常见错误**：
+- `Error: must be in system view`（在用户/接口视图敲 `aaa`）
+- `Error: usage: authentication-mode local | radius | none`（参数非法）
+- `Error: The local user X does not exist.`（`undo local-user X` 但 X 不存在）
+- `Error: scheme X is referenced by ...`（删除被引用的方案）
 
-**相关代码**：`internal/cli/aaa_eval.go`（纯函数评估器）/ `aaa_cmd.go`（命令落地，AAA 配置唯一写 state 出口）/ `aaa_display.go`（渲染 + 持久化）；单一事实源 `aaa:local-user:<name>:{password,privilege,service-type,state}` + `aaa:{authen,author,acct}-scheme:<name>:mode` + `aaa:domain:<name>:{state,authen-scheme,author-scheme,acct-scheme}`。
+**保存与重载**：随 `save` → `display current-configuration` / `display saved-configuration` 自动往返；`reload` 后完整复现（`aaa` 块经独立输出通道，缺省值不冗余输出）。
+
+**相关代码**：`internal/cli/aaa_eval.go` / `aaa_cmd.go` / `aaa_display.go`；单一事实源 `aaa:local-user:<name>:<field>` + `aaa:authen-scheme:<name>:mode` + `aaa:author-scheme:*` + `aaa:acct-scheme:*` + `aaa:domain:<name>:<field>`。
+
+#### 4.8.4 IPv6 命令参考
+
+对应华为 VRP 实训课程 43-44。提供全局使能、接口地址、静态路由、RIPng 与 OSPFv3（华为真机形态），延续「纯函数仿真评估 + 诚实占位」路线。
+
+**前置**：`ipv6` 为**系统视图**命令；`ipv6 enable` / `ipv6 address` / `ipv6 route-static` 为系统或接口视图命令；`ripng` / `ospfv3` 系统视图进进程、接口视图使能/绑区域。仅 Router / L3Switch / Firewall / VTEP 支持；PC / Server / 二层 Switch 拒（`Error: IPv6 is not supported on <dt>`）。
+
+```
+system-view
+ipv6                                          # 全局使能 → IPv6 enabled
+interface GigabitEthernet0/0/0
+ ipv6 enable                                   # → IPv6 is enabled on GigabitEthernet0/0/0
+ ipv6 address 2001:db8::1/64                  # → IPv6 address 2001:db8::1/64 configured on GigabitEthernet0/0/0
+quit
+ipv6 route-static 2001:db8:2::/64 2001:db8:1::2   # → Static route added（前缀/下一跳经校验归一化，幂等）
+ripng 1                                        # → RIPng process 1 enabled
+interface GigabitEthernet0/0/1
+ ripng 1 enable                                # → RIPng process 1 enabled on GigabitEthernet0/0/1
+ospfv3 1                                       # → OSPFv3 process 1 enabled
+interface GigabitEthernet0/0/2
+ ospfv3 1 area 0                              # → OSPFv3 process 1 area 0 enabled on GigabitEthernet0/0/2
+```
+
+查看（只读，任意设备可读）：
+
+```
+display ipv6 interface brief                    # 表头 + 已配地址接口行 + ipv6SimNote()
+display ipv6 interface GigabitEthernet0/0/0     # 接口详情（current state / link-local / Global unicast 等）
+display ipv6 routing-table                      # 华为格式；前缀数值升序；空态 Info: No IPv6 route.
+display ripng                                   # RIPng 进程概览
+display ospfv3                                  # OSPFv3 进程概览
+```
+
+**完整配置示例（经 Playwright 浏览器端到端验证）**：
+
+```
+<R1> system-view
+[R1] ipv6
+IPv6 enabled
+[R1] interface GigabitEthernet0/0/0
+[R1-GigabitEthernet0/0/0] ipv6 enable
+IPv6 is enabled on GigabitEthernet0/0/0
+[R1-GigabitEthernet0/0/0] ipv6 address 2001:db8::1/64
+IPv6 address 2001:db8::1/64 configured on GigabitEthernet0/0/0
+[R1-GigabitEthernet0/0/0] display ipv6 interface brief
+*down: administratively down
+^down: standby
+(l): loopback
+(s): spoofing
+Interface            Physical   Protocol   IPv6 Address
+GigabitEthernet0/0/0 up         -          2001:db8::1/64
+（IPv6 为静态配置模拟（lite 引擎），无真实 ND 邻居发现 / DAD / 动态路由学习，链路本地与运行态字段不可用）
+```
+
+**诚实占位与口径**：
+- IPv6 协议状态 / ND / DAD / 统计恒 `-`；link-local 仅真实 MAC 才 EUI-64 派生，否则 `SimulatedLinkLocal`；`ipv6SimNote()` 与既有口径一致。
+- **键碰撞红线**：禁用 `strings.Contains(k,"ip"/"ipv6")`，全部走 `ipv6GlobalKey` / `ipv6IfaceKey` / `ipv6RouteStaticKey`（`ipv6:route-static:<prefix>:<nexthop>`）/ `ipv6RIPngKey`（`ipv6:ripng:<pid>:enabled`）/ `ipv6OSPFv3Key`（`ipv6:ospfv3:<pid>:enabled`）/ `ipv6RIPngIfaceKey` / `ipv6OSPFv3IfaceKey` 精确 helper。
+- `undo ipv6` 仅清 `ipv6:` 前缀键，保留 `interface:<if>:ip`（IPv4）等异族键；`undo ipv6 address`/`undo ipv6 enable` 级联清地址但保留 ripng/ospfv3/mac；`undo ipv6 route-static <prefix>` 级联清该前缀全部下一跳，无参清空全部。
+
+**保存与重载**：随 `save` → `display current-configuration`（含 `ipv6 address` / `ipv6 route-static` 行）/ `display saved-configuration` 自动往返；`reload` 后字节级复现（`buildSavedIPv6InterfaceConfig` / `buildSavedIPv6RouteConfig` 独立通道）。
+
+**相关代码**：`internal/cli/ipv6_eval.go` / `ipv6_cmd.go` / `ipv6_display.go`；单一事实源见上方键清单。
+
+#### 4.8.5 EVPN / NDP 只读展示（诚实占位）
+
+EVPN 与 NDP 为**只读展示**，运行期不仿真，全部诚实占位（恒 `-` + 注记），不编造邻居 / 路由 / VNI 数字。
+
+```
+display evpn                       # EVPN 概览（instance / vni / peer / routing-table 子块，运行态恒 '-'）
+display bgp evpn                   # BGP EVPN 地址族占位（BGP EVPN: Not configured + 各字段 '-'）
+display ndp                        # NDP 邻居表：本端地址来自真实 IPv6 接口，邻居列恒 '-'
+```
+
+**输出要点**：
+- `dis evpn` 输出 `EVPN instance information` / `EVPN VNI status` / `EVPN peer information` / `EVPN routing-table` 各段，运行态字段恒 `-`，末尾固定 `evpnSimNote()`：`Note: EVPN runtime state (neighbors/VNIs/routes) is not simulated by the lite engine; fields shown as '-' are placeholders.`
+- `dis bgp evpn` 输出 `BGP EVPN: Not configured` + `EVPN address-family peers : -` / `EVPN routes : -` / `EVPN VNIs : -` + `evpnSimNote()`。
+- `dis ndp`：已配 IPv6 接口时输出 `NDP Neighbor Table` 本端地址行、邻居列恒 `-`；无 IPv6 接口时 `Info: No IPv6 interface configured for NDP.`；末尾 `ndpSimNote()`：`Note: NDP neighbor discovery is not simulated by the lite engine; neighbor entries shown as '-' are placeholders.`
+
+**相关代码**：`internal/cli/evpn_display.go`（`buildEVPNDisplay` / `buildEVPNBGPDisplay`）/ `ndp_display.go`（`buildNDPDisplay`），经 `display_registry.go` 的 `regEvpnDisplay` / `regBgpDisplay`（`arg1=="evpn"` 分支）/ `regNdpDisplay` 单一分发源；`TestDisplayEVPN` / `TestDisplayNDP` / `TestCompletionEVPNNDP` 锁死占位语义与补全无漂移。
 
 ### 4.9 左侧面板（设备库 / 连线种类）
 
@@ -1274,6 +1327,63 @@ go install github.com/ofabry/go-callvis@latest
 go-callvis -http=:7878 ./cmd/server
 ```
 
+### 7.5 开发机制
+
+本节汇总日常开发必须遵循的机制与红线，避免在"能编译"与"符合项目约定"之间走偏。所有约定均与 `build.ps1`、`internal/buildinfo`、`internal/cli/display_registry.go` 等真实实现保持一致。
+
+#### 7.5.1 构建与版本机制
+
+- **构建入口**：Windows 用 `./build.ps1`，其余平台用 `make build`；二者经 `-ldflags` 向 `internal/buildinfo` 注入版本。**直接 `go build` 也能编译，但跳过注入，使 `/version` 自报 `stale=true`**——凡需正确版本号或待发布的交付物必须走 `./build.ps1` / `make build`（仅本地临时调试、不在意版本号时可容忍 `stale`）。
+- **版本注入原理**：`build.ps1` / `Makefile` 通过 `-ldflags` 向 `internal/buildinfo` 注入四个字符串变量——
+  - `Version`：`git describe --tags --always` 结果（如 `v0.9.0-1-gca8aa87`），未注入时兜底为 `dev`；
+  - `BuildTime`：RFC3339 UTC 构建时刻（如 `2026-02-11T03:04:05Z`），未注入时为 `unknown`；
+  - `Commit`：构建时 git 短 SHA，未注入时为 `unknown`；
+  - `Dirty`：构建时工作树是否有未提交改动（`"true"` / `"false"`）。
+- **stale 四规则**（`internal/buildinfo.detectStale`）：
+  1. `BuildTime` 仍为默认值 → 绕过 make/build.ps1 直接 `go build` → 陈旧，原因"构建信息未注入（疑似直接 go build 绕过 make / build.ps1）"；
+  2. git 不可用 / 不在 git 工作区 / 注入的 `Commit` 不属于当前仓库（典型为产物被拷到别处运行）→ 无从判断，**不**误报，仅记录原因；
+  3. 运行时 `HEAD` 与注入的 `Commit` 不一致 → 二进制落后于当前分支 → 陈旧，原因"二进制构建自 X，当前 HEAD 为 Y"；
+  4. `git status --porcelain` 非空（工作树有未提交改动）→ 陈旧，原因"工作树存在未提交改动，源码可能已变更"。
+- **单一交付物**：仅 `ensp-lab(.exe)` 一个二进制；`server.exe` 已删除，勿重建第二份二进制。
+
+#### 7.5.2 CLI 开发范式（三件套）
+
+所有 VRP 命令特性统一采用 **eval / cmd / display 三件套** + `DeviceConfig` 单一事实源：
+
+- **`xxx_eval.go`**：纯函数评估器，**无副作用**，只读 `state.DeviceConfig` 派生只读视图；不修改 `sim` 引擎、不 import `internal/protocol`、零新增第三方依赖、可单测。
+- **`xxx_cmd.go`**：**副作用唯一出口**，仅此处写 `state.DeviceConfig`。
+- **`xxx_display.go`**：仅渲染，不写状态。
+- **键命名空间**：配置以 `DeviceConfig` 精确键存储（如 `ipv6:enabled`、`interface:<if>:ipv6-address`、`aaa:<...>`）。
+- **⚠️ 键碰撞红线**：**严禁** `strings.Contains(k, "gre" / "ipv6" / "aaa" / "domain")` 这类子串匹配，必须用语义精确的**前缀 / 中缀**辅助函数（如完整段比对），避免误伤 `Bridge-Aggregation`、`00e0-fc12-0aaa`、`aaaa-bbbb-cccc` 等合法值。
+- **display 单一分发源**：`internal/cli/display_registry.go` 的 `displayRegistry` 是 `dis` 子命令的唯一事实源，每个条目为 `regXxxDisplay(state, cmd, arg0, arg1)`；新增 display 命令**只改这一处**。回归测试 `TestDisplayRegistryDispatch` 锁死无退化。
+- **Tab 补全**：后端 `cli.Complete(state, tokens)` 计算候选（注册表 key + 视图感知关键字表 + 真实接口名），前端零命令提交；`TestCompletionNoDrift` 锁死候选表与 parser 实际 case 一致。
+- **诚实占位**：lite 引擎运行期字段（协议状态 / 统计 / ND / DAD 等）恒为 `-`，**不编造数字**；涉及真实协议栈才填真实值。
+
+#### 7.5.3 仿真引擎模式
+
+- **lite（默认，Windows）**：`engine_nsx.go`，ns-x 事件驱动，不触及真实协议栈——因此内核级包过滤、真实路由收敛等**架构上不可行**，对应显示恒为诚实占位。
+- **full（Linux，build tag）**：`gont_emulator.go` + FRR，真实网络命名空间；需 `CAP_NET_ADMIN`、OVS 等系统依赖（见 §8.1）。
+- 引擎由 `platform.go` 工厂按平台自动选择；远程 / 容器部署注意平台差异。
+
+#### 7.5.4 质量门禁
+
+- **`go vet` 清零**：提交前 `go vet ./...` 必须退出 0，零 unreachable / 零可疑构造。
+- **测试全绿**：`go test ./internal/...` 全量通过；新增特性须带回归测试（如 `TestDisplayRegistryDispatch`、`TestCompletionNoDrift`、`TestP0R1*`）。
+- **⚠️ 浏览器端到端验证铁律**：所有 UI / CLI 行为验证**必须经由 MCP 浏览器（Playwright）执行**真实点击 / 输入 / 截图，**禁止仅用 curl 或假设判定就宣称"已验证"**。起服务须绑 `127.0.0.1`（默认即 localhost only），勿开 `0.0.0.0`。
+- **autosave 回滚须知**：服务运行时每 5 秒 `StartAutoSave` 将内存拓扑刷回 `data/*.json`。**运行中对其文件原地改盘会被秒回滚**——需先停服务再改，或经 API（`PUT /api/topologies/:id/...`）更新内存模型。
+
+#### 7.5.5 安全约束
+
+- **本地单用户、无鉴权 / CSRF**：设计为本地实验工具，仅 `localhost` CORS（放行任意本地端口）。**若要开放远程访问，必须先补认证 + CSRF**，否则为高危。
+- **明文存储事实**：拓扑与 CLI 配置以明文 JSON 存于 `data/*.json`（AAA 已如实声明明文）。文档须诚实陈述此现状，勿暗示已加密。
+- **输入校验与注入防护**：外部输入经 `internal/api/validation.go` 集中校验；FRR 配置注入点在 `applyOSPFConfig` / `applyBGPConfig` / `streamSimEvents` 等处有防护；写类 handler 须先 `Topology.Clone()` 或深拷贝，禁止原地改共享指针（已修复 `executeCLI` 数据竞争）。
+
+#### 7.5.6 提交与发布纪律
+
+- **commit + tag 解除 stale**：文档 / 代码变更须提交并打 tag（如 `v0.11.x`），否则 `/version` 因工作树未提交或 HEAD 漂移而 `stale=true`。
+- **CHANGELOG 格式**：遵循 Keep a Changelog，每版补齐 `Added / Changed / Deprecated / Removed / Fixed / Security` 全分类；当前 `CHANGELOG.md` 滞后于代码版本（止步 v0.9.0，代码已 v0.11.0），发布前须补全。
+- **单一交付物**：仅 `ensp-lab(.exe)`；构建走 `build.ps1` / `make build` 保证版本注入。
+
 ---
 
 ## 八、故障排除
@@ -1376,7 +1486,6 @@ done
 - ✅ CLI 终端：每设备独立命令历史（持久化）、`save` 保存配置（VRP Y/N 确认 + `display saved-configuration`）；双击设备 / 右键「查看详情」弹出可拖动的浮动窗口（类 eNSP），支持多窗口、最小化 / 最大化 / 关闭、位置持久化
 - ✅ 左侧面板 2 Tab（设备库 / 连线种类）：连线种类选择器含 auto + 4 种线路、拖拽创建链路自动分配端口；右上角浮动窗口任务栏（设备名 ✓ 点击聚焦）
 - ✅ GRE 隧道（course 69）：Tunnel 接口视图配置 `tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`，`display gre tunnel` / `display interface Tunnel`；纠正式重构（删除野路子 `gre` 系统视图命令与 `state.GRE` 字段），纯函数仿真评估 + 诚实占位
-- ✅ AAA 本地认证（course 71）：`aaa` / `local-user` 系统视图 + authentication / authorization / accounting-scheme + domain；纠正式重构（删除不落盘的 `state.LocalUsers`，改为标准 `[R1-aaa]` 视图 + `aaa:` 精确前缀键），纯函数仿真评估 + 诚实占位（运行时认证统计恒 `-`）+ 键碰撞红线（禁 `Contains(k,"aaa"/"domain")`，不误伤端口安全粘滞 MAC 键）；独立 QA 两轮验收 PASS
 
 ### 计划中
 
@@ -1391,6 +1500,140 @@ done
 | **多租户支持** | 低 | 支持多用户隔离 |
 
 ---
+## 十、错误码与排障
+
+本项目的错误反馈分两层：**API 层**以 HTTP 状态码 + JSON `{"error": "..."}` 返回；**CLI 层**以 VRP 风格 `Error: ...` 字符串回显。以下汇总覆盖全部高频异常场景；CLI 错误串的完整定义见各 `internal/cli/*_eval.go` 常量，新增特性须同步补充。
+
+### 10.1 API 错误响应（HTTP 状态码语义）
+
+| 状态码 | 含义 | 常见触发 | 处理建议 |
+|--------|------|----------|----------|
+| `200 OK` | 成功（查询 / CLI 执行 / 诊断） | 正常响应 | 读取响应体 |
+| `201 Created` | 资源已创建 | `POST /api/topology` 成功 | 取响应 `id` 继续 |
+| `204 No Content` | 删除成功 | `DELETE /api/topologies/:id` | 无需解析响应体 |
+| `400 Bad Request` | 请求校验失败 / 参数缺失 / 类型非法 | 设备类型不在枚举、拓扑 ID 格式错、CLI 命令用法错、`src`/`dst` 缺填、诊断 `src` 未开机、非法 IP/CIDR/ASN/Area | 读取 `error` 文案，按提示修正字段后重发 |
+| `404 Not Found` | 资源不存在 | `Topology not found` / `Device not found` / `Annotation not found` / DNS 解析失败（`404 { "error": "DNS 解析失败：..." }`） | 确认 ID 拼写 / 资源是否已创建；DNS 失败请检查域名拼写或网络 |
+| `500 Internal Server Error` | 服务端内部错误 | 引擎返回空结果、内部异常（`internal server error`，细节仅入日志不外露） | 查看服务端日志定位；属真机引擎路径时才可能触发（lite 仿真子集通常返回确定结果） |
+| `501 Not Implemented` | 平台 / 引擎不支持 | FRR 相关端点（OSPF/BGP 下发、路由表读取）在非 Linux 或未启用 gont 时返回 | 改用 `full` 引擎（Linux + gont + FRR，见 7.5.3 / 8.1） |
+
+> 统一错误响应 `clientError` 不向客户端泄露内部堆栈；所有用户可见 `error` 文案均为受控中文/英文提示。路径穿越防护：`topology id` 与导出文件名经 `sanitizeForFilename` 处理。
+
+### 10.2 CLI 错误串分类表
+
+所有 CLI 错误串均以 `Error: ` 前缀回显，按模块归类如下（✅ 表示已带单元测试锁死）。
+
+#### 通用 / 视图守卫
+| 错误串 | 触发条件 | 处理建议 |
+|--------|----------|----------|
+| `Error: unrecognized command` | 子命令无法识别（含 `ipv6 foo`、`ipv6 router rip` 等）✅ | 核对命令拼写 / 视图；参考 4.8 各特性 |
+| `Error: must be in interface view` | 接口视图命令在系统/用户视图执行（如系统视图 `ipv6 address`）✅ | 先 `interface <if>` 进入接口视图 |
+| `Error: must be in system view` | 系统视图命令在错误视图执行（如非系统视图 `aaa`） | 先 `system-view` |
+| `Error: must be in VTY user interface view` | VTY 相关命令不在 VTY 视图 | 进入 `user-interface vty` 后重试 |
+| `Error: usage: ...` | 缺参 / 参数形态错（如 `local-user` 仅给名字、`authentication-mode` 非法值）✅ | 按 `usage:` 提示补全参数 |
+
+#### AAA（course 71）
+| 错误串 | 触发条件 | 处理建议 |
+|--------|----------|----------|
+| `Error: AAA is not supported on <dt>` | PC / Server / 二层 Switch 配置 AAA✅ | 仅 Router/L3Switch/Firewall/VTEP 支持 |
+| `Error: Please configure it in the AAA view. Run 'aaa' first.` | 未进 `[R1-aaa]` 直接配子项 | 先 `system-view` → `aaa` |
+| `Error: The authentication scheme %s does not exist.` | 绑定/删除不存在的方案 | 先 `authentication-scheme <name>` 创建 |
+| `Error: The authentication scheme %s is referenced by domain %s and cannot be deleted.` | 删被域引用的方案 | 先解除域绑定再删 |
+| `Error: The domain %s does not exist.` | 操作不存在的域 | 先 `domain <name>` |
+| `Error: Privilege level must be between 0 and 15.` | 特权级越界 | 取 0–15 |
+| `Error: Invalid service-type %s. Available: ...` | 非法 service-type | 取 telnet/ssh/ftp/http/terminal/ppp |
+| `Error: The password length must be between 8 and 128.` | 口令长度不合规 | 8–128 位 |
+| `Error: The local user %s does not exist.` | `undo local-user` 目标不存在 | 核对用户名 |
+
+#### IPv6（course 43-44）
+| 错误串 | 触发条件 | 处理建议 |
+|--------|----------|----------|
+| `Error: IPv6 is not supported on <dt>` | PC/Server/二层 Switch 配 IPv6✅ | 仅 L3 设备支持 |
+| `Error: Please run 'ipv6' in system view to enable IPv6 globally, or 'ipv6 enable' in interface view.` | 系统视图敲 `ipv6 enable` | 先 `ipv6` 全局使能，再进接口 `ipv6 enable` |
+| `Error: Please run 'ipv6 enable' on %s first.` | 未 `ipv6 enable` 配地址（C1 前置）✅ | 先 `ipv6 enable` |
+| `Error: Invalid IPv6 address %s` / `Error: Invalid IPv6 prefix %s` | 地址/前缀形态非法 | 用合法 IPv6 文本（如 `2001:db8::1/64`） |
+| `Error: Invalid IPv6 prefix length %s (0-128)` | 前缀长度越界 | 取 0–128 |
+| `Error: invalid interface '%s'` | 接口不存在（display）✅ | 核对接口名（如 `GigabitEthernet0/0/0`） |
+| `Error: usage: ipv6 route-static <prefix>/<len> <nexthop>` | 静态路由缺参 | 补全前缀+下一跳 |
+
+#### GRE（course 69）/ DHCP 中继（course 27）/ 其它
+| 错误串 | 触发条件 | 处理建议 |
+|--------|----------|----------|
+| `Error: Please configure GRE in the Tunnel interface view. Run 'interface Tunnel0/0/1' first.` | 未进 Tunnel 接口配 GRE | 先 `interface Tunnel0/0/1` |
+| `Error: The destination address cannot be the same as the source address.` | GRE 源/目同地址 | 改用不同地址 |
+| `Info: No DHCP relay interface configured.` | 无中继配置（display 空态，非错误） | 按需配置 `dhcp select relay` |
+| `Info: No GRE tunnel configured.` / `Info: No IPv6 route.` / `Info: No local user configured.` / `Info: No AAA configuration.` / `Info: No domain configured.` | 各 display 空态（非错误） | 按需配置对应特性 |
+
+> **键碰撞红线（排障相关）**：IPv6 / AAA / GRE 配置键均禁止 `strings.Contains` 子串匹配，改用精确 helper；历史曾因误匹配误伤 `Bridge-Aggregation` / 端口安全粘滞 MAC，已单测锁死（见 4.8.2 / 4.8.3 / 4.8.4）。
+
+### 10.3 排障速查
+
+- **`/version` 报 `stale=true`**：构建未走 `build.ps1`/`make build`（直 `go build`），或工作树有未提交改动，或 HEAD 漂移 → 见 7.5.1 / 7.5.6。
+- **IPv6/GRE 命令「unrecognized」**：确认已在正确视图（系统/接口）且设备为 L3 类型。
+- **CLI 配置改了但 reload 丢**：确认经 `save` 落盘；逻辑口（Tunnel/GRE）有独立重建通道，正常不丢。
+- **FRR 下发 501**：切换到 Linux + gont `full` 引擎（需 root / CAP_NET_ADMIN + OVS）。
+- **诊断 `400 未开机`**：先通过 UI/API 给 `src` 设备开机。
+
+
+---
+
+## 十一、安全与合规
+
+ensp-lab 定位为**本地单用户网络实验工具**，非远程多租户服务。本节集中陈述安全事实与边界，便于合规评估——所有结论与 7.5.5 一致，且以「诚实陈述现状」为第一原则，**不暗示已实现未做的安全措施**。
+
+### 11.1 威胁模型与适用边界
+
+- **适用**：个人在本地（localhost）做华为 VRP CLI 仿真、拓扑实验、教学演示。
+- **不适用**：多用户共享、公网暴露、生产网络管控。开放远程访问前必须先补齐 11.4 所列控制。
+
+### 11.2 数据存储（明文，如实声明）
+
+- 拓扑与 CLI 配置以**明文 JSON** 持久化于 `data/*.json`（每拓扑一个文件）；AAA 口令、密钥等同样明文存于本地配置文件——已在 `display` 输出层脱敏（`****`）展示，但**磁盘上是明文**。
+- **风险告知**：任何能读取本机 `data/` 目录的主体均可看到全部配置（含口令）。请勿在共享/多用户主机上存放含真实凭据的实验数据；本工具不提供静态加密。
+- 秘钥在 `display current-configuration` 中已脱敏，仅 `data/*.json` 落盘明文。
+
+### 11.3 传输层
+
+- 服务默认绑 `127.0.0.1`（localhost only），**不开 `0.0.0.0`**；前端经相对路径访问 API，改端口无需前端改动。
+- CORS 仅放行任意 `localhost` / `127.0.0.1` 源（端口无关），用于本地开发（如 Vite dev server）；非跨域信任外部站点的授权机制。
+- 未启用 TLS——因仅本地回环通信，传输层风险低；一旦开放远程访问须自行前置反向代理 + TLS（见 11.4）。
+
+### 11.4 远程访问红线（强制）
+
+> ⚠️ **若要开放远程 / 公网访问，必须先补以下控制，否则为高危配置：**
+> 1. **身份认证**：增加登录会话 / token，禁止匿名访问 API 与管理 UI；
+> 2. **CSRF 防护**：写类请求加同源/令牌校验；
+> 3. **传输加密**：前置反向代理启用 HTTPS（TLS）；
+> 4. **授权与审计**：按角色限制能力，记录操作日志（见 11.5）。
+
+当前代码**未实现**上述任何一项；本地单用户场景下因无外部暴露面而未触发风险。
+
+### 11.5 审计日志（现状）
+
+- **当前无操作审计日志**：本工具不记录「谁在何时执行了哪条 CLI / 改了哪个拓扑」。所有行为仅即时执行，无留存。
+- 服务端仅有技术运行日志（引擎模式、拓扑加载、错误堆栈），**不含用户操作审计语义**，不应被当作审计依据。
+- 若合规要求操作审计，须在远程访问前置层（反向代理 / 网关）或扩展后端实现，超出本工具当前范围。
+
+### 11.6 输入校验与注入防护（已实现）
+
+- 外部输入经 `internal/api/validation.go` 集中校验：拓扑 ID 正则、设备类型枚举、控制字符拒绝、`net.ParseIP`/`ParseCIDR`、OSPF Area / ASN / Finite、拓扑负载结构校验。
+- FRR 配置注入点在 `applyOSPFConfig` / `applyBGPConfig` / `streamSimEvents` 等处有防护，避免恶意配置穿透到后端进程。
+- 写类 handler 须先 `Topology.Clone()` 或深拷贝，禁止原地改共享指针（已修复 `executeCLI` 后台 `StartAutoSave` 并发数据竞争，见 7.5.5 / CHANGELOG `[Unreleased]`）。
+- 路径穿越防护：`topology id` 与导出文件名经 `sanitizeForFilename` 处理；统一错误响应 `clientError` 不向客户端泄露内部细节；pprof token 守卫（空则自动生成并 Warn）。
+
+### 11.7 安全变更汇总
+
+各版本的安全相关改动集中在 CHANGELOG 的 `### Security` 段：
+
+- **v0.9.0**：AAA 诚实占位 + 口令脱敏 + 键碰撞红线。
+- **v0.8.0**：GRE 诚实占位 + 键碰撞红线（禁 `Contains(k,"gre")`）。
+- **v0.6.0**：NAT/端口安全/VRRP/STP 诚实占位 + 密钥脱敏。
+- **v0.5.0**：ACL 默认 `deny any` + lite 引擎诚实占位。
+- **v0.4.0**：写类 handler 全量深拷贝、CORS 收紧、集中校验器、统一错误响应、pprof token 守卫、CI 安全门禁（SAST/依赖扫描/secrets 扫描）。
+- **[Unreleased]**：安全审计（2026-08-12）V-1~V-5 带回归测试修复。
+
+
+---
+
 
 **文档版本：** v1.0  
 **生成日期：** 2026-07-20  

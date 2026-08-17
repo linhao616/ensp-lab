@@ -65,6 +65,19 @@ func (r *Router) executeCLI(c *gin.Context) {
 	var output string
 	t, err := r.store.GetTopology(id)
 
+	// P0-R1 修复：store.GetTopology 返回内部共享指针。修复前 executeCLI 直接在该
+	// 共享对象上执行 device.ConfigData = ... / device.Interfaces[...] = ... /
+	// updateDeviceInterfaces 中的 delete(...)，与后台 StartAutoSave 的
+	// Flush→Clone→cloneDevice 在 t.mu.RLock 下并发读写同一 Interfaces map，触发
+	// Go 运行时 "concurrent map read and map write" 不可恢复 fatal（无法被
+	// gin.Recovery 捕获，进程直接退出）。此处改为深拷贝后写入副本，并以
+	// UpdateTopology(副本) 落盘，与其余写类 handler（topology/annotation/device/
+	// link/ipconfig）约定一致；共享指针在整条路径中保持只读。
+	if err == nil && t != nil {
+		t = t.Clone()
+		state.Topology = t
+	}
+
 	// P0-B：ping / tracert / traceroute 走真实仿真引擎（sim.Engine），
 	// 取代此前 parser.go 的硬编码成功/固定 2 跳结果。引擎不可用时
 	//（拓扑未加载、设备缺失等）回退到 parser 原逻辑，保证健壮性。

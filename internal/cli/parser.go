@@ -866,6 +866,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			if msg, handled := applyUndoGREInterface(state, cmd.Args); handled {
 				return msg
 			}
+			// undo ipv6 enable/address | undo ripng <pid> enable | undo ospfv3 <pid> area
+			// （P2 第九项，T04：接口视图 IPv6/RIPng/OSPFv3 undo 级联）。
+			// handled 模式：未命中交回下方既有 undo 分支，零回归（AC10 ⑤）。
+			if msg, handled := applyUndoIPv6Interface(state, cmd.Args); handled {
+				return msg
+			}
 			switch sub {
 			case "shutdown":
 				// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
@@ -2118,16 +2124,62 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return "PPPoE enabled"
 	case "ipv6":
+		// 三态派发（P2 第九项，T02）：裸 ipv6 / ipv6 enable / ipv6 address /
+		// ipv6 route-static，按「当前视图 + 一级子命令」精确路由到 ipv6_cmd.go 副作用出口。
 		if state.CurrentView == ViewSystem {
-			state.DeviceConfig["ipv6:enabled"] = "true"
-			return "IPv6 enabled"
+			if len(cmd.Args) == 0 {
+				return applyIPv6SystemEnable(state, cmd.Args)
+			}
+			switch strings.ToLower(strings.TrimSpace(cmd.Args[0])) {
+			case "enable":
+				// AC1③ / AC2⑤：系统视图 ipv6 enable 引导（A11），不写任何键。
+				return ErrIPv6SystemViewEnableGuide
+			case "address":
+				// AC1④：系统视图 ipv6 address 须进接口视图。
+				return ErrIPv6MustBeInterfaceView
+			case "route-static":
+				return applyIPv6RouteStatic(state, cmd.Args[1:])
+			default:
+				return ErrIPv6Unrecognized
+			}
 		} else if state.CurrentView == ViewInterface {
-			if len(cmd.Args) >= 2 && strings.ToLower(cmd.Args[0]) == "address" {
-				state.DeviceConfig["interface:"+state.CurrentSub+":ipv6-address"] = cmd.Args[1]
-				return fmt.Sprintf("IPv6 address %s configured on %s", cmd.Args[1], state.CurrentSub)
+			if len(cmd.Args) == 0 {
+				return ErrIPv6Unrecognized
+			}
+			switch strings.ToLower(strings.TrimSpace(cmd.Args[0])) {
+			case "enable":
+				return applyIPv6InterfaceEnable(state, cmd.Args[1:])
+			case "address":
+				return applyIPv6InterfaceAddress(state, cmd.Args[1:])
+			default:
+				return ErrIPv6Unrecognized
 			}
 		}
-		return "IPv6 configuration"
+		// 用户视图（既非系统也非接口）：ipv6 enable 按 AC2⑤ 引导进接口视图。
+		if len(cmd.Args) > 0 && strings.EqualFold(strings.TrimSpace(cmd.Args[0]), "enable") {
+			return ErrIPv6MustBeInterfaceView
+		}
+		return ErrIPv6Unrecognized
+	case "ripng":
+		// RIPng：系统视图进进程 / 接口视图使能（P0-13，华为 VRP 真机形态）。
+		// 接口视图仅接受 `ripng <pid> enable`；裸 / 缺 enable → unrecognized（§7.6）。
+		if state.CurrentView == ViewInterface {
+			if len(cmd.Args) == 2 && strings.EqualFold(strings.TrimSpace(cmd.Args[1]), "enable") {
+				return applyRIPngInterface(state, cmd.Args)
+			}
+			return ErrIPv6Unrecognized
+		}
+		return applyRIPng(state, cmd.Args)
+	case "ospfv3":
+		// OSPFv3：系统视图进进程 / 接口视图绑区域（P0-14，华为 VRP 真机形态）。
+		// 接口视图仅接受 `ospfv3 <pid> area <area>`；裸 / 缺 area → unrecognized（§7.6）。
+		if state.CurrentView == ViewInterface {
+			if len(cmd.Args) >= 3 && strings.EqualFold(strings.TrimSpace(cmd.Args[1]), "area") {
+				return applyOSPFv3Interface(state, cmd.Args)
+			}
+			return ErrIPv6Unrecognized
+		}
+		return applyOSPFv3(state, cmd.Args)
 	case "smtp":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2587,6 +2639,16 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// 并追加 OSPF/BGP/ISIS 等协议启用摘要块，避免较旧版直排 key-value 而丢失协议信息
 			//（P1-F，决策 #6 + 风险3）。
 			return state.buildSavedConfigSnapshot() + formatProtocolBlocks(state)
+		case "ipv6":
+			// display ipv6 [interface [<if>|brief] | routing-table [<prefix>] | brief]
+			// 渲染层严格复刻 gre_display 范式，只读且无能力守卫（AC11b）。
+			return buildIPv6Display(state, cmd.Args[1:])
+		case "ripng":
+			// display ripng [<pid>]（AC13，诚实占位：配置态真实 / 运行态恒 "-"）。
+			return buildRIPngDisplay(state, arg1)
+		case "ospfv3":
+			// display ospfv3 [<pid>]（AC13，诚实占位：配置态真实 / 运行态恒 "-"）。
+			return buildOSPFv3Display(state, arg1)
 		case "eth-trunk":
 			// P2 #5 改动点 8（T03）：重写为 buildEthTrunkDisplay，唯一数据源 = EvaluateLAG。
 			// 支持 display eth-trunk [<id>] [verbose | load-balance | interface <if>]；
@@ -3497,6 +3559,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "bgp":
+			// display bgp evpn [peer|routing-table|vni]：EVPN 地址族诚实占位（P2 / AC6）。
+			// 此前内层 switch 的 bgp 分支漏接该子命令，仅回 "BGP: Not configured"；
+			// 现补接（与 display_registry.go 的 regBgpDisplay arg1=="evpn" 分支同源）。
+			if arg1 == "evpn" {
+				return buildEVPNBGPDisplay(state)
+			}
 			// display bgp peer：逐邻居明细表（P1-F，T06）
 			if arg1 == "peer" {
 				return buildBGPPeerDisplay(state)
@@ -3797,6 +3865,16 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 				}
 			}
 			return state.FormatHistoryCommand(maxSize)
+		case "evpn":
+			// EVPN 概览 / 子命令（vni/peer/routing-table）诚实占位（P2 / AC6）。
+			// 已注册于 display_registry.go 的 regEvpnDisplay，此前内层 switch 漏接 case，
+			// 落到了 unknown command 兜底；此处补接线（锁死用例 TestDisplayEVPN）。
+			return regEvpnDisplay(state, cmd, arg0, arg1)
+		case "ndp":
+			// NDP 邻居表诚实占位（P2）：本端地址来自真实 IPv6 接口，邻居列恒 '-'。
+			// 已注册于 display_registry.go 的 regNdpDisplay，此前内层 switch 漏接 case；
+			// 此处补接线（锁死用例 TestDisplayNDP）。
+			return regNdpDisplay(state, cmd, arg0, arg1)
 		}
 	}
 	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
@@ -5139,9 +5217,32 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 			return fmt.Sprintf("BGP process %s removed", args[1])
 		}
 		return "BGP process removed"
-	case "ipv6":
-		delete(state.DeviceConfig, "ipv6:enabled")
-		return "IPv6 disabled"
+		case "ipv6":
+			// P2 第九项（T04）：系统视图 undo ipv6 族路由到精确 undo 函数。
+			//   - undo ipv6                          → applyUndoIPv6System（清 ipv6: 精确前缀）
+			//   - undo ipv6 route-static [<prefix>]  → applyUndoIPv6RouteStatic（A8/C2 级联）
+			// 其余子命令交回既有逻辑（当前 ipv6 仅上述两类）。
+			if len(args) >= 2 && strings.EqualFold(strings.TrimSpace(args[1]), "route-static") {
+				if msg, handled := applyUndoIPv6RouteStatic(state, args); handled {
+					return msg
+				}
+			}
+			if msg, handled := applyUndoIPv6System(state, args); handled {
+				return msg
+			}
+			return "IPv6 disabled"
+		case "ripng":
+			// undo ripng [<pid>]（P0-13）：清理 ipv6:ripng: 精确前缀 / 精确键。
+			if msg, handled := applyUndoRIPng(state, args); handled {
+				return msg
+			}
+			return "RIPng disabled"
+		case "ospfv3":
+			// undo ospfv3 [<pid>]（P0-14）：清理 ipv6:ospfv3: 精确前缀 / 精确键。
+			if msg, handled := applyUndoOSPFv3(state, args); handled {
+				return msg
+			}
+			return "OSPFv3 disabled"
 	case "isis":
 		// 反向清理 IS-IS 配置（P1-F 遗留 L1）。严格对齐 undo ospf/undo bgp 写法：
 		// 复位结构化字段并清理历史写盘的 isis:* 键。
@@ -5527,6 +5628,10 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			if greLines := buildSavedGREInterfaceConfig(state, ifc.Name); greLines != "" {
 				b.WriteString(greLines)
 			}
+			// IPv6（P2 第九项，T4）：输出 ipv6 enable / ipv6 address 差异值行（缺省不冗余）。
+			if ipv6Lines := buildSavedIPv6InterfaceConfig(state, ifc.Name); ipv6Lines != "" {
+				b.WriteString(ipv6Lines)
+			}
 		}
 		b.WriteString("#\n")
 	}
@@ -5564,6 +5669,12 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 
 	for _, r := range state.Routes {
 		b.WriteString(fmt.Sprintf("ip route-static %s %s %s\n", r.Destination, r.Mask, r.NextHop))
+	}
+
+	// IPv6 静态路由（P2 第九项，T4）：输出 ipv6 route-static <prefix> <nexthop>
+	//（确定性升序，AC8 ③ 字节级一致）。
+	if ipv6RouteLines := buildSavedIPv6RouteConfig(state); ipv6RouteLines != "" {
+		b.WriteString(ipv6RouteLines)
 	}
 
 	// VLAN 段按 vlan-id 升序输出。原实现直接 range map，导致
