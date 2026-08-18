@@ -1,6 +1,6 @@
 module ensp-lab
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/bytedance/ns-x/v2 v2.4.5
@@ -9,7 +9,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/stv0g/gont/v2 v2.3.6
 	go.uber.org/zap v1.24.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sys v0.46.0
 )
 
 require (
@@ -57,11 +57,11 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1 // indirect
-	golang.org/x/net v0.51.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	kernel.org/pub/linux/libs/security/libcap/cap v1.2.69 // indirect
