@@ -12,6 +12,9 @@
 - **技术债：`prefixToSubnet` 有类近似**（`internal/cli/tools.go`）：此前仅分 /8 /16 /24 /32 四档，`/30` 误算成 `255.255.255.0`；改为按位精确计算，任意前缀长度（0–32）均正确（`/30 → 255.255.255.252`）。`TestPrefixToSubnetExact` 锁死。
 - **技术债：`display interface <if>` 掩码重复渲染**：`interface:<if>:ip` 配置键以 `"IP MASK"` 空格形态存储，原 `case "ip"` 把整串当作 IP、随后显示又补 `/Mask`，导致 `Internet Address is` 行输出 `10.0.0.1 255.255.255.252/255.255.255.252`（物理口亦受影响；GRE 因 save→reload 走空格形态不触发）。现拆出 IP 与 Mask 分别填充（`display_registry.go` 与 `parser.go` 两份 `display interface` 实现同步修复）。`TestDisplayInterfaceIPMaskNoDuplicate` / `TestDisplayInterfaceIPPrefixMaskNoDuplicate` 锁死。
 
+### Security
+- **F1 依赖安全升级（build(deps) `a2d7b78`）**：`go` 指令 1.26.5→1.26.6，随工具链修复 3 个实际被调用的 std-lib 漏洞（crypto/tls `GO-2026-6090` / net/http `GO-2026-6089` / encoding/asn1 `GO-2026-5972`）；`golang.org/x/*` 升补丁版（x/net `v0.56.0` / x/crypto `v0.53.0` / x/sys `v0.46.0` / x/text `v0.39.0`）。govulncheck 复核 `Your code is affected by 0 vulnerabilities`，仅余 `GO-2026-5932`（x/crypto）无上游修复版、代码未调用，仅监控。
+
 ## [v0.11.0] - 2026-08-18（已发布，tag `v0.11.0` → `7cecdcb`）
 
 > 本版本于 2026-08-18 合并发布；合并点 `b67e68b`、共同祖先 `ca8aa87`。以下改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 `go build`（含 embed 前端）验证。
