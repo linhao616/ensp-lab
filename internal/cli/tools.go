@@ -211,20 +211,42 @@ func cidrFromSubnet(subnet string) string {
 	}
 }
 
+// prefixToSubnet 把前缀长度（0–32）转换为点分十进制子网掩码。
+// 此前为有类近似实现（仅 /8 /16 /24 /32 四档），导致 /30 误算成 255.255.255.0；
+// 现改为按位精确计算，任意前缀长度均正确（/30 → 255.255.255.252）。
 func prefixToSubnet(prefix int) string {
-	if prefix >= 32 {
-		return "255.255.255.255"
+	if prefix <= 0 {
+		return "0.0.0.0"
 	}
-	if prefix >= 24 {
-		return "255.255.255.0"
+	if prefix > 32 {
+		prefix = 32
 	}
-	if prefix >= 16 {
-		return "255.255.0.0"
+	mask := uint32(0xFFFFFFFF) << (32 - prefix)
+	a := byte(mask >> 24)
+	b := byte((mask >> 16) & 0xFF)
+	c := byte((mask >> 8) & 0xFF)
+	d := byte(mask & 0xFF)
+	return fmt.Sprintf("%d.%d.%d.%d", a, b, c, d)
+}
+
+// splitInterfaceIPConfig 把 `interface:<if>:ip` 配置值拆成 (IP, Mask)。
+// 该键以空格形态存储（"IP MASK"，见 parser.go 的 `ip address` 写入路径），
+// 同时为兼容历史 CIDR 形态（"IP/MASK"）也一并处理。display 渲染时 IP 与 Mask
+// 必须分别填充，否则会把整串当作 IP 后又补 "/Mask" 造成掩码重复渲染
+// （既有技术债：物理口 display interface 详情的 Internet Address 行重复输出掩码）。
+func splitInterfaceIPConfig(v string) (ip, mask string) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", ""
 	}
-	if prefix >= 8 {
-		return "255.0.0.0"
+	if idx := strings.Index(v, "/"); idx > 0 {
+		return v[:idx], v[idx+1:]
 	}
-	return "0.0.0.0"
+	fields := strings.Fields(v)
+	if len(fields) >= 2 {
+		return fields[0], fields[1]
+	}
+	return fields[0], ""
 }
 
 func subnetToPrefix(subnet string) int {

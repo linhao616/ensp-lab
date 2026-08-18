@@ -622,7 +622,11 @@ func regInterfaceDisplay(state *CLIState, cmd *Command, arg0, arg1 string) strin
 		case "description":
 			ifaceMap[ifaceName].Description = v
 		case "ip":
-			ifaceMap[ifaceName].IP = v
+			// config 键以 "IP MASK" 空格形态存储，拆出 IP 与 Mask 分别填充，
+			// 避免 display 时把整串当 IP 后又补 "/Mask" 造成掩码重复渲染。
+			ip, mask := splitInterfaceIPConfig(v)
+			ifaceMap[ifaceName].IP = ip
+			ifaceMap[ifaceName].Mask = mask
 		case "speed":
 			ifaceMap[ifaceName].Speed = v
 		case "duplex":

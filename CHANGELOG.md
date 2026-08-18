@@ -2,11 +2,19 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
-> **发布状态注记（2026-08-17 校订）**：早前注记所称「本地已打 tag 至 `v0.11.0`」**不成立**。经核实，`v0.10.0`/`v0.11.0` 的源码此前只存在于一个孤儿 worktree（分支零 commit），**从未进入任何分支、也从未真正打过 tag**；仓库内最新版本历史实际停在 `v0.9.0`。2026-08-17 已将 v0.11.0 全树导入并与主线做三方合并（合并点 `b67e68b`，共同祖先 `ca8aa87`）。远端最高 tag 仍为 `v0.9.0`。待开发机执行 `./build.ps1` + 浏览器 e2e 复验后打 tag 并 push，`/version` 的 `stale=true` 随之解除（详见手册 7.5.1 / 7.5.6）。
+> **发布状态注记（2026-08-18 更新）**：`v0.11.0` 已于 2026-08-18 正式发布——tag `v0.11.0` 与分支 `fix-main` 均指向 `7cecdcb`，并已 push 至 GitHub 远端，`/version` 的 `stale` 已解除。上一轮所称「从未真正打过 tag / 远端最高 v0.9.0」已不成立。`v0.10.0` 源码从未入库（其功能已含于 v0.11.0 全树），故未补打该 tag。
 
-## [Unreleased]（已提交至 `b67e68b`，待打 tag 解除 stale）
+## [Unreleased]（技术债修复，待打 `v0.11.1` tag 发布）
 
-> 以下改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 `go build`（含 embed 前端，链接通过）验证，并已提交到主线；尚未打 tag。发布前须在开发机执行 `./build.ps1` + 浏览器 e2e 复验，再打 tag（建议 `v0.11.1`）。
+> 以下改动已通过 `go vet ./...`（清零）与 `go test ./...`（全绿）验证，已提交至主线 `fix-main`；尚未打 tag。发布前须在开发机执行 `./build.ps1` + 浏览器 e2e 复验，再打 `v0.11.1`。
+
+### Fixed
+- **技术债：`prefixToSubnet` 有类近似**（`internal/cli/tools.go`）：此前仅分 /8 /16 /24 /32 四档，`/30` 误算成 `255.255.255.0`；改为按位精确计算，任意前缀长度（0–32）均正确（`/30 → 255.255.255.252`）。`TestPrefixToSubnetExact` 锁死。
+- **技术债：`display interface <if>` 掩码重复渲染**：`interface:<if>:ip` 配置键以 `"IP MASK"` 空格形态存储，原 `case "ip"` 把整串当作 IP、随后显示又补 `/Mask`，导致 `Internet Address is` 行输出 `10.0.0.1 255.255.255.252/255.255.255.252`（物理口亦受影响；GRE 因 save→reload 走空格形态不触发）。现拆出 IP 与 Mask 分别填充（`display_registry.go` 与 `parser.go` 两份 `display interface` 实现同步修复）。`TestDisplayInterfaceIPMaskNoDuplicate` / `TestDisplayInterfaceIPPrefixMaskNoDuplicate` 锁死。
+
+## [v0.11.0] - 2026-08-18（已发布，tag `v0.11.0` → `7cecdcb`）
+
+> 本版本于 2026-08-18 合并发布；合并点 `b67e68b`、共同祖先 `ca8aa87`。以下改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 `go build`（含 embed 前端）验证。
 
 ### Added
 - 文档优化：开发者指南新增 7.5 开发机制（构建与版本 / CLI 三件套 / 引擎模式 / 质量门禁 / 安全约束 / 提交发布纪律）；术语基线、错误码与安全合规章节筹划。
