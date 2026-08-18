@@ -38,7 +38,7 @@
 ### Build
 - **v0.11.0 全树入库**：将只存在于孤儿 worktree 的 v0.11.0 源码导入分支（`f81e209`），以共同祖先 `ca8aa87` 与主线三方合并（`b67e68b`），自动并回 BUILD-01（`dd9aec1`：双入口构建 + `internal/buildinfo` 版本注入 + 运行期 stale 自检 + 修复 `.gitignore` 未根锚定误伤 `cmd/server`）与 VXLAN 标注空白修复（`cdc1e0e`）。3 处冲突（`CONTRIBUTING.md` / `build.ps1` / `docs/ensp-lab_manual.md`）均保留主线更准确内容 + 孤儿版关键注释。
 
-## [v0.11.0] - 2026-08-11
+### P2 CLI 增强明细（特性完成于 2026-08-11，纳入本次 v0.11.0 发布）
 
 P2 CLI 增强，统一命令注册与补全体系，经独立 QA 验收（NoOne，零源码缺陷）。
 
@@ -87,7 +87,7 @@ P2 第八项 AAA 本地认证（course 71）纠正式重构，延续「纯函数
 
 ### Known Issues
 - OBS-2：本期新增顶层 `case "state"` 会捕获任意视图下裸 `state` 命令（当前无冲突命令，影响面小），后续单独确认是否有意。
-- 既有技术债（独立 ticket）：`prefixToSubnet`（`internal/cli/tools.go`）分类网近似（`/30` 误算 `255.255.255.0`）；`Internet Address` mask 重复渲染。
+- （`prefixToSubnet` 有类近似 / `Internet Address` mask 重复渲染两项技术债已于 `v0.11.1` 修复，见 `[Unreleased]`。）
 
 ## [v0.8.0] - 2026-08-07
 
@@ -104,7 +104,7 @@ P2 GRE 隧道（course 69）纠正式重构，延续「纯函数仿真评估 + �
 - GRE 为纯函数仿真评估，lite 引擎对「真实 GRE 数据平面」标记为诚实占位（运行时字段恒 `-`，不编造统计/MTU）；`greSimNote()` 与 `dhcpRelaySimNote()` 口径一致；**键碰撞红线**——采用精确前缀/后缀匹配，禁用 `strings.Contains(k, "gre")`，避免误伤 H3C `Bridge-Aggregation` 聚合口键（已单元测试锁死）。
 
 ### Known Issues
-- 既有技术债（非本轮引入，建议单独 ticket）：`prefixToSubnet`（`internal/cli/tools.go`）为分类网近似（仅 /8 /16 /24 /32），`/30` 会算成 `255.255.255.0` 而非 `255.255.255.252`；另 `Internet Address is ...` mask 重复渲染（物理口亦受影响）。GRE save→reload 不经此路径（ip 以空格形式存储），不触发。
+- 既有技术债（非本轮引入，建议单独 ticket；**已于 `v0.11.1` 修复**）：`prefixToSubnet`（`internal/cli/tools.go`）为分类网近似（仅 /8 /16 /24 /32），`/30` 会算成 `255.255.255.0` 而非 `255.255.255.252`；另 `Internet Address is ...` mask 重复渲染（物理口亦受影响）。GRE save→reload 不经此路径（ip 以空格形式存储），不触发。
 
 ## [v0.7.0] - 2026-08-07
 
