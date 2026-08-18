@@ -55,3 +55,5 @@ tmp/vxlan-data/
 tmp/cmdline.txt
 tmp/ensp-smoke*/
 tmp/ensp-smoke*/**
+# e2e 浏览器复验运行时数据（-data-dir ./tmp/e2e-data 生成，非源码）
+tmp/e2e-data/
