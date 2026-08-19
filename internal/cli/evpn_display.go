@@ -9,6 +9,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -16,6 +17,15 @@ import (
 func regEvpnDisplay(state *CLIState, cmd *Command, arg0, arg1 string) string {
 	if state == nil {
 		return "Error: internal state unavailable"
+	}
+	// v0.12.1：二级子命令仅放行白名单（vni/peer/routing-table，无缩写支持），
+	// 其余输入（含 dis evpn v / dis evpn xyz 等未支持缩写）报 unknown command
+	// 指向完整命令，不再静默回退到 EVPN 概览（此前 dis evpn v 显示概览误导）。
+	sub := strings.ToLower(strings.TrimSpace(arg1))
+	switch sub {
+	case "", "vni", "peer", "routing-table":
+	default:
+		return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
 	}
 	return buildEVPNDisplay(state, arg1)
 }

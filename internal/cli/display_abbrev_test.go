@@ -106,3 +106,64 @@ func TestUnknownCommandFullText(t *testing.T) {
 		t.Errorf("unknown 报错应回显完整命令，got: %q", out)
 	}
 }
+
+// TestDisplaySubCmdNoSilent 二级子命令不得静默展开/回退：唯一前缀（dis ip r）、
+// 未支持缩写（dis evpn v / dis bgp e）、未知子命令（dis lldp xyz 等）一律
+// 报 unknown command 指向完整命令——与 dis aa 语义全局一致。
+func TestDisplaySubCmdNoSilent(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"ip", "r"}, "unknown command 'dis ip r'"},           // 不展开 routing-table
+		{[]string{"ip", "i"}, "unknown command 'dis ip i'"},           // 不展开 interface
+		{[]string{"ip", "interface", "b"}, "invalid interface 'b'"},   // b 不展开 brief，按接口名报错
+		{[]string{"evpn", "v"}, "unknown command 'dis evpn v'"},       // 不静默回退概览
+		{[]string{"evpn", "xyz"}, "unknown command 'dis evpn xyz'"},   // 未知二级
+		{[]string{"bgp", "e"}, "unknown command 'dis bgp e'"},         // 不静默回退 BGP 概览
+		{[]string{"bgp", "xyz"}, "unknown command 'dis bgp xyz'"},     // 未知二级
+		{[]string{"lldp", "xyz"}, "unknown command 'dis lldp xyz'"},   // 不静默回退 LLDP 概览
+		{[]string{"ssh", "xyz"}, "unknown command 'dis ssh xyz'"},     // 不静默回退 SSH 概览
+		{[]string{"vxlan", "xyz"}, "unknown command 'dis vxlan xyz'"}, // 不静默回退 VXLAN 概览
+		{[]string{"ipsec", "sa"}, "unknown command 'dis ipsec sa'"},   // 不静默忽略参数
+		{[]string{"stp", "xyz"}, "unknown command 'dis stp xyz'"},     // 不静默回退 STP 概览
+		{[]string{"vrrp", "xyz"}, "unknown command 'dis vrrp xyz'"},   // 不静默回退 VRRP 概览
+	}
+	for _, tc := range cases {
+		st := NewCLIStateWithType(topology.DeviceRouter)
+		out := ExecuteCommandOn(st, &Command{Command: "dis", Args: tc.args}, topology.DeviceRouter)
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("dis %s 应报 %q，got: %q", strings.Join(tc.args, " "), tc.want, out)
+		}
+	}
+}
+
+// TestDisplaySubCmdWhitelistKept 二级白名单缩写与合法子命令照常执行（无回归）。
+func TestDisplaySubCmdWhitelistKept(t *testing.T) {
+	st := NewCLIStateWithType(topology.DeviceRouter)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"ip", "rt"}, "Route Flags"},                 // dis ip rt 白名单
+		{[]string{"ip", "int"}, "IP Address"},                 // dis ip int 白名单
+		{[]string{"ip", "interface", "brief"}, "IP Address"},  // 完整子命令
+		{[]string{"evpn", "vni"}, "EVPN VNI"},                 // dis evpn vni
+		{[]string{"evpn"}, "EVPN instance"},                   // dis evpn 概览
+		{[]string{"bgp", "evpn"}, "BGP EVPN"},                 // dis bgp evpn
+		{[]string{"bgp"}, "BGP"},                              // dis bgp 概览
+		{[]string{"lldp", "local-information"}, "LLDP local"}, // dis lldp local-information
+		{[]string{"ssh", "server"}, "SSH Server Status"},      // dis ssh server
+		{[]string{"vxlan", "tunnel"}, "VXLAN"},                // dis vxlan tunnel
+		{[]string{"stp", "brief"}, "STP"},                     // dis stp brief
+		{[]string{"vrrp", "brief"}, "VRRP"},                   // dis vrrp brief
+	} {
+		out := ExecuteCommandOn(st, &Command{Command: "dis", Args: tc.args}, topology.DeviceRouter)
+		if strings.Contains(out, "unknown command") {
+			t.Errorf("dis %s 不应报 unknown，got: %q", strings.Join(tc.args, " "), out)
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("dis %s 输出缺特征 %q，got: %q", strings.Join(tc.args, " "), tc.want, out)
+		}
+	}
+}

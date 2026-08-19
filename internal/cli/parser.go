@@ -2748,20 +2748,22 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return out.String()
 		case "ip":
 			// display ip <sub> ...   sub ∈ {interface, pool, routing-table}
-			// 二级子命令缩写与合法性校验（华为 VRP 规则：必须是关键字的前缀）
+			// 二级子命令：normalizeDisplaySubCmd2("ip", arg1) 已把白名单缩写
+			// （int/inter/rt/route）转成完整值；未命中的输入不静默展开——
+			// 完整关键字放行、多前缀报 Ambiguous、其余（含唯一前缀如 r）
+			// 报 unknown command 指向完整命令（与 dis aa 语义一致，v0.12.1）。
 			ipSubKW := []string{"interface", "pool", "routing-table"}
-			resolvedSub, subOK, subErr := resolveKeyword(arg1, ipSubKW)
-			if !subOK {
-				switch subErr {
-				case "incomplete":
-					return "Error: Incomplete command found at '^' position."
-				case "ambiguous":
+			switch arg1 {
+			case "interface", "pool", "routing-table":
+				// 白名单/完整关键字放行
+			case "":
+				return "Error: Incomplete command found at '^' position."
+			default:
+				if _, _, subErr := resolveKeyword(arg1, ipSubKW); subErr == "ambiguous" {
 					return "Error: Ambiguous command found at '^' position."
-				default:
-					return "Error: Wrong parameter found at '^' position."
 				}
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
 			}
-			arg1 = resolvedSub
 
 			// display ip pool / display ip pool interface vlanif <id>
 			if arg1 == "pool" {
@@ -2865,10 +2867,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			ifName := ""
 			for i := 2; i < len(cmd.Args); i++ {
 				a := strings.ToLower(cmd.Args[i])
-				if res, ok, err := resolveKeyword(a, []string{"brief"}); ok {
-					brief = res == "brief"
-				} else if err == "incomplete" {
-					return "Error: Incomplete command found at '^' position."
+				// v0.12.1：brief 仅精确匹配完整关键字，不静默展开单字母缩写
+				// （此前 b/br/bri 经 resolveKeyword 唯一前缀展开成 brief 静默执行，
+				// 与 dis aa 语义不一致）；非 brief token 按接口名处理，非法则报错。
+				if a == "brief" {
+					brief = true
 				} else {
 					// 非 brief 关键字，按接口名处理（大小写不敏感）
 					ifName = cmd.Args[i]
@@ -3328,6 +3331,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return out.String()
 		case "lldp":
 			// display lldp local-information / display lldp interface <type> <num> / display lldp neighbor
+			// v0.12.1：二级子命令白名单校验——未知输入不静默回退到 LLDP 概览
+			// （dis lldp xyz 此前显示 Enabled/Disabled 误导），报 unknown command 完整命令。
+			switch arg1 {
+			case "", "local-information", "interface", "neighbor":
+			default:
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			var out strings.Builder
 			if arg1 == "local-information" {
 				// 显示本地 LLDP 信息
@@ -3432,10 +3442,22 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		case "stp":
 			// STP/RSTP/MSTP 显示（P2 第四项）：纯函数渲染，无副作用。
 			// 单事实源 = DeviceConfig（stp:* / interface:*:stp:*），display 经 buildSTPDisplay 即时派生。
+			// v0.12.1：二级子命令白名单校验——未知输入不静默回退 STP 概览。
+			switch arg1 {
+			case "", "brief", "interface", "region-configuration":
+			default:
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			return buildSTPDisplay(state, arg1, cmd.Args)
 		case "vrrp":
 			// 忠实展示 VRRP 组（P2 第三项）：支持 brief / interface <if> / vrid <id> / 全接口。
 			// 只读 collectVRRPGroups + EvaluateVRRP，无副作用；末尾附诚实占位注记。
+			// v0.12.1：二级子命令白名单校验——未知输入不静默回退 VRRP 概览。
+			switch arg1 {
+			case "", "brief", "interface", "vrid":
+			default:
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			return buildVRRPDisplay(state, arg1, cmd.Args)
 		case "dhcp":
 			// P2 #6（T3）：display dhcp relay [all | interface <if>]。
@@ -3447,6 +3469,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// 其它 display dhcp <x> 本期未实现，明确拒绝而非静默返回空。
 			return errUnrecognizedCommand
 		case "ipsec":
+			// v0.12.1：ipsec 二级子命令未实现——未知输入不静默忽略参数输出概览。
+			if arg1 != "" {
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			var out strings.Builder
 			if len(state.IPsec) > 0 {
 				out.WriteString("IPsec Tunnels:\n")
@@ -3501,6 +3527,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "ssh":
+			// v0.12.1：二级子命令白名单校验——未知输入不静默回退到 SSH 概览。
+			switch arg1 {
+			case "", "server", "server-status":
+			default:
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			// 检查是否是 ssh server status 子命令
 			if arg1 == "server" || arg1 == "server-status" {
 				var out strings.Builder
@@ -3563,6 +3595,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			}
 			return out.String()
 		case "vxlan":
+			// v0.12.1：二级子命令白名单校验——未知输入不静默回退到 VXLAN 概览。
+			switch arg1 {
+			case "", "tunnel":
+			default:
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
+			}
 			if arg1 == "tunnel" {
 				return buildVXLANTunnelDisplay(state)
 			}
@@ -3602,6 +3640,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// display bgp peer：逐邻居明细表（P1-F，T06）
 			if arg1 == "peer" {
 				return buildBGPPeerDisplay(state)
+			}
+			// v0.12.1：未知二级子命令不得静默回退到 BGP 概览（dis bgp e / dis bgp xyz
+			// 此前输出 Not configured 误导）——报 unknown command 指向完整命令。
+			if arg1 != "" {
+				return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
 			}
 			var out strings.Builder
 			if state.BGP.Enabled {
