@@ -2,11 +2,23 @@
 
 本项目所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本里程碑见 `ROADMAP.md`，功能细节见 `docs/ensp-lab_manual.md` 与 `docs/vxlan_verification_report.md`。
 
-> **发布状态注记（2026-08-18 更新）**：`v0.11.0` 已于 2026-08-18 正式发布——tag `v0.11.0` 与分支 `fix-main` 均指向 `7cecdcb`，并已 push 至 GitHub 远端，`/version` 的 `stale` 已解除。上一轮所称「从未真正打过 tag / 远端最高 v0.9.0」已不成立。`v0.10.0` 源码从未入库（其功能已含于 v0.11.0 全树），故未补打该 tag。
+> **发布状态注记（2026-08-19 更新）**：`v0.12.0` 已于 2026-08-19 发布——tag `v0.12.0` 指向 `9a018f9`，并已 push 至 GitHub 远端。v0.11.1 技术债修复（`prefixToSubnet` / `display interface` mask / F1 依赖升级）未单独打 tag，已并入本次 v0.12.0 发布。上一版本 `v0.11.0`（tag → `7cecdcb`）`/version` 的 `stale` 已解除；`v0.10.0` 源码从未入库（其功能已含于 v0.11.0 全树），故未补打该 tag。
 
-## [Unreleased]（技术债修复，待打 `v0.11.1` tag 发布）
+## [Unreleased]
 
-> 以下改动已通过 `go vet ./...`（清零）与 `go test ./...`（全绿）验证，已提交至主线 `fix-main`；尚未打 tag。发布前须在开发机执行 `./build.ps1` + 浏览器 e2e 复验，再打 `v0.11.1`。
+> 空。v0.11.1 技术债修复已并入 `v0.12.0` 发布（见下）。
+
+## [v0.12.0] - 2026-08-19（已发布，tag `v0.12.0` → `9a018f9`）
+
+> 链路质量特性版本。改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 `./build.ps1`（含 embed 前端）验证，并经 Playwright 浏览器端到端复验。功能细节见手册 4.8.6。
+
+### Added
+- **链路质量配置（接口视图 `delay` / `loss`）**：
+  - **CLI 三件套**：接口视图 `delay <1-1000>` / `loss <1-100>` 配置、`display link-quality` 只读渲染（Measured / Jitter 运行态诚实占位恒 `-`）、`undo delay` / `undo loss` 回落、`save` 差异落盘与 `reload` 字节级复现、`displayRegistry` / 补全接线。
+  - **引擎校准**：Ping 按逐跳链路延迟累加往返 RTT——修复首跳延迟被硬记为 0 的缺陷（两节点直连拓扑 `delay` 此前完全不生效）；`TestTracePathFirstHopQuality` / `TestPingAccumulatesLinkDelay` 锁死。
+  - **端到端累积丢包模型**：`P = 1 - ∏(1 - p_i/100)`，逐跳独立、包级随机判定；丢包率 0 时短路不消耗随机源（`TestPingZeroLossNeverConsultsSampler`）；随机源可注入保证单测确定性。
+  - **api 同步**：按命令触发 `syncLinkQualityForInterface` 落到 `topology.Link.Delay/Loss`；两端配置取较大值（确定性、与下发顺序无关、悲观）；未连线接口与无关命令不误清 REST `PUT /api/link` 设置。
+  - **e2e 实测**：`delay 20` + `loss 25` → Ping RTT≈45ms / 25% 丢包；`undo` 后回落基线（1–5ms / 0% 丢包）。
 
 ### Fixed
 - **技术债：`prefixToSubnet` 有类近似**（`internal/cli/tools.go`）：此前仅分 /8 /16 /24 /32 四档，`/30` 误算成 `255.255.255.0`；改为按位精确计算，任意前缀长度（0–32）均正确（`/30 → 255.255.255.252`）。`TestPrefixToSubnetExact` 锁死。

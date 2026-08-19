@@ -744,6 +744,36 @@ display ndp                        # NDP 邻居表：本端地址来自真实 IP
 
 **相关代码**：`internal/cli/evpn_display.go`（`buildEVPNDisplay` / `buildEVPNBGPDisplay`）/ `ndp_display.go`（`buildNDPDisplay`），经 `display_registry.go` 的 `regEvpnDisplay` / `regBgpDisplay`（`arg1=="evpn"` 分支）/ `regNdpDisplay` 单一分发源；`TestDisplayEVPN` / `TestDisplayNDP` / `TestCompletionEVPNNDP` 锁死占位语义与补全无漂移。
 
+#### 4.8.6 链路质量配置（delay / loss）（v0.12.0）
+
+接口视图下可配置链路**单向延迟**与**丢包率**，属**配置仿真**：CLI 写入 `DeviceConfig` → 按命令同步 `topology.Link` → 引擎 Ping / Traceroute 消费；运行态 Measured / Jitter 恒 `-`（诚实占位，绝不编造实测数字）。
+
+```
+<Switch> system-view
+[Switch] interface GigabitEthernet0/0/0
+[Switch-GigabitEthernet0/0/0] delay 20        # 单向延迟 20ms（取值范围 1–1000）
+[Switch-GigabitEthernet0/0/0] loss 25         # 丢包率 25%（取值范围 1–100）
+[Switch-GigabitEthernet0/0/0] display link-quality
+[Switch-GigabitEthernet0/0/0] undo loss       # 回落默认（0%）
+[Switch-GigabitEthernet0/0/0] undo delay      # 回落默认（0ms）
+```
+
+**行为语义**：
+- **延迟累加**：Ping 的 RTT 按路径逐跳单向延迟累加（往返 ×2），多跳拓扑逐跳相加；首跳（源直连邻居）同样按真实入链路取值（v0.12.0 修复：此前首跳被硬记为 0，两节点直连拓扑上 `delay` 完全不生效）。
+- **丢包模型**：端到端累积概率 `P = 1 - ∏(1 - p_i/100)`（逐跳独立），每个 echo 按 `P` 独立判定；`loss 25` 即约 25% 丢包。丢包率 0 时短路、不消耗随机源。
+- **两端取较大值**：同一条链路两端接口分别配置时取 max（确定性、与下发顺序无关、悲观）；未连线接口配置不生效且不串扰其他链路；REST `PUT /api/link` 设置的 delay/loss 不会被无关 CLI 命令误清。
+
+**输出要点**（`display link-quality`）：
+- 表头 `Interface / Delay(ms) / Loss(%) / Peer / Measured / Jitter`；Peer 从链路模型解析对端 `设备:接口`，未连线显示 `-`。
+- Measured / Jitter 运行态恒 `-`；表尾 `linkQualitySimNote()` 声明：`Note: delay/loss 为本仿真器的扩展命令（VRP 真机接口视图无此命令），用于编排链路时延与丢包场景；端到端丢包按路径各段概率累积。`
+- 支持 `display link-quality interface <if>` 单接口详情；零配置时输出 `No link quality configured on any interface.`
+
+**保存与重载**：随 `save` → `display current-configuration` / `display saved-configuration` 仅落差异值（未配置接口不输出行）；`reload` 后字节级复现（`buildSavedLinkQualityInterfaceConfig` 独立通道，与 GRE / IPv6 同构）。
+
+**键与红线**：单一事实源键 `interface:<if>:delay` / `interface:<if>:loss`，一律精确前缀解析，**禁 `strings.Contains` 子串匹配**（防误伤 MAC `00e0-fc12-0aaa`、`Bridge-Aggregation` 等）；`TestParseInterfaceQualityKeyNoCollision` 静态守卫锁死。
+
+**相关代码**：`internal/cli/link_quality_eval.go`（校验/键）/ `link_quality_cmd.go`（状态写入）/ `link_quality_display.go`（渲染）；引擎模型 `internal/sim/link_quality.go`（`EndToEndLossProb` / `ShouldDrop` / `RoundTripDelayMs`，随机源可注入）；api 同步 `internal/api/link_quality_sync.go`（`syncLinkQualityForInterface` / `findLinkByEndpoint`）。`TestLinkQuality*` / `TestSyncLinkQuality*` / `TestPingAccumulatesLinkDelay` / `TestPingPartialLossDeterministic` / `TestTracePathFirstHopQuality` 锁死。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。

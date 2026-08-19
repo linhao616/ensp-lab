@@ -33,7 +33,7 @@
 ### P2（中优先级）
 
 - [x] OSPF/BGP 动态路由协议支持（基于 FRR）- Linux + gont 模式下通过 `internal/router` 真实下发
-- [ ] 链路质量模拟（延迟、丢包、带宽限制）- 支持网络质量参数配置
+- [~] 链路质量模拟（延迟、丢包）- v0.12.0 已交付（接口视图 `delay` / `loss` + 引擎 Ping 延迟累加与端到端概率丢包）；带宽限制待 v1.0.0
 - [x] Docker 化部署 - 提供 Dockerfile + `.dockerignore` 单二进制镜像与 CI `docker-verify` job
 
 ## 四、长期展望（6 个月以上）
@@ -55,7 +55,10 @@
 | v0.7.0 | ✅ 已完成 | 2026-08 | P2 协议特性累积发布（续）：链路聚合 Eth-Trunk（course 63）/ DHCP 中继（course 27）已交付并通过独立 QA 两轮回归；叠加 v0.6.0 的 NAT / 端口安全 / VRRP / STP·RSTP·MSTP。纯函数仿真评估 + 诚实占位 |
 | v0.8.0 | ✅ 已完成 | 2026-08 | P2 GRE 隧道（course 69）纠正式重构：删除野路子系统视图 `gre` 命令与 `state.GRE` 字段，改为标准 Tunnel 接口视图（`tunnel-protocol gre` / `source` / `destination` / `gre key` / `keepalive`）；`display gre tunnel` / `display interface Tunnel`；纯函数仿真评估 + 诚实占位 + 键碰撞红线（精确前缀匹配，不误伤 Bridge-Aggregation）；独立 QA 验收 NoOne |
 | v0.9.0 | ✅ 已完成 | 2026-08 | P2 AAA 本地认证（course 71）纠正式重构：标准 `[R1-aaa]` 视图 + `local-user` / `authentication-scheme` / `domain` 三级链路（认证 P0 + 授权 P1 + 计费 P2 同构）；删除不落盘的 `state.LocalUsers` 结构体、改 DeviceConfig 单一事实源 `aaa:` 精确前缀键；`display aaa` / `display local-user` / `display domain` 真实渲染 + 口令脱敏 `****` + `aaaSimNote()` 诚实占位（运行态恒 `-`）；CLI 端到端浏览器验证；键碰撞红线（禁用 `strings.Contains(k,"aaa"/"domain")`，端口安全 MAC 不被误伤）；独立 QA 两轮验收 PASS。待续：IPv6（course 43/44）+ P2 CLI 增强（Tab 补全 / 历史 / EVPN display） |
-| v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（延迟 / 丢包 / 带宽） |
+| v0.10.0 | ✅ 已完成（并入 v0.11.0 发布） | 2026-08 | P2 IPv6（course 43/44）：全局 `ipv6` + 接口 `ipv6 enable` / `ipv6 address` + `ipv6 route-static` + RIPng / OSPFv3；接口视图仅放行 `ripng <pid> enable` / `ospfv3 <pid> area <x>`，其余回 unrecognized command。注：v0.10.0 源码从未单独入库（其功能已含于 v0.11.0 全树），未补打该 tag |
+| v0.11.0 | ✅ 已完成 | 2026-08 | P2 CLI 增强：`displayRegistry` 单一事实源（`regXxxDisplay` 前缀收敛 1300 行 switch）+ Tab 补全 `cli.Complete` + `POST .../cli/complete`（仅计算不执行）+ 历史分层（UI localStorage / DeviceConfig FIFO 256）+ EVPN / NDP 只读诚实占位；P0R1 `executeCLI` 深拷贝修复 + V-1/V-4 修复 + F11 补全 endpoint + HTTP 超时加固；tag `v0.11.0` → `7cecdcb` |
+| v0.12.0 | ✅ 已完成 | 2026-08 | P2 链路质量（接口视图 `delay` / `loss`）：引擎 Ping 逐跳延迟累加（修复首跳硬记 0）+ 端到端累积丢包 `P = 1 - ∏(1 - p_i/100)`（随机源可注入）；`display link-quality` 只读渲染 + undo 回落 + saved-config 差异落盘；api 按命令同步 `topology.Link`、两端取较大值；三层回归全绿 + go vet 清零 + Playwright e2e 实测（RTT≈45ms / 25% 丢包，undo 回落基线）。含 v0.11.1 技术债修复（`prefixToSubnet` / `display interface` mask / F1 依赖升级）；tag `v0.12.0` → `9a018f9` |
+| v1.0.0 | 📅 后续 | - | 完整功能发布 + 链路质量模拟（带宽限制） |
 
 ## 六、贡献指南
 
@@ -72,7 +75,7 @@
 | **设备 CLI 仿真** | 实现网络设备命令行接口模拟，支持常见命令解析和执行 | 中 |
 | **数据包可视化** | 基于 SSE 事件流实现前端路径动画展示 | 中 |
 | **FRR 集成** | 在 gont 模式下集成 FRRouting，实现动态路由协议 | 高 |
-| **链路质量模拟** | 在 ns-x 引擎中添加延迟、丢包、带宽限制功能 | 中 |
+| **链路质量模拟** | 带宽限制（延迟 / 丢包已随 v0.12.0 交付） | 中 |
 
 ### 开发规范
 
