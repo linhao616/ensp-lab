@@ -170,7 +170,15 @@ export default function DeviceConfigPanel(props: DeviceConfigPanelProps) {
                 <select
                   className="ip-config-input"
                   value={iface}
-                  onChange={(e) => setIface(e.target.value)}
+                  onChange={(e) => {
+                    const newIface = e.target.value;
+                    setIface(newIface);
+                    // 同步刷新该接口已配置的 IP/掩码（未配置则清空），避免点"应用"时
+                    // 用上一个接口的 IP 写到新接口。未配接口同步清空让用户重新输入。
+                    const itf = selectedDevice?.interfaces?.[newIface];
+                    setIp(itf?.ip_address || '');
+                    setMask(itf?.subnet_mask || '');
+                  }}
                 >
                   {interfaceOptions.map((o) => (
                     <option key={o} value={o}>
