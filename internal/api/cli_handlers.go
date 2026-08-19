@@ -131,13 +131,28 @@ func (r *Router) executeCLI(c *gin.Context) {
 		output = cli.ExecuteCommandOn(state, cmd, dt)
 	}
 
+	// 链路质量同步（v0.12）：仅当本次执行的确是 delay/loss 命令族时，把配置
+	// 同步到「该接口所在链路」的 Delay/Loss 并重建引擎，使 ping/tracert 立即生效。
+	// 按命令触发而非全量扫描，避免把 REST 设置的 delay 在无关命令后清零（见
+	// internal/api/link_quality_sync.go 顶部说明）。
+	linkQualityChanged := false
+	if err == nil && t != nil && cli.IsLinkQualityCommand(cmd) && state.CurrentSub != "" {
+		linkQualityChanged = syncLinkQualityForInterface(t, deviceId, state.CurrentSub, registry)
+	}
+
 	// 保存配置到拓扑
 	if err == nil && t != nil {
 		if device, exists := t.GetDevice(deviceId); exists {
 			device.ConfigData = state.SerializeToDeviceConfigData()
 			updateDeviceInterfaces(device, state)
 			r.store.UpdateTopology(t)
+		} else if linkQualityChanged {
+			// 设备已不在拓扑（极端并发）但链路属性已改：仍需落盘链路变更。
+			r.store.UpdateTopology(t)
 		}
+	}
+	if linkQualityChanged {
+		r.syncEngine(id)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

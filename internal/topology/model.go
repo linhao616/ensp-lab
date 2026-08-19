@@ -125,6 +125,7 @@ type Interface struct {
 	PortType    PortType `json:"port_type"`
 	Bandwidth   int      `json:"bandwidth"`
 	Delay       int      `json:"delay"`
+	Loss        float64  `json:"loss,omitempty"` // 单向丢包率（百分比 0-100）：配置载体，仿真读 Link.Loss
 	Description string   `json:"description"`
 }
 
@@ -176,6 +177,7 @@ type Link struct {
 	CableType     PortType  `json:"cable_type"`
 	Bandwidth     int       `json:"bandwidth"`
 	Delay         int       `json:"delay"`
+	Loss          float64   `json:"loss,omitempty"` // 单向丢包率（百分比 0-100）；端到端按路径各段累积，见 internal/sim/link_quality.go
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	VXLANVNI      int       `json:"vxlan_vni,omitempty"`
@@ -688,6 +690,7 @@ func (t *Topology) ToGraphJson() ([]byte, error) {
 				"target_port": link.TargetPort,
 				"bandwidth":   link.Bandwidth,
 				"delay":       link.Delay,
+				"loss":        link.Loss,
 				"cable_type":  string(link.CableType),
 			},
 		}
@@ -730,6 +733,7 @@ func (t *Topology) ToGraphJsonG6() ([]byte, error) {
 				"target_port": link.TargetPort,
 				"bandwidth":   link.Bandwidth,
 				"delay":       link.Delay,
+				"loss":        link.Loss,
 				"cable_type":  string(link.CableType),
 			},
 		}

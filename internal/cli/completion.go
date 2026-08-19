@@ -178,6 +178,8 @@ var systemViewCommands = []string{
 
 var interfaceViewCommands = []string{
 	"ip", "ipv6", "shutdown", "undo", "description", "quit", "return",
+	// v0.12 链路质量模拟（仿真扩展命令，对应 parser.go case "delay"/"loss"）。
+	"delay", "loss",
 }
 
 var aaaViewCommands = []string{

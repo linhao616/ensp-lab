@@ -41,6 +41,7 @@ var displayRegistry = map[string]DisplayHandler{
 	"ipv6":                   regIpv6Display,
 	"isis":                   regIsisDisplay,
 	"link-aggregation":       regLinkAggregationDisplay,
+	"link-quality":           regLinkQualityDisplay,
 	"lldp":                   regLldpDisplay,
 	"local-user":             regLocalUserDisplay,
 	"m-lag":                  regMLagDisplay,
@@ -181,6 +182,13 @@ func regLinkAggregationDisplay(state *CLIState, cmd *Command, arg0, arg1 string)
 		return buildLinkAggregationSummary(state)
 	}
 	return "Error: invalid link-aggregation command"
+}
+
+// regLinkQualityDisplay 渲染 display link-quality [interface <name>]
+// （v0.12 链路质量模拟）。经 parser.go 的 displayRegistry 兜底派发执行，
+// 无需在 parser.go 巨型 switch 内重复登记。
+func regLinkQualityDisplay(state *CLIState, cmd *Command, arg0, arg1 string) string {
+	return buildLinkQualityDisplay(state, cmd.Args[1:])
 }
 
 // regPortVlanDisplay 由原 parser.go `case port-vlan/port:` 逐字迁移（逻辑零变化；委托既有 build* 函数者保持委托）。

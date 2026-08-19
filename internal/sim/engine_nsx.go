@@ -1096,11 +1096,32 @@ func (e *nsxEngine) Ping(srcDeviceID, dstIP string) (*PingResult, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidDestination, dstIP)
 	}
 
+	// v0.12 链路质量：把路径上配置的单向延迟/丢包折算成可观测的 RTT 与丢包。
+	// 引擎为同步转发，Link.Delay 不参与真实转发计时，故这里按往返累加叠加；
+	// 丢包按路径累积概率（1-Π(1-pi)）对每个 echo 独立判定。
+	// 目标不在拓扑或不连通时保持 0 值，由 pingOnce 的超时如实反映不可达。
+	var extraRTTMs, lossProb float64
+	if dstDeviceID, found := e.findDeviceByIP(dst); found && dstDeviceID != srcDeviceID {
+		if _, delays, losses, connected := e.tracePath(srcDeviceID, dstDeviceID); connected {
+			extraRTTMs = RoundTripDelayMs(delays)
+			lossProb = EndToEndLossProb(losses)
+		}
+	}
+
 	const count = 4
 	const perTimeout = 3 * time.Second
 	res := &PingResult{Sent: count, Received: 0, Lost: 0, RTTMs: make([]float64, 0, count)}
 	for i := 0; i < count; i++ {
 		rtt, got := e.pingOnce(srcDeviceID, srcIface, srcIP, dst, perTimeout)
+		if got {
+			rtt += extraRTTMs
+			// 只对本可达的包按概率丢弃：不可达造成的丢包已由 pingOnce 超时覆盖，
+			// 二者叠加会双重惩罚。lossProb > 0 前置短路，避免零丢包（绝大多数
+			// 场景）也去取随机数——实参先于调用求值，光靠 ShouldDrop 内部短路不够。
+			if lossProb > 0 && ShouldDrop(lossProb, lossSampler()) {
+				got = false
+			}
+		}
 		if got {
 			res.Received++
 			res.RTTMs = append(res.RTTMs, rtt)
@@ -1197,7 +1218,9 @@ func (e *nsxEngine) Traceroute(srcDeviceID, dstIP string, maxTTL int) (*Tracerou
 	if dstDeviceID == "" {
 		return res, nil
 	}
-	path, delays, connected := e.tracePath(srcDeviceID, dstDeviceID)
+	// losses 在此不消费：traceroute 逐跳输出保持确定性（不按概率打星），
+	// 配置的丢包率由 display link-quality 与 ping 的实际丢包体现。
+	path, delays, _, connected := e.tracePath(srcDeviceID, dstDeviceID)
 	if !connected {
 		return res, nil
 	}
@@ -1221,25 +1244,26 @@ func (e *nsxEngine) Traceroute(srcDeviceID, dstIP string, maxTTL int) (*Tracerou
 }
 
 // tracePath 在拓扑图上做 BFS 最短路发现（含 VXLAN 链路以保证 overlay
-// 跨子网可达），返回从 src 到 dstDevice 的设备序列（不含 src，含 dstDevice）
-// 以及到达每一跳的链路延迟（delays[i] 对应 path[i]，path[0] 的延迟为 0）。
-// 不连通时返回 (nil, nil, false)。
-func (e *nsxEngine) tracePath(src, dstDevice string) (path []string, delays []int, ok bool) {
+// 跨子网可达），返回从 src 到 dstDevice 的设备序列（不含 src，含 dstDevice）、
+// 到达每一跳的链路延迟（delays[i] 对应 path[i]，path[0] 的延迟为 0）以及
+// 同一条链路上配置的丢包率百分比（losses[i] 与 delays[i] 同源同索引）。
+// 不连通时返回 (nil, nil, nil, false)。
+func (e *nsxEngine) tracePath(src, dstDevice string) (path []string, delays []int, losses []float64, ok bool) {
 	g := e.snap()
-	adj := make(map[string]map[string]int) // a -> b -> delay
+	adj := make(map[string]map[string]linkQualityEdge) // a -> b -> 链路质量
 	for _, l := range g.topo.Links {
-		d := l.Delay
+		edge := linkQualityEdge{delay: l.Delay, loss: l.Loss}
 		if _, exists := adj[l.SourceDevice]; !exists {
-			adj[l.SourceDevice] = make(map[string]int)
+			adj[l.SourceDevice] = make(map[string]linkQualityEdge)
 		}
 		if _, exists := adj[l.TargetDevice]; !exists {
-			adj[l.TargetDevice] = make(map[string]int)
+			adj[l.TargetDevice] = make(map[string]linkQualityEdge)
 		}
-		adj[l.SourceDevice][l.TargetDevice] = d
-		adj[l.TargetDevice][l.SourceDevice] = d
+		adj[l.SourceDevice][l.TargetDevice] = edge
+		adj[l.TargetDevice][l.SourceDevice] = edge
 	}
 	if src == dstDevice {
-		return []string{}, []int{0}, true
+		return []string{}, []int{0}, []float64{0}, true
 	}
 	prev := make(map[string]string)
 	visited := map[string]bool{src: true}
@@ -1265,7 +1289,7 @@ func (e *nsxEngine) tracePath(src, dstDevice string) (path []string, delays []in
 		}
 	}
 	if !found {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	// 回溯路径
 	rev := []string{}
@@ -1274,14 +1298,20 @@ func (e *nsxEngine) tracePath(src, dstDevice string) (path []string, delays []in
 	}
 	path = rev
 	delays = make([]int, len(path))
+	losses = make([]float64, len(path))
 	for i := range path {
-		if i == 0 {
-			delays[i] = 0
-			continue
+		from := src
+		if i > 0 {
+			from = path[i-1]
 		}
-		delays[i] = adj[path[i-1]][path[i]]
+		// v0.12 修正：首跳（src -> path[0]）此前被硬记为 0，导致该链路上配置的
+		// 延迟/丢包在 traceroute 与端到端累加中被整段丢弃（两节点直连拓扑因此
+		// 完全不生效）。改为按实际入链路取值，delays[i]/losses[i] 同源同索引。
+		edge := adj[from][path[i]]
+		delays[i] = edge.delay
+		losses[i] = edge.loss
 	}
-	return path, delays, true
+	return path, delays, losses, true
 }
 
 // devicePrimaryIP 返回设备的首选 IP（优先 up 且有 IP 的接口，否则任意有 IP 接口）。

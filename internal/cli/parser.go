@@ -872,6 +872,11 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			if msg, handled := applyUndoIPv6Interface(state, cmd.Args); handled {
 				return msg
 			}
+			// undo delay / undo loss（v0.12 链路质量模拟，T2）。
+			// handled 模式：未命中交回下方既有 undo 分支，零回归。
+			if msg, handled := applyUndoLinkQuality(state, cmd.Args); handled {
+				return msg
+			}
 			switch sub {
 			case "shutdown":
 				// 开启接口：与 shutdown 一致，同步 DeviceConfig 与 Interfaces map。
@@ -945,6 +950,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		mtu := cmd.Args[0]
 		state.DeviceConfig[fmt.Sprintf("interface:%s:mtu", state.CurrentSub)] = mtu
 		return fmt.Sprintf("MTU set to %s", mtu)
+	case "delay":
+		// 设置接口单向链路时延（v0.12 链路质量模拟，仿真扩展命令）。
+		// 写入 DeviceConfig 后由 api 层同步到 topology.Link.Delay 并触发引擎重建。
+		return applyLinkDelay(state, cmd.Args)
+	case "loss":
+		// 设置接口单向链路丢包率（v0.12 链路质量模拟，仿真扩展命令）。
+		return applyLinkLoss(state, cmd.Args)
 	case "acl":
 		if state.CurrentView != ViewSystem || len(cmd.Args) == 0 {
 			return "Error: invalid"
@@ -3880,6 +3892,15 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// 此处补接线（锁死用例 TestDisplayNDP）。
 			return regNdpDisplay(state, cmd, arg0, arg1)
 		}
+		// displayRegistry 兜底派发（v0.12）：上面的巨型 switch 是历史实现，
+		// display_registry.go 虽自称「单一事实源」却长期只被 Tab 补全引用，
+		// 导致「注册了但执行落到 unknown command」的孤儿命令（evpn/ndp 曾如此）。
+		// 此处在 switch 全部未命中后再查注册表：对已有 case 零影响（永远先被 case 截获），
+		// 新增 display 命令只需注册即可执行 + 补全同时生效，从根上消除漂移。
+		// 锁死用例：TestDisplayRegistryNoOrphan。
+		if handler, ok := displayRegistry[arg0]; ok {
+			return handler(state, cmd, arg0, arg1)
+		}
 	}
 	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
 }
@@ -5636,6 +5657,10 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 			if ipv6Lines := buildSavedIPv6InterfaceConfig(state, ifc.Name); ipv6Lines != "" {
 				b.WriteString(ipv6Lines)
 			}
+			// 链路质量（v0.12）：输出 delay / loss 差异值行（未配置不输出）。
+			if lqLines := buildSavedLinkQualityInterfaceConfig(state, ifc.Name); lqLines != "" {
+				b.WriteString(lqLines)
+			}
 		}
 		b.WriteString("#\n")
 	}
@@ -5669,6 +5694,11 @@ func (state *CLIState) buildSavedConfigSnapshot() string {
 	// display current-configuration 完整复现 GRE 配置（AC2 ③）。
 	if greLines := buildSavedGREConfig(state); greLines != "" {
 		b.WriteString(greLines)
+	}
+	// 独立链路质量输出通道（v0.12）：对「拥有 delay/loss 键但 state.Interfaces
+	// 未重建」的接口补齐 interface 块，保证 save→reload 后完整复现链路质量配置。
+	if lqLines := buildSavedLinkQualityConfig(state); lqLines != "" {
+		b.WriteString(lqLines)
 	}
 
 	for _, r := range state.Routes {
