@@ -49,6 +49,18 @@ func sanitizeInput(input string) string {
 	return strings.TrimSpace(input)
 }
 
+// fullCommandText 重组完整命令行（首 token + 参数），用于 unknown command 等
+// 报错回显，避免只显示首 token 造成误导（如 dis aa 报 'dis'）。
+func fullCommandText(cmd *Command) string {
+	if cmd == nil {
+		return ""
+	}
+	if len(cmd.Args) == 0 {
+		return cmd.Command
+	}
+	return cmd.Command + " " + strings.Join(cmd.Args, " ")
+}
+
 // ExecuteCommand 在 CLI 状态机上执行一条命令。
 // deviceType 标识目标设备类型，传入空字符串表示未绑定（不校验能力，保持向后兼容）。
 func ExecuteCommand(state *CLIState, cmd *Command) string {
@@ -3908,7 +3920,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			return handler(state, cmd, arg0, arg1)
 		}
 	}
-	return fmt.Sprintf("Error: unknown command '%s'", cmd.Command)
+	// v0.12.1：报错回显完整命令（cmd.Command + Args 重组），不再只显示首 token。
+	// 历史问题：`dis aa` 报 `unknown command 'dis'` 误导——dis 明明存在，
+	// 问题在子命令 aa；回显完整命令让排障直接定位。
+	return fmt.Sprintf("Error: unknown command '%s'", fullCommandText(cmd))
 }
 
 // ---------------------------------------------------------------------------
@@ -5248,32 +5263,32 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 			return fmt.Sprintf("BGP process %s removed", args[1])
 		}
 		return "BGP process removed"
-		case "ipv6":
-			// P2 第九项（T04）：系统视图 undo ipv6 族路由到精确 undo 函数。
-			//   - undo ipv6                          → applyUndoIPv6System（清 ipv6: 精确前缀）
-			//   - undo ipv6 route-static [<prefix>]  → applyUndoIPv6RouteStatic（A8/C2 级联）
-			// 其余子命令交回既有逻辑（当前 ipv6 仅上述两类）。
-			if len(args) >= 2 && strings.EqualFold(strings.TrimSpace(args[1]), "route-static") {
-				if msg, handled := applyUndoIPv6RouteStatic(state, args); handled {
-					return msg
-				}
-			}
-			if msg, handled := applyUndoIPv6System(state, args); handled {
+	case "ipv6":
+		// P2 第九项（T04）：系统视图 undo ipv6 族路由到精确 undo 函数。
+		//   - undo ipv6                          → applyUndoIPv6System（清 ipv6: 精确前缀）
+		//   - undo ipv6 route-static [<prefix>]  → applyUndoIPv6RouteStatic（A8/C2 级联）
+		// 其余子命令交回既有逻辑（当前 ipv6 仅上述两类）。
+		if len(args) >= 2 && strings.EqualFold(strings.TrimSpace(args[1]), "route-static") {
+			if msg, handled := applyUndoIPv6RouteStatic(state, args); handled {
 				return msg
 			}
-			return "IPv6 disabled"
-		case "ripng":
-			// undo ripng [<pid>]（P0-13）：清理 ipv6:ripng: 精确前缀 / 精确键。
-			if msg, handled := applyUndoRIPng(state, args); handled {
-				return msg
-			}
-			return "RIPng disabled"
-		case "ospfv3":
-			// undo ospfv3 [<pid>]（P0-14）：清理 ipv6:ospfv3: 精确前缀 / 精确键。
-			if msg, handled := applyUndoOSPFv3(state, args); handled {
-				return msg
-			}
-			return "OSPFv3 disabled"
+		}
+		if msg, handled := applyUndoIPv6System(state, args); handled {
+			return msg
+		}
+		return "IPv6 disabled"
+	case "ripng":
+		// undo ripng [<pid>]（P0-13）：清理 ipv6:ripng: 精确前缀 / 精确键。
+		if msg, handled := applyUndoRIPng(state, args); handled {
+			return msg
+		}
+		return "RIPng disabled"
+	case "ospfv3":
+		// undo ospfv3 [<pid>]（P0-14）：清理 ipv6:ospfv3: 精确前缀 / 精确键。
+		if msg, handled := applyUndoOSPFv3(state, args); handled {
+			return msg
+		}
+		return "OSPFv3 disabled"
 	case "isis":
 		// 反向清理 IS-IS 配置（P1-F 遗留 L1）。严格对齐 undo ospf/undo bgp 写法：
 		// 复位结构化字段并清理历史写盘的 isis:* 键。

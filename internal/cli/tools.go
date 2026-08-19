@@ -102,14 +102,13 @@ func normalizeDisplaySubCmd(cmd string) string {
 	if full, ok := aliases[cmd]; ok {
 		return full
 	}
-	// v0.12.1：白名单未命中时按华为 VRP 前缀唯一匹配展开（如 dis aa -> aaa）。
-	//   - 唯一前缀      -> 返回展开后的完整子命令（与真机一致）
-	//   - 多前缀（歧义）-> 返回 "ambiguous"，由 parser 的 case "ambiguous" 输出 VRP 风格歧义文案
-	//   - 零命中        -> 原样返回，落 unknown command 兜底
-	// 历史缺陷：此前仅支持白名单枚举缩写，dis aa（唯一前缀）误报 unknown command 'dis'。
-	if resolved, matched, errKind := resolveKeyword(cmd, displaySubCommands); matched {
-		return resolved
-	} else if errKind == "ambiguous" {
+	// v0.12.1：白名单未命中时不静默展开（华为 VRP 对 display 子命令仅放行官方
+	// 允许的缩写，如 dis int / dis cu；其余缩写一律报错，绝不自动补全执行——
+	// dis aa 不会被执行成 display aaa，而是落 Unrecognized/unknown 提示指向完整命令）。
+	// 多前缀（歧义，如 dis i / dis b）返回 "ambiguous"，由 parser 输出 VRP 风格
+	// Ambiguous command found at '^' position.；唯一前缀/零命中均原样返回落 unknown，
+	// 由 parser 兜底报错（报错回显完整命令 `dis aa`，不再只显示首 token `dis`）。
+	if _, matched, errKind := resolveKeyword(cmd, displaySubCommands); !matched && errKind == "ambiguous" {
 		return "ambiguous"
 	}
 	return cmd
