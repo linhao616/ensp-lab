@@ -39,6 +39,9 @@ Thumbs.db
 
 # 本地数据
 data/*.local.json
+# 运行时拓扑（服务 autosave 生成，非源码；样例 lab*.json 为只读入库，改动走
+# git update-index --assume-unchanged 隐藏，避免 autosave 换行写回导致 /version stale）
+data/*.json
 
 # WorkBuddy 项目笔记（本地开发环境，不提交）
 .workbuddy/
