@@ -2564,6 +2564,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		// 子命令缩写映射（华为 VRP 常用缩写）
 		arg0 = normalizeDisplaySubCmd(arg0)
 		arg1 = normalizeDisplaySubCmd2(arg0, arg1)
+		// v0.12.1：arg0 缩写歧义（多前缀命中，如 dis i / dis b）由
+		// normalizeDisplaySubCmd 返回 "ambiguous"，此处输出 VRP 风格歧义文案。
+		// 注意：不得复用 display ip 内层 case "ambiguous"（那是二级子命令专用）。
+		if arg0 == "ambiguous" {
+			return "Error: Ambiguous command found at '^' position."
+		}
 
 		// 设备类型检查：部分 display 子命令只对特定设备有意义
 		isRouter := state.DeviceType == topology.DeviceRouter

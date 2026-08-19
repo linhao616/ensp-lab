@@ -39,6 +39,23 @@ func parseNum(s string) (int, error) {
 	return n, err
 }
 
+// displaySubCommands 是 display 子命令的合法全集（华为 VRP 前缀匹配的匹配空间）：
+//   - parser.go display 分发 switch 的全部 case（排除 ambiguous/incomplete 两个错误分支）
+//   - display_registry.go 注册表键中 switch 未覆盖的（link-quality / port / mlag）
+//
+// 来源防漂移：TestDisplaySubCommandsNoDrift 断言本表 ⊇ displayRegistry 键全集；
+// 新增 display 子命令时必须同步追加（与 displayRegistry 双入口，补全/执行/缩写三处一致）。
+var displaySubCommands = []string{
+	"aaa", "acl", "arp", "bfd", "bgp", "clock", "cpu-usage", "current-configuration",
+	"description", "device", "dhcp", "diagnostic-information", "domain", "dot1x", "duplex",
+	"eth-trunk", "evpn", "gre", "history-command", "interface", "ip", "ipsec", "ipv6", "isis",
+	"link-aggregation", "link-quality", "lldp", "local-user", "mac-address", "memory",
+	"m-lag", "mlag", "mtu", "nat", "ndp", "netflow", "ntp", "ospf", "ospfv3", "pbr", "port",
+	"port-security", "port-vlan", "qos", "radius", "ripng", "routing-table",
+	"saved-configuration", "snmp", "speed", "ssh", "startup", "status", "stp", "syslog",
+	"sysname", "temperature", "this", "users", "version", "vlan", "vrf", "vrrp", "vxlan",
+}
+
 // normalizeDisplaySubCmd 将 display 子命令的缩写映射为完整形式
 func normalizeDisplaySubCmd(cmd string) string {
 	aliases := map[string]string{
@@ -84,6 +101,16 @@ func normalizeDisplaySubCmd(cmd string) string {
 	}
 	if full, ok := aliases[cmd]; ok {
 		return full
+	}
+	// v0.12.1：白名单未命中时按华为 VRP 前缀唯一匹配展开（如 dis aa -> aaa）。
+	//   - 唯一前缀      -> 返回展开后的完整子命令（与真机一致）
+	//   - 多前缀（歧义）-> 返回 "ambiguous"，由 parser 的 case "ambiguous" 输出 VRP 风格歧义文案
+	//   - 零命中        -> 原样返回，落 unknown command 兜底
+	// 历史缺陷：此前仅支持白名单枚举缩写，dis aa（唯一前缀）误报 unknown command 'dis'。
+	if resolved, matched, errKind := resolveKeyword(cmd, displaySubCommands); matched {
+		return resolved
+	} else if errKind == "ambiguous" {
+		return "ambiguous"
 	}
 	return cmd
 }
