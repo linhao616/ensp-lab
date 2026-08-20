@@ -6,9 +6,9 @@ name: Security Scan
 #   - semgrep 初版仅作可见性（continue-on-error），基线评审后可改为 --error 硬卡点。
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, fix-main ]
   push:
-    branches: [ main ]
+    branches: [ main, fix-main ]
 
 permissions:
   contents: read
