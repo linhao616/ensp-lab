@@ -41,4 +41,6 @@ COPY --from=go-builder /app/ensp-lab /usr/local/bin/
 EXPOSE ${ENS_PORT}
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://localhost:${ENS_PORT}/health || exit 1
-ENTRYPOINT ["sh", "-c", "exec ensp-lab -port ${ENS_PORT} \"$@\"", "ensp-lab"]
+# 注意：必须 -bind 0.0.0.0——服务默认只绑 127.0.0.1，docker -p 端口映射经容器 eth0
+# 转发会连接被拒，导致 host 侧健康检查/外部访问失败（2026-08-20 修复，曾致 CI smoke 一直红）。
+ENTRYPOINT ["sh", "-c", "exec ensp-lab -port ${ENS_PORT} -bind 0.0.0.0 \"$@\"", "ensp-lab"]
