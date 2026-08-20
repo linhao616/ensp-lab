@@ -6,7 +6,11 @@
 
 ## [Unreleased]
 
-> v0.11.1 技术债修复已并入 `v0.12.0` 发布（见下）。本段记录 v0.12.0 之后的增量修复。
+> 记录 v0.12.1 之后的增量。
+
+## [v0.12.1] - 2026-08-20
+
+> CLI 参数级补全 + `?` 就地帮助热键增量版本。改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 Playwright 浏览器端到端复验（`dis aaa ?` / `dis interface ?` 浮层实测）。功能细节见 `internal/cli/paramspec.go` 与 `docs/ensp-lab_manual.md`。
 
 ### Fixed
 - **CLI Tab 补全前端从未接线**：后端 `cli.Complete` + `POST .../cli/complete` 端点 + 前端 `cliCompleteClient.ts` 早已就绪，但 `CliTerminal.tsx` 的 `onKeyDown` 一直缺 Tab 分支、也无候选浮层，导致浏览器里按 Tab 毫无反应（默认跳焦点）。现补齐：
