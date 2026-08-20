@@ -206,6 +206,33 @@ func aaaVTYModeCell(mode string) string {
 	return fmt.Sprintf(aaaVTYModeValueFormat, mode, tag)
 }
 
+// buildAAAStatsDisplay 渲染 `display aaa statistics` / `display aaa online-user` 的
+// 诚实占位视图（lite 引擎无真实认证 / 会话统计源，运行态字段恒 "-"，与 aaa_display.go
+// 诚实占位红线一致）。kind ∈ {"statistics", "online-user"}。
+func buildAAAStatsDisplay(state *CLIState, kind string) string {
+	stats := EvaluateAAA(state).Stats
+	var b strings.Builder
+	switch kind {
+	case "statistics":
+		b.WriteString("AAA authentication statistics:\n")
+		b.WriteString(aaaIndentedSep(40) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Successful authentications", stats.AuthSuccess) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Failed authentications", stats.AuthFail) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Last login time", AAAStatPlaceholder) + "\n")
+	case "online-user":
+		b.WriteString("AAA online users:\n")
+		b.WriteString(aaaIndentedSep(40) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Online sessions", stats.OnlineUsers) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Access accepts", stats.AuthSuccess) + "\n")
+		b.WriteString(fmt.Sprintf(aaaUserStatFormat, "Access rejects", stats.AuthFail) + "\n")
+	default:
+		return "Error: Wrong parameter found at '^' position."
+	}
+	b.WriteString(aaaCipherNote() + "\n")
+	b.WriteString(aaaSimNote() + "\n")
+	return b.String()
+}
+
 // writeAAASchemeSection 输出一个方案小表；列表为空时整段不输出（保持 PRD §4.3 样例形态）。
 func writeAAASchemeSection(b *strings.Builder, title string, schemes []SchemeView, sep string) {
 	if len(schemes) == 0 {

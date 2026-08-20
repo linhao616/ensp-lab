@@ -3717,8 +3717,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			// display gre tunnel 新实现（只读，无副作用，确定性升序，AC7）。
 			return buildGREDisplay(state, cmd.Args[1:])
 		case "aaa":
-			// AAA 汇总（P2 第八项，P0-12）：只读、名称升序、末尾附诚实注记。
-			return buildAAADisplay(state)
+			// AAA 汇总 / 二级子命令（参数级补全落地，与 displayParamSpecs["aaa"] 严格一致；
+			// arg1 为归一化二级子命令，见 normalizeDisplaySubCmd2）。委托 regAaaDisplay
+			// 统一处理，使 displayRegistry 成为 display aaa 的单一事实源。
+			return regAaaDisplay(state, cmd, arg0, arg1)
 		case "local-user":
 			// 本地用户表（P0-12/P0-13）：口令恒脱敏 ****，未配口令显示 -，
 			// privilege 未配显示 - 而非假 0。

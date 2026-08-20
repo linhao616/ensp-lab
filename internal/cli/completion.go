@@ -55,19 +55,17 @@ func completeDisplay(state *CLIState, tokens []string, prefix string) []string {
 	}
 	normSub := normalizeDisplaySubCmd(strings.ToLower(subToken))
 
-	// dis interface <name> / dis int <name> -> 接口名补全
-	if hasSub && normSub == "interface" && len(tokens) >= 3 {
-		return completeInterfaceNames(state, prefix)
-	}
-	// dis ip interface <name> -> 接口名补全
-	if hasSub && normSub == "ip" && len(tokens) >= 3 {
-		normThird := normalizeDisplaySubCmd2("ip", strings.ToLower(tokens[2]))
-		if normThird == "interface" && len(tokens) >= 4 {
-			return completeInterfaceNames(state, prefix)
+	// 参数级补全：子命令已锁定（精确命中注册表归一化 key）且已登记语法时，
+	// 在子命令之后的 token 上做参数补全（统一 completeParams 算法，只读零副作用）。
+	// 这同时覆盖了「dis interface <name>」「dis ip interface <name>」等接口名补全，
+	// 逻辑收口到 displayParamSpecs，不再散落特判分支。
+	if hasSub && normSub != "" {
+		if g, ok := displayParamSpecs[normSub]; ok && len(tokens) >= 3 {
+			return completeParams(g, state, tokens[2:])
 		}
 	}
 
-	// 否则补全 display 子命令 key
+	// 否则补全 display 子命令 key（首 token 或子命令前缀）
 	keyPrefix := prefix
 	if !hasSub {
 		// tokens[0] 即 "dis"/"display" 本身（无空格）：按该 token 前缀过滤；
@@ -82,11 +80,12 @@ func completeDisplay(state *CLIState, tokens []string, prefix string) []string {
 
 // completeView 处理配置视图（user/system/interface/...）关键字补全。
 func completeView(state *CLIState, tokens []string, prefix string) []string {
-	// 接口名补全：上一 token 为 interface/int（如 system 视图 `interface Gi`）
+	// 参数级补全：视图首 token 已消费（len>=2）且存在该命令语法时，
+	// 在首 token 之后的参数上做补全（复用 completeParams，只读零副作用）。
 	if len(tokens) >= 2 {
-		prev := strings.ToLower(tokens[len(tokens)-2])
-		if prev == "interface" || prev == "int" {
-			return completeInterfaceNames(state, prefix)
+		cmd := strings.ToLower(tokens[0])
+		if g, ok := viewParamSpecs[cmd]; ok {
+			return completeParams(g, state, tokens[1:])
 		}
 	}
 
@@ -126,18 +125,6 @@ func filterDisplayKeys(prefix string) []string {
 	for k := range displayRegistry {
 		if prefix == "" || strings.HasPrefix(k, prefix) {
 			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// completeInterfaceNames 返回以 prefix 为前缀的真实接口名（排序）。
-func completeInterfaceNames(state *CLIState, prefix string) []string {
-	out := make([]string, 0, len(state.Interfaces))
-	for name := range state.Interfaces {
-		if prefix == "" || strings.HasPrefix(strings.ToLower(name), prefix) {
-			out = append(out, name)
 		}
 	}
 	sort.Strings(out)

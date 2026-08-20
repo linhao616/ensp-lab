@@ -6,7 +6,25 @@
 
 ## [Unreleased]
 
-> 空。v0.11.1 技术债修复已并入 `v0.12.0` 发布（见下）。
+> v0.11.1 技术债修复已并入 `v0.12.0` 发布（见下）。本段记录 v0.12.0 之后的增量修复。
+
+### Fixed
+- **CLI Tab 补全前端从未接线**：后端 `cli.Complete` + `POST .../cli/complete` 端点 + 前端 `cliCompleteClient.ts` 早已就绪，但 `CliTerminal.tsx` 的 `onKeyDown` 一直缺 Tab 分支、也无候选浮层，导致浏览器里按 Tab 毫无反应（默认跳焦点）。现补齐：
+  - Tab 触发 `requestCliComplete`（仅计算、零命令提交）；单候选自动补最后 token + 尾随空格，多候选计算最长公共前缀续补并弹出候选浮层（方向键移动高亮、Enter 确认、Esc 关闭、再次 Tab 循环高亮、点选亦可）。
+  - 补全严格按当前视图（`user`/`system`/`interface`/`aaa`/`bgp`/`acl`/`vty`/`dhcp-pool`/`isis`/`mst-region`/`mlag`）给出候选，无越权暗示（如 `user` 视图 `sy`→`system-view`，`system` 视图 `sy`→`syslog`/`sysname`）；`dis interface <name>` / `system: interface <name>` 补全真实接口名。
+  - 经 Playwright 端到端复验：`dis aa`→`dis aaa`、`dis a`→浮层 `[aaa,acl,arp]`、`interface` 视图 `de`→`[delay,description]`（链路质量命令可见）、`sh`→`shutdown`、浮层 Enter 确认高亮候选→`delay `。
+
+### Added
+- **参数级 Tab 补全（CLI 补全从「命令关键字层」下沉到「参数层」）**：此前 `cli.Complete` 只补全到命令关键字，`dis aaa `（尾随空格）后本应列出二级参数却返回空集。现新增统一数据模型 `ParamSpec` / `CommandGrammar`（`internal/cli/paramspec.go`）+ `completeParams` 算法，并落地三个代表命令：
+  - `display aaa [ configuration | statistics | online-user | local-user <user-name> | domain <domain-name> ]`：二级子命令 + 真实用户名/域名（StateProvider 源自 `aaa:local-user:`/`aaa:domain:` 命名空间，与键碰撞红线一致的精确前缀解析）。
+  - `display ip [ interface | pool | routing-table ]` 及嵌套 `display ip interface <if-name>`。
+  - `display interface [ brief | <if-name> ]`（brief 关键字与真实接口名共用同一混合槽位）。
+  - 配置视图首 token 之后亦接入同一算法：`system` 视图 `interface <if-name>`、`aaa` 视图 `local-user <user-name>` 补全真实实例名。
+  - 执行器同步：原 `display aaa` 在 parser 巨型 switch 中忽略二级参数，现委托 `regAaaDisplay` 按 `arg1` 路由（`configuration`/`local-user`/`domain` 复用既有渲染，`statistics`/`online-user` 走 `buildAAAStatsDisplay` 诚实占位，字段恒 `-`），与补全候选严格一致，受 `TestCompletionParamNoDrift` 锁死。
+  - 全程只读、零副作用（`completeParams` 不执行命令、不改 `CLIState`）；`<cr>` 语义由前端「Enter 即执行」自然承载，前端浮层无需改动。
+
+### Added
+- **VRP 风格 `?` 就地帮助热键**：此前 `?` 在终端里只是普通字符，无法像真机那样就地列出可接参数。现新增 `onKeyDown` 的 `?` 分支 + `doHelp`：按下 `?` 时拦截该字符、在输入尾补一个空格把光标推进到下一 token 位置，复用同一 `POST .../cli/complete` 端点（单一事实源、零副作用）弹出候选浮层，显示「这一位置可接的所有参数」。与 Tab 的区别：`?` 只“显示”不“替写”——即便只有一个候选也只弹浮层、不自动续补。`dis aaa ?` → 浮层显示 `[configuration, statistics, online-user, local-user, domain]`；`dis aaa local-user ?` → 显示已配用户名；`system interface ?` / `aaa local-user ?` 同理显示真实实例名。纯前端改动，后端 `cli.Complete` 与 `completeParams` 契约不变。
 
 ## [v0.12.0] - 2026-08-19（已发布，tag `v0.12.0` → `9a018f9`）
 

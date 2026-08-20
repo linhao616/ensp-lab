@@ -1352,11 +1352,33 @@ func regGreDisplay(state *CLIState, cmd *Command, arg0, arg1 string) string {
 	return buildGREDisplay(state, cmd.Args[1:])
 }
 
-// regAaaDisplay 由原 parser.go `case aaa:` 逐字迁移（逻辑零变化；委托既有 build* 函数者保持委托）。
+// regAaaDisplay 由原 parser.go `case aaa:` 逐字迁移。
+//
+// 参数级补全落地后，display aaa 实际识别的二级子命令为
+// configuration / statistics / online-user / local-user / domain（与 displayParamSpecs["aaa"]
+// 严格一致，受 TestCompletionParamNoDrift 锁死）。arg1 为归一化二级子命令
+// （见 parser.go normalizeDisplaySubCmd2）；空 arg1 走原 AAA 汇总。各分支均只读、无副作用。
 func regAaaDisplay(state *CLIState, cmd *Command, arg0, arg1 string) string {
-
-	// AAA 汇总（P2 第八项，P0-12）：只读、名称升序、末尾附诚实注记。
-	return buildAAADisplay(state)
+	switch arg1 {
+	case "":
+		// AAA 汇总（P2 第八项，P0-12）：只读、名称升序、末尾附诚实注记。
+		return buildAAADisplay(state)
+	case "configuration":
+		cfg := buildSavedAAAConfig(state)
+		if cfg == "" {
+			return "Info: No AAA configuration.\n" + aaaSimNote() + "\n"
+		}
+		return cfg
+	case "local-user":
+		return buildAAALocalUserDisplay(state)
+	case "domain":
+		return buildAAADomainDisplay(state, "")
+	case "statistics", "online-user":
+		// 运行态统计诚实占位（lite 引擎无真实统计源，字段恒 "-"）。
+		return buildAAAStatsDisplay(state, arg1)
+	default:
+		return "Error: Wrong parameter found at '^' position."
+	}
 }
 
 // regLocalUserDisplay 由原 parser.go `case local-user:` 逐字迁移（逻辑零变化；委托既有 build* 函数者保持委托）。

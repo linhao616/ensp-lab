@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { type Device, type CliResponse } from '../types';
 import { api } from '../api';
+import { requestCliComplete } from '../cliCompleteClient';
 
 interface CliTerminalProps {
   topologyId: string | null;
@@ -134,6 +135,26 @@ function formatEntryHtml(entry: LogEntry): string {
   return html;
 }
 
+// 计算候选集合的最长公共前缀（LCP），用于多候选时续补公共部分。
+function longestCommonPrefix(cands: string[]): string {
+  if (cands.length === 0) return '';
+  let prefix = cands[0];
+  for (const c of cands.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < c.length && prefix[i] === c[i]) i++;
+    prefix = prefix.slice(0, i);
+    if (prefix === '') break;
+  }
+  return prefix;
+}
+
+// 用候选替换当前输入的最后一个 token，并附加尾随空格（模拟 VRP 补全后空格）。
+function applyCompletion(input: string, candidate: string): string {
+  const parts = input.split(' ');
+  parts[parts.length - 1] = candidate;
+  return parts.join(' ') + ' ';
+}
+
 export default function CliTerminal(props: CliTerminalProps) {
   const { topologyId, selectedDevice, onOutput, onTargetDevice } = props;
   const [sessions, setSessions] = useState<Record<string, DeviceSession>>(() => loadSessions(topologyId));
@@ -141,6 +162,11 @@ export default function CliTerminal(props: CliTerminalProps) {
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [busy, setBusy] = useState(false);
+
+  // Tab 补全候选浮层状态
+  const [candidates, setCandidates] = useState<string[]>([]);
+  const [showCands, setShowCands] = useState(false);
+  const [hlIdx, setHlIdx] = useState(0);
 
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -267,16 +293,115 @@ export default function CliTerminal(props: CliTerminalProps) {
     [deviceId, executeCommandFor],
   );
 
+  const closeCands = useCallback(() => {
+    setShowCands(false);
+    setCandidates([]);
+    setHlIdx(0);
+  }, []);
+
+  // Tab 补全：仅计算候选、零命令提交；后端 cli.Complete 同源、不执行。
+  const doComplete = useCallback(async () => {
+    if (!topologyId || !deviceId || !input.trim()) return;
+    try {
+      const cands = await requestCliComplete(
+        { view: cliState.view, sub: cliState.sub, input },
+        { topoId: topologyId, deviceId },
+      );
+      if (cands.length === 0) {
+        closeCands();
+        return;
+      }
+      if (cands.length === 1) {
+        setInput(applyCompletion(input, cands[0]));
+        closeCands();
+        return;
+      }
+      // 多候选：先把公共前缀续补到最后一个 token，再展示浮层
+      const lcp = longestCommonPrefix(cands);
+      const parts = input.split(' ');
+      const last = parts[parts.length - 1];
+      if (lcp.length > last.length) {
+        parts[parts.length - 1] = lcp;
+        setInput(parts.join(' '));
+      }
+      setCandidates(cands);
+      setHlIdx(0);
+      setShowCands(true);
+    } catch {
+      // 补全失败（网络/超时）不应打断输入，静默忽略
+      closeCands();
+    }
+  }, [topologyId, deviceId, input, cliState.view, cliState.sub, setInput, closeCands]);
+
+  // ? 就地帮助（VRP 风格）：复用同一补全后端（单一事实源、零副作用）。
+  // 与 Tab 不同，? 只“显示”候选、不自动续补——即便只有一个候选也只弹浮层。
+  // 关键：后端 completeParams 按“下一 token”计算候选，故 ? 触发前须在输入尾补一个空格
+  // （把光标推进到下一参数位置），否则 "dis aaa" 会被当作“补全当前 token”而非“列出 aaa 的子参数”。
+  const doHelp = useCallback(async () => {
+    if (!topologyId || !deviceId) return;
+    const query = input === '' || input.endsWith(' ') ? input : `${input.trimEnd()} `;
+    try {
+      const cands = await requestCliComplete(
+        { view: cliState.view, sub: cliState.sub, input: query },
+        { topoId: topologyId, deviceId },
+      );
+      if (cands.length === 0) {
+        closeCands();
+        return;
+      }
+      setInput(query); // 推进光标，命令行走 VRP 风格空格（不替写候选）
+      setCandidates(cands);
+      setHlIdx(0);
+      setShowCands(true);
+    } catch {
+      // 补全失败（网络/超时）不应打断输入，静默忽略
+      closeCands();
+    }
+  }, [topologyId, deviceId, input, cliState.view, cliState.sub, setInput, closeCands]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (showCands && candidates.length > 0) {
+        // 浮层已开：Tab 循环高亮
+        setHlIdx((i) => (i + 1) % candidates.length);
+      } else {
+        void doComplete();
+      }
+      return;
+    }
+    if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      // VRP 风格 ? 就地帮助：在输入尾补一个空格把光标推进到下一 token，
+      // 复用同一补全后端（单一事实源、零副作用）展示可接参数；? 只“显示”不“替写”。
+      e.preventDefault();
+      void doHelp();
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (showCands && candidates.length > 0) {
+        // 浮层已开：Enter 确认高亮候选
+        const c = candidates[hlIdx];
+        if (c) setInput(applyCompletion(input, c));
+        closeCands();
+        return;
+      }
       const cmd = input;
       setInput('');
       executeCommand(cmd);
       return;
     }
+    if (e.key === 'Escape' && showCands) {
+      e.preventDefault();
+      closeCands();
+      return;
+    }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
+      if (showCands && candidates.length > 0) {
+        setHlIdx((i) => (i - 1 + candidates.length) % candidates.length);
+        return;
+      }
       if (cmdHistory.length === 0) return;
       const idx = historyIdx === -1 ? cmdHistory.length - 1 : Math.max(0, historyIdx - 1);
       setHistoryIdx(idx);
@@ -285,6 +410,10 @@ export default function CliTerminal(props: CliTerminalProps) {
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
+      if (showCands && candidates.length > 0) {
+        setHlIdx((i) => (i + 1) % candidates.length);
+        return;
+      }
       if (historyIdx === -1) return;
       const idx = historyIdx + 1;
       if (idx >= cmdHistory.length) {
@@ -363,19 +492,61 @@ export default function CliTerminal(props: CliTerminalProps) {
               />
             ))}
           </div>
-          <div className="cli-input">
+          <div className="cli-input" style={{ position: 'relative' }}>
             <span className="cli-input-prompt">{prompt}</span>
             <input
               ref={inputRef}
               type="text"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value);
+                if (showCands) closeCands();
+              }}
               onKeyDown={onKeyDown}
               disabled={busy}
               placeholder={busy ? '执行中…' : '输入命令，按 Enter 执行'}
               spellCheck={false}
               autoComplete="off"
             />
+            {showCands && candidates.length > 0 && (
+              <div
+                className="cli-complete-popup"
+                style={{
+                  position: 'absolute',
+                  bottom: '100%',
+                  left: 0,
+                  marginBottom: 4,
+                  background: '#1e1e2e',
+                  border: '1px solid #45475a',
+                  borderRadius: 4,
+                  padding: 4,
+                  maxHeight: 160,
+                  overflowY: 'auto',
+                  zIndex: 20,
+                  minWidth: 160,
+                }}
+              >
+                {candidates.map((c, i) => (
+                  <div
+                    key={c}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault();
+                      setInput(applyCompletion(input, c));
+                      closeCands();
+                    }}
+                    style={{
+                      padding: '2px 8px',
+                      cursor: 'pointer',
+                      fontFamily: 'monospace',
+                      color: i === hlIdx ? '#1e1e2e' : '#cdd6f4',
+                      background: i === hlIdx ? '#89b4fa' : 'transparent',
+                    }}
+                  >
+                    {c}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
