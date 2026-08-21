@@ -17,7 +17,6 @@ interface LeftPanelProps {
   deviceTypes: DeviceTypeEntry[];
   onAddDeviceClick: (type: DeviceType) => void;
   onAddAnnotation: () => void;
-  onAddVxlanTemplate: () => void;
   hasTopology: boolean;
   links: Link[];
   devices: Record<string, Device>;
@@ -88,14 +87,6 @@ export default function LeftPanel(props: LeftPanelProps) {
                 disabled={!props.hasTopology}
               >
                 + 添加标注
-              </button>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={props.onAddVxlanTemplate}
-                disabled={!props.hasTopology}
-                title="插入预填的 VXLAN 规划说明（纯 TXT）"
-              >
-                📋 VXLAN 模板
               </button>
             </div>
           </div>

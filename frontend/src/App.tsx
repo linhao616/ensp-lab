@@ -12,7 +12,6 @@ import LeftPanel from './components/LeftPanel';
 import DiagnosticTools from './components/DiagnosticTools';
 import { useSimEvents } from './hooks/useSimEvents';
 import { api } from './api';
-import { VXLAN_PLANNING_TEMPLATE } from './data/vxlanTemplate';
 import {
   type Topology,
   type Device,
@@ -514,27 +513,6 @@ export default function App() {
     }
   }, [selectedTopoId, topology, viewport]);
 
-  // 创建一个预填 VXLAN 规划说明的 TextAnnotation（纯 TXT 格式）。
-  // 位置在画布右上角避开设备密集区，方便用户直接拖到合适位置。
-  const handleAddVxlanTemplate = useCallback(async () => {
-    if (!selectedTopoId || !topology) return;
-    const canvasW = Math.max(200, window.innerWidth - 180);
-    const tx = (canvasW - 60 - viewport.ox) / viewport.scale;
-    const ty = (60 - viewport.oy) / viewport.scale;
-    const id = `anno-vxlan-${Date.now()}`;
-    try {
-      const anno = await api.addAnnotation(selectedTopoId, {
-        id,
-        text: VXLAN_PLANNING_TEMPLATE,
-        position_x: tx,
-        position_y: ty,
-      });
-      setTopology((prev) => (prev ? { ...prev, annotations: [...prev.annotations, anno] } : prev));
-    } catch (e) {
-      setError(`创建 VXLAN 规划模板失败: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }, [selectedTopoId, topology, viewport]);
-
   const handleSaveLayout = useCallback(async () => {
     if (!selectedTopoId || !topology) return;
     setSaving(true);
@@ -767,7 +745,6 @@ export default function App() {
               setAddType(t);
             }}
             onAddAnnotation={handleAddAnnotation}
-            onAddVxlanTemplate={handleAddVxlanTemplate}
             hasTopology={!!topology}
             links={topology?.links || []}
             devices={topology?.devices || {}}
