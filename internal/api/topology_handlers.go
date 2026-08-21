@@ -166,9 +166,10 @@ func (r *Router) deleteTopology(c *gin.Context) {
 
 func (r *Router) createTopologySimple(c *gin.Context) {
 	var req struct {
-		Name  string              `json:"name"`
-		Nodes []map[string]string `json:"nodes"`
-		Links []struct {
+		Name        string              `json:"name"`
+		Description string              `json:"description"`
+		Nodes       []map[string]string `json:"nodes"`
+		Links       []struct {
 			SourceDevice string `json:"source_device"`
 			SourcePort   string `json:"source_port"`
 			TargetDevice string `json:"target_device"`
@@ -182,6 +183,7 @@ func (r *Router) createTopologySimple(c *gin.Context) {
 
 	id := generateID()
 	t := topology.NewTopology(id, req.Name)
+	t.Description = req.Description
 
 	// 先收集所有设备，便于后续依据链路做邻接 IP 分配。
 	devices := make(map[string]*topology.Device, len(req.Nodes))

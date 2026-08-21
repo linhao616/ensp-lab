@@ -112,6 +112,7 @@ export interface TextAnnotation {
 export interface Topology {
   id: string;
   name: string;
+  description?: string;
   devices: Record<string, Device>;
   links: Link[];
   annotations: TextAnnotation[];

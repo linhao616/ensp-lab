@@ -210,6 +210,7 @@ type Topology struct {
 	mu            sync.RWMutex
 	ID            string             `json:"id"`
 	Name          string             `json:"name"`
+	Description   string             `json:"description"`
 	Devices       map[string]*Device `json:"devices"`
 	Links         []*Link            `json:"links"`
 	Annotations   []*TextAnnotation  `json:"annotations"`
@@ -247,6 +248,7 @@ func (t *Topology) Clone() *Topology {
 	out := &Topology{
 		ID:            t.ID,
 		Name:          t.Name,
+		Description:   t.Description,
 		CreatedAt:     t.CreatedAt,
 		UpdatedAt:     t.UpdatedAt,
 		CanvasScale:   t.CanvasScale,
