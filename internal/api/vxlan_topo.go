@@ -31,6 +31,8 @@ func CreateVXLANTopology() *topology.Topology {
 	)
 
 	topo := topology.NewTopology("vxlan-spine-leaf", "VXLAN Spine-Leaf 组网")
+	topo.Description = "VXLAN Spine-Leaf 数据中心组网：4 台 Spine（Underlay 核心）+ 3 台 Leaf（VTEP），" +
+		"VLAN 10/20 映射 VNI 5000；Underlay 走 OSPF/BGP，Overlay 经 VXLAN 隧道承载跨 Leaf 二层业务。"
 	topo.Devices = make(map[string]*topology.Device)
 
 	// ────────────────────────────────────────────────
