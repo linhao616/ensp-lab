@@ -48,8 +48,6 @@ export default function App() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createTopoName, setCreateTopoName] = useState('');
   const [createTopoDesc, setCreateTopoDesc] = useState('');
-  const [showEditDescModal, setShowEditDescModal] = useState(false);
-  const [editDescText, setEditDescText] = useState('');
 
   // ---- 网络诊断工具集窗口状态 ----
   const [diagOpen, setDiagOpen] = useState(false);
@@ -562,26 +560,6 @@ export default function App() {
     }
   }, [createTopoName, createTopoDesc]);
 
-  const openEditDesc = useCallback(() => {
-    if (!selectedTopoId) return;
-    const t = topologies.find((x) => x.id === selectedTopoId);
-    setEditDescText(t?.description ?? '');
-    setShowEditDescModal(true);
-  }, [selectedTopoId, topologies]);
-
-  const handleSaveDescription = useCallback(async () => {
-    if (!selectedTopoId) return;
-    const desc = editDescText.trim();
-    try {
-      const updated = await api.updateTopology(selectedTopoId, { description: desc });
-      setTopologies((prev) => prev.map((x) => (x.id === selectedTopoId ? { ...x, description: updated.description } : x)));
-      setTopology((prev) => (prev && prev.id === selectedTopoId ? { ...prev, description: updated.description } : prev));
-      setShowEditDescModal(false);
-    } catch (e) {
-      setError(`保存拓扑说明失败: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }, [selectedTopoId, editDescText]);
-
   const handleDeleteTopology = useCallback(async () => {
     if (!selectedTopoId) return;
     const t = topologies.find((x) => x.id === selectedTopoId);
@@ -682,33 +660,6 @@ export default function App() {
           title={selectedTopoId ? '删除当前选中的拓扑' : '请先选择拓扑'}
         >
           删除拓扑
-        </button>
-        {selectedTopoId && topologies.find((x) => x.id === selectedTopoId)?.description && (
-          <span
-            className="topo-desc-badge"
-            title={topologies.find((x) => x.id === selectedTopoId)?.description}
-            style={{
-              maxWidth: 220,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 12,
-              color: '#666',
-              background: '#f0f0f0',
-              borderRadius: 4,
-              padding: '2px 8px',
-            }}
-          >
-            📝 {topologies.find((x) => x.id === selectedTopoId)?.description}
-          </span>
-        )}
-        <button
-          className="btn btn-secondary btn-sm"
-          onClick={openEditDesc}
-          disabled={!selectedTopoId}
-          title={selectedTopoId ? '编辑当前拓扑的说明' : '请先选择拓扑'}
-        >
-          说明
         </button>
         <div className="header-spacer" />
         <span className={`status-pill ${isConnected ? 'connected' : 'disconnected'}`}>
@@ -978,89 +929,6 @@ export default function App() {
                       }}
                     >
                       创建
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-            {showEditDescModal && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  background: 'rgba(0, 0, 0, 0.5)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  zIndex: 2000,
-                }}
-                onClick={() => setShowEditDescModal(false)}
-              >
-                <div
-                  style={{
-                    background: '#fff',
-                    borderRadius: 8,
-                    padding: '24px',
-                    minWidth: 360,
-                    boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <h3 style={{ margin: 0, marginBottom: 16, fontSize: 16, fontWeight: 600 }}>
-                    拓扑说明
-                  </h3>
-                  <textarea
-                    value={editDescText}
-                    onChange={(e) => setEditDescText(e.target.value)}
-                    placeholder="输入拓扑说明（可选）"
-                    rows={4}
-                    autoFocus
-                    style={{
-                      width: '100%',
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: 4,
-                      fontSize: 14,
-                      boxSizing: 'border-box',
-                      marginBottom: 16,
-                      resize: 'vertical',
-                      fontFamily: 'inherit',
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') setShowEditDescModal(false);
-                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSaveDescription();
-                    }}
-                  />
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                    <button
-                      onClick={() => setShowEditDescModal(false)}
-                      style={{
-                        padding: '6px 16px',
-                        border: '1px solid #ddd',
-                        borderRadius: 4,
-                        background: '#fff',
-                        cursor: 'pointer',
-                        fontSize: 14,
-                      }}
-                    >
-                      取消
-                    </button>
-                    <button
-                      onClick={handleSaveDescription}
-                      style={{
-                        padding: '6px 16px',
-                        border: 'none',
-                        borderRadius: 4,
-                        background: '#007bff',
-                        color: '#fff',
-                        cursor: 'pointer',
-                        fontSize: 14,
-                      }}
-                    >
-                      保存
                     </button>
                   </div>
                 </div>
