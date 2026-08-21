@@ -578,6 +578,22 @@ export default function App() {
     }
   }, [createTopoName]);
 
+  const handleDeleteTopology = useCallback(async () => {
+    if (!selectedTopoId) return;
+    const t = topologies.find((x) => x.id === selectedTopoId);
+    if (!confirm(`确定删除拓扑「${t?.name ?? selectedTopoId}」？该操作不可恢复。`)) return;
+    try {
+      await api.deleteTopology(selectedTopoId);
+      setTopologies((prev) => prev.filter((x) => x.id !== selectedTopoId));
+      setSelectedTopoId(null);
+      setTopology(null);
+      setSelectedDeviceId(null);
+      setSelectedLinkId(null);
+    } catch (e) {
+      setError(`删除拓扑失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [selectedTopoId, topologies]);
+
   // ---- 网络诊断工具集：源设备联动 / 窗口已在 App 顶层统一管理 ----
 
   const handleDeleteDevice = useCallback(async () => {
@@ -654,6 +670,14 @@ export default function App() {
         </select>
         <button className="btn btn-secondary btn-sm" onClick={handleCreateTopology}>
           + 新建拓扑
+        </button>
+        <button
+          className="btn btn-danger btn-sm"
+          onClick={handleDeleteTopology}
+          disabled={!selectedTopoId}
+          title={selectedTopoId ? '删除当前选中的拓扑' : '请先选择拓扑'}
+        >
+          删除拓扑
         </button>
         <div className="header-spacer" />
         <span className={`status-pill ${isConnected ? 'connected' : 'disconnected'}`}>
