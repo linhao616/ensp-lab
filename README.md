@@ -1030,7 +1030,7 @@ src/ensp-lab/
 |------|------|------|
 | `react` / `react-dom` | ^18.3.1 | UI 框架 |
 | `typescript` | ^5.6.3 | 类型系统 |
-| `vite` | ^5.4.10 | 构建与开发服务器 |
+| `vite` | ^6.4.3 | 构建与开发服务器 |
 | `@vitejs/plugin-react` | — | React 集成插件 |
 
 > 运行环境要求：Go 1.26+、Node 22（构建前端）、npm。Windows 直接运行 ns-x 引擎无需额外依赖；Linux 真实网络模式需 root 权限、Open vSwitch 与 FRRouting。
