@@ -8,6 +8,10 @@
 
 > 记录 v0.12.1 之后的增量。
 
+### Dependencies
+
+- **frontend 依赖漏洞清零（`npm audit` 0 vulnerabilities）**：`vite` ^5.4.10 → **^6.4.3**（修复 `<=6.4.2` 三个 dev server CVE：`.map` 优化依赖路径穿越 GHSA-4w7w-66w2-5vf9、Windows launch-editor NTLMv2 泄露 GHSA-v6wh-96g9-6wx3、`server.fs.deny` 绕过 GHSA-fx2h-pf6j-xcff）；`esbuild` 经 `overrides` 升至 **^0.25.0**（修复 GHSA-67mh-4wv8-2f99 dev server 跨源读取）；`nanoid`/`postcss` 随 `npm audit fix` 消解。全部为 devDeps，不影响 `go:embed` 生产产物。Node 22（本地与 CI）均满足 vite 6 engines。
+
 ## [v0.12.1] - 2026-08-20
 
 > CLI 参数级补全 + `?` 就地帮助热键增量版本。改动均已通过 `go vet ./...`（清零）、`go test ./...`（全绿）与 Playwright 浏览器端到端复验（`dis aaa ?` / `dis interface ?` 浮层实测）。功能细节见 `internal/cli/paramspec.go` 与 `docs/ensp-lab_manual.md`。
