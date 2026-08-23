@@ -60,3 +60,14 @@ tmp/ensp-smoke*/
 tmp/ensp-smoke*/**
 # e2e 浏览器复验运行时数据（-data-dir ./tmp/e2e-data 生成，非源码）
 tmp/e2e-data/
+# CI 日志下载/解压产物（ci-verify 脚本临时落地）
+tmp/ci-logs/
+tmp/ci-logs.zip
+tmp/logs2/
+tmp/logs2.zip
+tmp/dl-ci-logs.js
+tmp/dl2.js
+# npm 构建日志（PowerShell 重定向产物）
+frontend/npm-install.log
+# 本地开发目录（dev/ 非源码）
+dev/
