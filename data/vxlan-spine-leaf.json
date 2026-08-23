@@ -1,6 +1,7 @@
 {
   "id": "vxlan-spine-leaf",
   "name": "VXLAN Spine-Leaf 组网",
+  "description": "",
   "devices": {
     "leaf-1": {
       "id": "leaf-1",
@@ -634,6 +635,90 @@
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "updated_at": "2026-07-20T18:47:58.6036835+08:00"
     },
+    "spine1-pc": {
+      "id": "spine1-pc",
+      "name": "PC",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 450,
+      "position_y": 30,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "172.16.1.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "172.16.1.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "spine1-pc",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "172.16.1.1",
+          "interface:Ethernet0:ip": "172.16.1.2",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "spine2-pc": {
+      "id": "spine2-pc",
+      "name": "PC",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 450,
+      "position_y": 870,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "172.16.2.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "172.16.2.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "spine2-pc",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "172.16.2.1",
+          "interface:Ethernet0:ip": "172.16.2.2",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
     "vm-1": {
       "id": "vm-1",
       "name": "vm-1",
@@ -645,9 +730,9 @@
       "interfaces": {
         "Ethernet0": {
           "name": "Ethernet0",
-          "ip_address": "10.0.10.10",
-          "subnet_mask": "255.255.255.0",
-          "gateway": "10.0.10.1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -662,7 +747,7 @@
       "config_data": {
         "device_name": "vm-1",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.10/255.255.255.0"
+          "interface:Ethernet0:ip": ""
         },
         "default_gateway": "10.0.10.1",
         "saved": false,
@@ -684,9 +769,9 @@
       "interfaces": {
         "Ethernet0": {
           "name": "Ethernet0",
-          "ip_address": "10.0.20.20",
-          "subnet_mask": "255.255.255.0",
-          "gateway": "10.0.20.1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -701,7 +786,7 @@
       "config_data": {
         "device_name": "vm-2",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.20.20/255.255.255.0"
+          "interface:Ethernet0:ip": ""
         },
         "default_gateway": "10.0.20.1",
         "saved": false,
@@ -723,9 +808,9 @@
       "interfaces": {
         "Ethernet0": {
           "name": "Ethernet0",
-          "ip_address": "10.0.10.30",
-          "subnet_mask": "255.255.255.0",
-          "gateway": "10.0.10.2",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -740,7 +825,7 @@
       "config_data": {
         "device_name": "vm-3",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.30/255.255.255.0"
+          "interface:Ethernet0:ip": ""
         },
         "default_gateway": "10.0.10.2",
         "saved": false,
@@ -762,9 +847,9 @@
       "interfaces": {
         "Ethernet0": {
           "name": "Ethernet0",
-          "ip_address": "10.0.10.40",
-          "subnet_mask": "255.255.255.0",
-          "gateway": "10.0.10.3",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
           "dns": "",
           "mac": "",
           "status": "up",
@@ -779,7 +864,7 @@
       "config_data": {
         "device_name": "vm-4",
         "interfaces": {
-          "interface:Ethernet0:ip": "10.0.10.40/255.255.255.0"
+          "interface:Ethernet0:ip": ""
         },
         "default_gateway": "10.0.10.3",
         "saved": false,
@@ -805,7 +890,8 @@
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "target_label_dx": -10.046502634129842,
-      "target_label_dy": -3.348834211376614
+      "target_label_dy": -3.348834211376614,
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "underlay-sp1-l2",
@@ -818,7 +904,8 @@
       "bandwidth": 10000,
       "delay": 0,
       "status": "up",
-      "created_at": "2026-07-20T18:47:58.6036835+08:00"
+      "created_at": "2026-07-20T18:47:58.6036835+08:00",
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "underlay-sp1-l3",
@@ -831,7 +918,8 @@
       "bandwidth": 10000,
       "delay": 0,
       "status": "up",
-      "created_at": "2026-07-20T18:47:58.6036835+08:00"
+      "created_at": "2026-07-20T18:47:58.6036835+08:00",
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "underlay-sp2-l1",
@@ -846,7 +934,8 @@
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "target_label_dx": 41.30228860697823,
-      "target_label_dy": 6.69766842275323
+      "target_label_dy": 6.69766842275323,
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "underlay-sp2-l2",
@@ -859,7 +948,8 @@
       "bandwidth": 10000,
       "delay": 0,
       "status": "up",
-      "created_at": "2026-07-20T18:47:58.6036835+08:00"
+      "created_at": "2026-07-20T18:47:58.6036835+08:00",
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "underlay-sp2-l3",
@@ -874,7 +964,8 @@
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "source_label_dx": -9.192562292238378,
-      "source_label_dy": 30.64187430746088
+      "source_label_dy": 30.64187430746088,
+      "subnet": "10.0.0.0/24"
     },
     {
       "id": "access-l1-s1-v10",
@@ -888,7 +979,8 @@
       "delay": 0,
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
-      "vlan": 10
+      "vlan": 10,
+      "subnet": "10.0.10.0/24"
     },
     {
       "id": "access-l1-s1-v20",
@@ -902,7 +994,8 @@
       "delay": 0,
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
-      "vlan": 20
+      "vlan": 20,
+      "subnet": "10.0.20.0/24"
     },
     {
       "id": "access-l2-s2-v10",
@@ -916,7 +1009,8 @@
       "delay": 0,
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
-      "vlan": 10
+      "vlan": 10,
+      "subnet": "10.0.10.0/24"
     },
     {
       "id": "access-l3-s3-v10",
@@ -930,7 +1024,8 @@
       "delay": 0,
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
-      "vlan": 10
+      "vlan": 10,
+      "subnet": "10.0.10.0/24"
     },
     {
       "id": "virtual-s1-vm1",
@@ -1035,14 +1130,42 @@
       "status": "up",
       "created_at": "2026-07-20T18:47:58.6036835+08:00",
       "vxlan_vni": 5000
+    },
+    {
+      "id": "spine1-pc-spine-1-link",
+      "source_device": "spine1-pc",
+      "source_port": "Ethernet0",
+      "target_device": "spine-1",
+      "target_port": "GigabitEthernet0/0/1",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "172.16.1.0/24"
+    },
+    {
+      "id": "spine2-pc-spine-2-link",
+      "source_device": "spine2-pc",
+      "source_port": "Ethernet0",
+      "target_device": "spine-2",
+      "target_port": "GigabitEthernet0/0/1",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "172.16.2.0/24"
     }
   ],
   "annotations": [
     {
       "id": "anno-vxlan-1784620197582",
-      "text": "VXLAN Spine-Leaf 组网 · 小白拓扑说明\n\n【0. 一句话先懂（快递比喻）】\n把 VXLAN 想成\"邮局 + 信封\"：两台不在同一栋楼的电脑（VM）想面对面说话（二层直连），中间只通\"邮政马路\"（三层 IP 网）。VXLAN 把原始信件（二层帧）装进写有\"收件邮局地址\"的 UDP 信封，走马路送到对方邮局，对方拆信封交给目标电脑。结果：两台电脑\"感觉\"在同一屋（大二层），其实隔着整个 IP 网。\n\n【1. 为什么需要 VXLAN？】\n传统 VLAN 两个天花板：①标识不够用——VLAN ID 仅 12bit，最多 4096 个隔离域，云数据中心租户成千上万不够分；②跨不过三层——VLAN 是二层技术，广播域不能跨三层（过路由/跨网段就断），导致虚拟机迁移必须改 IP、业务中断。数据中心硬需求：让 VM 在物理服务器间自由搬家，IP 不变、业务不中断——必须有一张\"跨三层却像二层一样通\"的虚拟网。VXLAN 就是干这个的。\n\n【2. 两层网络：Underlay 与 Overlay（最关键！）】\nVXLAN 本质是\"网中网\"，必分两层：\n· Underlay（底层/承载网）：真实物理 IP 网。本拓扑 = Spine-1/2 与各 Leaf 间的 10.0.0.0/24 互联链路。只按 IP 把\"信封\"从甲送到乙，不关心里面装啥。\n· Overlay（叠加/业务网）：在 Underlay 上虚构出的二层网。本拓扑 = VNI 5000 这张大二层（VM-1/3/4 的 10.0.10.0/24）。租户只看得见它，Underlay 对它是透明的。\n记忆：Underlay 是\"马路\"，Overlay 是\"马路上跑的虚拟专车（VXLAN 隧道）\"。\n\n【3. 三个必须认识的角色】\n· VTEP（隧道端点）：负责装/拆信封，位于 Leaf。三台 Leaf 都是 VTEP，各用 LoopBack0 当\"邮局地址\"：Leaf-1=1.1.1.1、Leaf-2=2.2.2.2、Leaf-3=2.2.2.3。⚠️ 这些是物理网（Underlay）地址，和 VM 的 10.0.10.x 无关；VXLAN 报文外层收/发件人写的就是这对 VTEP IP。\n· VNI（VXLAN 网络标识）：相当于 VLAN ID，但扩到 24bit，最多 1600 万个隔离域；唯一标识一张 Overlay 二层网；不同 VNI 的 VM 二层互不相通。本拓扑用 VNI 5000。\n· BD（桥域）：二层广播域，VXLAN 靠它转发。规则 VNI↔BD 1:1：BD 10↔VNI 5000；BD 20 独立（无对应隧道）。\n本拓扑映射：VM 在 VLAN 10 → BD 10 → VNI 5000；VM-2 在 VLAN 20 → BD 20（无 VNI，不进 Overlay）。\n\n【4. 报文长什么样？—— MAC-in-UDP 封装】\n原始二层帧离开 Leaf 时\"套娃\"成（从外到内）：\n[外层 MAC][外层 IP: 源=本端VTEP / 目的=对端VTEP][UDP: 目的端口 4789][VXLAN头: 含VNI][原始二层帧(内层MAC+数据)]\n· 外层 IP 的源/目的 = 一对 VTEP 地址（如 1.1.1.1 → 2.2.2.3），这一对就是一条 VXLAN 隧道。\n· VXLAN 头带 VNI（本例 5000），告诉对端\"这信属于哪张虚拟网\"。\n这正是\"MAC-in-UDP\"：把原始 MAC 帧塞进 UDP 包，从而能在三层 IP 网上传二层流量。\n\n【5. 数据怎么流？—— 以 VM-1 找 VM-3 为例】\nVM-1(10.0.10.10) 在 Server-1，VM-3(10.0.10.30) 在 Server-3，都在 VLAN 10→BD 10→VNI 5000：\n1. VM-1 发原始帧 → 经 Server-1 到 Leaf-1 的 10GE5/0/1（access，VLAN 10）。\n2. Leaf-1 把 VLAN 10 关联 BD 10，BD 10 映射 VNI 5000，查表知目的 VM-3 在对端 VTEP 2.2.2.3（Leaf-3）。\n3. Leaf-1 的 VTEP(1.1.1.1) 封装：外层目的 IP=2.2.2.3，VXLAN 头写 VNI 5000，套 UDP。\n4. 封装包进 Underlay，按外层 IP 经 Spine-1/2 路由，从 Leaf-1 送到 Leaf-3。\n5. Leaf-3(VTEP 2.2.2.3) 解封装，取出原始帧，按 BD 10 从接入链路发 Server-3 → VM-3。\n全程 VM 以为同二层，实际跨了三层 Underlay。\n\n为什么 VM-1 ↔ VM-2 不通？\nVM-2 在 VLAN 20 → BD 20，无对应 VXLAN 隧道（无 VNI），只在本 Leaf 二层广播域，无法进 VNI 5000 的 Overlay，故与 VM-1/3/4 二层隔离（即便同 Server-1 也因 BD 不同而不通）。\n\n【6. 隧道怎么建？—— EVPN 控制平面（小白版）】\nVTEP 间要互相认识、知\"哪个 MAC 在哪个 VTEP 后\"，需信令通道 = EVPN（控制平面，通常 BGP EVPN）：\n· 建隧道：各 Leaf 经 BGP EVPN 宣告自己 VTEP IP（Type 3 路由），彼此知\"该和谁建隧道\"，自动拉起（本拓扑 Leaf-1/2/3 全互联 full-mesh）。\n· MAC 学习：VM 上线时 VTEP 经 BGP EVPN 通告\"MAC↔VTEP IP\"（Type 2 路由），Leaf-1 一查表知 VM-3 在 2.2.2.3 后，无需全网洪泛。\n通俗：EVPN 让各 VTEP 建微信群，新 VM 上线群里报备\"我在哪\"，大家记笔记，转发直接查，又快不扰民。\n（未启 EVPN 则退化为组播洪泛/静态配置；本拓扑以 BGP EVPN 为推荐标准。）\n\n【7. 本拓扑部署方式小结】\n· Spine-Leaf（胖树）：Spine-1/2 只做高速 Underlay 转发；Leaf-1/2/3 既接入又是 VTEP，承接服务器/VM 并做 VXLAN 封装。\n· 网关类型：本拓扑实现同子网（二层）大二层互通，Leaf 作分布式二层网关（各 Leaf 的 Vlanif10 即各自 VM 默认网关 10.0.10.1/2/3）。跨子网/出外网则在 Leaf 配 VBDIF（BD 三层逻辑口）或走集中式网关。\n· VNI 规划：VNI 5000 = 租户大二层（VM-1/3/4）；VM-2 走独立 VLAN 20，不进 Overlay。\n\n【8. 怎么验证学对了？】\n· 同 VNI 互通：VM-1 ↔ VM-3/VM-4 能 ping 通（都在 VNI 5000）。\n· 跨 VNI 隔离：VM-1 ↔ VM-2 不通（BD 不同、无隧道）。\n· 隧道状态：Leaf 上 display vxlan tunnel 显示 UP；display vxlan vni 看 VNI 5000 与 BD 绑定。\n\n【关键参数速查】\n· VTEP：Leaf-1 1.1.1.1 / Leaf-2 2.2.2.2 / Leaf-3 2.2.2.3（LoopBack0）\n· Underlay 互联：10.0.0.0/24（Spine↔Leaf 的 10GE 链路）\n· Overlay VNI：5000（BD 10，VM-1/3/4 的 10.0.10.0/24）\n· 隔离 VLAN：20（BD 20，VM-2，不进 Overlay）\n· VXLAN 隧道：Leaf-1/2/3 全互联（full-mesh），封装 UDP 目的端口 4789\n· 封装模式：MAC-in-UDP（外层 IP = 一对 VTEP 地址）\n· 控制平面：BGP EVPN（推荐）",
-      "position_x": -149.82981861266515,
-      "position_y": 224.39034299794287,
+      "text": "VXLAN 小白入门\n\n■ 协议原理\nVXLAN（Virtual Extensible LAN）在三层 IP 网上封装二层帧（MAC-in-UDP），通过 24bit VNI 标识虚拟二层网，扩展至 1600 万隔离域；VTEP（VXLAN Tunnel EndPoint）负责装/拆封装。\n\n■ 本实验\nLeaf-1/2/3 作 VTEP（LoopBack0 作隧道源，OSPF 跑 Underlay）；Leaf 配 VLAN 10/20 → BD 10/20 → VNI 5000（Nve 隧道）；VM-1/3/4 在 VLAN 10 同 VNI 互通，VM-2 在 VLAN 20 隔离；Spine-1/2 各接 1 PC 验证 Underlay 路由。\n\n■ 效果与验证\n效果：VM-1/3/4 同 VNI 5000 跨 Leaf 二层互通（大二层）；VM-2 独立 BD 隔离；Underlay Spine 路由可达。\n验证：VM-1(10.0.10.10) ping VM-3(10.0.10.30)/VM-4 通；ping VM-2(10.0.20.10) 不通；Spine 上的 PC 互相 ping 应通。",
+      "position_x": -540,
+      "position_y": 1040,
       "font_size": 12,
       "text_align": "left",
       "border_style": "hidden",
@@ -1056,6 +1179,6 @@
   "canvas_scale": 1,
   "canvas_offset_x": 275,
   "canvas_offset_y": -75,
-  "device_count": 12,
-  "link_count": 17
+  "device_count": 14,
+  "link_count": 19
 }

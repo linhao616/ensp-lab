@@ -1,6 +1,7 @@
 {
   "id": "lab12",
   "name": "lab12 IPSec VPN (2×AR 站点 + ISP 路由器，含私网 PC)",
+  "description": "",
   "devices": {
     "isp": {
       "id": "isp",
@@ -41,8 +42,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.16.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -55,8 +56,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.12.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -69,8 +70,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.13.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -187,8 +188,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.2.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -201,8 +202,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.3.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -215,8 +216,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.4.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -273,8 +274,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.9.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -287,8 +288,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.10.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -301,8 +302,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.11.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -333,7 +334,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.6.0/24"
     },
     {
       "id": "link-1",
@@ -346,7 +348,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.5.0/24"
     },
     {
       "id": "link-2",
@@ -359,7 +362,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.15.0/24"
     },
     {
       "id": "link-3",
@@ -372,10 +376,19 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.8.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab12-guide",
+      "text": "lab12 IPSec VPN 配置说明\n\n■ 协议原理\nIPSec 通过 IKE（Internet Key Exchange）动态协商安全联盟（SA），用 AH/ESP 对 IP 包做认证与加密；保护公网上传输的私网数据不被窃听篡改。\n\n■ 本实验\nR1/R2 配 IKE + IPSec（保护 192.168.6.0/24 ↔ 192.168.8.0/24），中间经 ISP 公网互联；PC1/PC2 分别接 R1/R2。\n\n■ 效果与验证\n效果：PC1 ↔ PC2 私网互访经 IPSec 加密隧道；隧道未建立时私网互访不通。\n验证：PC1(192.168.6.2) ping PC2(192.168.8.2) 应通；display ike sa / ipsec sa 看隧道 UP。",
+      "position_x": -694.2975812107015,
+      "position_y": 668.7214452117496,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:54.9060485+08:00",
   "updated_at": "2026-07-26T12:26:54.9595723+08:00",
   "canvas_scale": 1,

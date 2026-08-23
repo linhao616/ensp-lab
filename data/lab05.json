@@ -1,7 +1,150 @@
 {
   "id": "lab05",
   "name": "lab05 OSPF 单区 (3×AR2220)",
+  "description": "",
   "devices": {
+    "dev-1787406291514": {
+      "id": "dev-1787406291514",
+      "name": "路由器",
+      "type": "router",
+      "model": "AR2240",
+      "status": "running",
+      "position_x": 532.1601564169852,
+      "position_y": 421.649817093718,
+      "interfaces": {
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "down",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        },
+        "GigabitEthernet0/0/1": {
+          "name": "GigabitEthernet0/0/1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "down",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        },
+        "GigabitEthernet0/0/2": {
+          "name": "GigabitEthernet0/0/2",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "down",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        },
+        "Serial0/0/0": {
+          "name": "Serial0/0/0",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "down",
+          "vlan": 0,
+          "port_type": "serial",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        },
+        "Serial0/0/1": {
+          "name": "Serial0/0/1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "down",
+          "vlan": 0,
+          "port_type": "serial",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": null,
+      "vrp_version": "VRP5",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "pc1": {
+      "id": "pc1",
+      "name": "PC1",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 150,
+      "position_y": 204,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.4.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.4.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "pc1",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.4.1",
+          "interface:Ethernet0:ip": "192.168.4.2/24",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": "",
+        "history": [
+          {
+            "command": "ipconfig",
+            "timestamp": "2026-08-22 21:43:18"
+          },
+          {
+            "command": "ipconfig",
+            "timestamp": "2026-08-22 21:43:35"
+          },
+          {
+            "command": "ping 192.168.7.1",
+            "timestamp": "2026-08-22 21:43:42"
+          }
+        ]
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
     "r1": {
       "id": "r1",
       "name": "R1",
@@ -55,8 +198,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.5.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -69,8 +212,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -83,7 +226,65 @@
         }
       },
       "config": "",
-      "config_data": null,
+      "config_data": {
+        "device_name": "R1",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ipv6-address": "2001:db8::1/64",
+          "interface:GigabitEthernet0/0/0:ipv6-enable": "true",
+          "interface:GigabitEthernet0/0/0:status": "Up",
+          "ipv6:enabled": "true"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": "",
+        "history": [
+          {
+            "command": "system-view",
+            "timestamp": "2026-08-16 18:50:54"
+          },
+          {
+            "command": "ipv6",
+            "timestamp": "2026-08-16 18:51:07"
+          },
+          {
+            "command": "interface GigabitEthernet0/0/0",
+            "timestamp": "2026-08-16 18:51:21"
+          },
+          {
+            "command": "ipv6 enable",
+            "timestamp": "2026-08-16 18:51:34"
+          },
+          {
+            "command": "ipv6 address 2001:db8::1/64",
+            "timestamp": "2026-08-16 18:51:49"
+          },
+          {
+            "command": "display ipv6 interface brief",
+            "timestamp": "2026-08-16 18:52:05"
+          },
+          {
+            "command": "sys",
+            "timestamp": "2026-08-22 21:43:56"
+          },
+          {
+            "command": "dis current-configuration",
+            "timestamp": "2026-08-22 21:44:03"
+          },
+          {
+            "command": "dis ospf aaa",
+            "timestamp": "2026-08-22 21:48:16"
+          },
+          {
+            "command": "dis ospf",
+            "timestamp": "2026-08-22 21:48:23"
+          },
+          {
+            "command": "dis ospf ？",
+            "timestamp": "2026-08-22 21:48:32"
+          }
+        ]
+      },
       "vrp_version": "VRP5",
       "created_at": "0001-01-01T00:00:00Z",
       "updated_at": "0001-01-01T00:00:00Z"
@@ -127,8 +328,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.9.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -141,8 +342,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.10.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -155,8 +356,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.11.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -213,8 +414,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.14.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -227,8 +428,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.15.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -241,8 +442,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.16.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -273,7 +474,10 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "source_label_dx": 69.20924036845004,
+      "source_label_dy": 8.930224563670969,
+      "subnet": "192.168.2.0/24"
     },
     {
       "id": "link-1",
@@ -286,7 +490,10 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "target_label_dx": 11.162780704588716,
+      "target_label_dy": 37.95345439560164,
+      "subnet": "192.168.8.0/24"
     },
     {
       "id": "link-2",
@@ -299,15 +506,42 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "source_label_dx": -17.860449127341948,
+      "source_label_dy": -20.09300526825969,
+      "subnet": "192.168.13.0/24"
+    },
+    {
+      "id": "pc1-r1-link",
+      "source_device": "pc1",
+      "source_port": "Ethernet0",
+      "target_device": "r1",
+      "target_port": "GigabitEthernet0/0/2",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "source_label_dx": 20.09300526825969,
+      "source_label_dy": 6.697668422753229,
+      "subnet": "192.168.4.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab05-guide",
+      "text": "lab05 OSPF 单区域配置说明\n\n■ 协议原理\nOSPF（Open Shortest Path First）是基于链路状态的内部网关协议，通过 LSA 泛洪构建 LSDB 后用 SPF 算法（Dijkstra）算最短路径；单区域内所有路由器 LSDB 一致。\n\n■ 本实验\nR1/R2/R3 配 OSPF 1 Area 0 通告各互联段；PC1 接 R1（192.168.4.1 网关）。\n\n■ 效果与验证\n效果：OSPF 学习全部互联段 + PC 网段，全网路由互通。\n验证：PC1(192.168.4.2) ping R2(192.168.7.1)/R3(192.168.12.1) 及各互联段应通；display ospf peer brief 看邻居 FULL。",
+      "position_x": -540,
+      "position_y": 1040,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:27.2241468+08:00",
-  "updated_at": "2026-07-26T12:26:27.2241468+08:00",
+  "updated_at": "2026-08-22T21:44:51.5162365+08:00",
   "canvas_scale": 1,
   "canvas_offset_x": 0,
   "canvas_offset_y": 0,
-  "device_count": 3,
-  "link_count": 3
+  "device_count": 5,
+  "link_count": 4
 }

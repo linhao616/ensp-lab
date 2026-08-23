@@ -1,6 +1,7 @@
 {
   "id": "lab01",
   "name": "lab01 VLAN/Trunk (2×S5700 + 2×PC)",
+  "description": "",
   "devices": {
     "pc1": {
       "id": "pc1",
@@ -331,7 +332,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.2.0/24"
     },
     {
       "id": "link-1",
@@ -344,7 +346,10 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "target_label_dx": -25,
+      "target_label_dy": -25,
+      "subnet": "192.168.3.0/24"
     },
     {
       "id": "link-2",
@@ -357,10 +362,21 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "target_label_dx": 56,
+      "target_label_dy": -22,
+      "subnet": "192.168.2.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab01-guide",
+      "text": "lab01 VLAN/Trunk 配置说明\n\n■ 协议原理\nVLAN（Virtual LAN）将一个物理交换机按端口逻辑分成多个广播域；Trunk 链路通过 802.1Q 标签在单根物理链路上承载多个 VLAN 流量。\n\n■ 本实验\nSW1/SW2 互联口配 Trunk 透传 VLAN 10/20；PC1 划入 VLAN 10、PC2 划入 VLAN 20。\n\n■ 效果与验证\n效果：同 VLAN 跨交换机互通，不同 VLAN 二层隔离。\n验证：PC1(192.168.2.2) ping 同 VLAN 对端通；ping PC2(192.168.3.2) 不通。",
+      "position_x": -540,
+      "position_y": 1040,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:24.7158192+08:00",
   "updated_at": "2026-07-26T12:26:24.7174308+08:00",
   "canvas_scale": 1,

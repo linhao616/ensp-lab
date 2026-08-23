@@ -1,6 +1,7 @@
 {
   "id": "lab04",
   "name": "lab04-bench",
+  "description": "",
   "devices": {
     "pc1": {
       "id": "pc1",
@@ -1106,8 +1107,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.2.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1120,8 +1121,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.3.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1134,8 +1135,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.4.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1192,8 +1193,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.7.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1206,8 +1207,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.8.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1220,8 +1221,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.9.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1264,8 +1265,8 @@
         },
         "GigabitEthernet0/0/1": {
           "name": "GigabitEthernet0/0/1",
-          "ip_address": "192.168.13.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1278,8 +1279,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.14.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1292,8 +1293,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.15.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1306,8 +1307,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.16.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -1338,7 +1339,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.5.0/24"
     },
     {
       "id": "link-1",
@@ -1351,7 +1353,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.11.0/24"
     },
     {
       "id": "link-2",
@@ -1364,15 +1367,18 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.6.0/24"
     }
   ],
   "annotations": [
     {
       "id": "bench-59",
-      "text": "x",
-      "position_x": 1,
-      "position_y": 1,
+      "text": "lab04 基准测试（综合实验）\n\n■ 功能目的\n最小连通性基准：PC1 经 R1-R2-R3 串联多段路由可达，验证基础 ping/路由/诊断能力。",
+      "position_x": -257.714594965199,
+      "position_y": 665.4208335044156,
+      "width": 31,
+      "height": 32,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],

@@ -1,6 +1,7 @@
 {
   "id": "lab09",
   "name": "lab09 综合园区网 (2×Core SW + 1×Access SW + 1×AR + PC)",
+  "description": "",
   "devices": {
     "acc1": {
       "id": "acc1",
@@ -169,8 +170,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.4.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -183,8 +184,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.5.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -197,8 +198,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -501,6 +502,90 @@
       "vrp_version": "",
       "created_at": "0001-01-01T00:00:00Z",
       "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "pc2": {
+      "id": "pc2",
+      "name": "PC2",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 180,
+      "position_y": 120,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.20.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "pc2",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.20.1",
+          "interface:Ethernet0:ip": "192.168.20.2",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "pc3": {
+      "id": "pc3",
+      "name": "PC3",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 180,
+      "position_y": 380,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.30.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "pc3",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.30.1",
+          "interface:Ethernet0:ip": "192.168.30.2",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
     }
   },
   "links": [
@@ -515,7 +600,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.7.0/24"
     },
     {
       "id": "link-1",
@@ -528,7 +614,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
     },
     {
       "id": "link-2",
@@ -541,7 +628,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
     },
     {
       "id": "link-3",
@@ -554,7 +642,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.2.0/24"
     },
     {
       "id": "link-4",
@@ -567,15 +656,52 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.3.0/24"
+    },
+    {
+      "id": "pc2-core1-link",
+      "source_device": "pc2",
+      "source_port": "Ethernet0",
+      "target_device": "core1",
+      "target_port": "GigabitEthernet0/0/2",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
+    },
+    {
+      "id": "pc3-core2-link",
+      "source_device": "pc3",
+      "source_port": "Ethernet0",
+      "target_device": "core2",
+      "target_port": "GigabitEthernet0/0/2",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.30.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab09-guide",
+      "text": "lab09 综合园区网（综合实验）\n\n■ 功能目的\n小型企业园区最小完整集：Core×2 冗余 + Access 接入 + AR 出口 + 多 PC 验证 VLAN/Trunk/网关/出口/高可用整体协同。",
+      "position_x": -540,
+      "position_y": 1040,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:34.7049551+08:00",
   "updated_at": "2026-07-26T12:26:34.7049551+08:00",
   "canvas_scale": 1,
   "canvas_offset_x": 0,
   "canvas_offset_y": 0,
-  "device_count": 5,
-  "link_count": 5
+  "device_count": 7,
+  "link_count": 7
 }

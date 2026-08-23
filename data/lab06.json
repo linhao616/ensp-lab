@@ -1,6 +1,7 @@
 {
   "id": "lab06",
   "name": "lab06 VRRP (2×AR2220 + PC)",
+  "description": "",
   "devices": {
     "pc1": {
       "id": "pc1",
@@ -71,8 +72,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.4.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -85,8 +86,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.5.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -99,8 +100,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -157,8 +158,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.7.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -171,8 +172,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.8.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -185,8 +186,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.9.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -217,7 +218,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.2.0/24"
     },
     {
       "id": "link-1",
@@ -230,7 +232,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.10.0/24"
     },
     {
       "id": "link-2",
@@ -243,10 +246,19 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.3.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab06-guide",
+      "text": "lab06 VRRP 配置说明\n\n■ 协议原理\nVRRP（Virtual Router Redundancy Protocol）通过多台路由器共享一个虚拟 IP/MAC，对外表现为\"虚拟网关\"；Master 故障时 Backup 在数秒内接管，终端无感知。\n\n■ 本实验\nR1/R2 同 LAN 口配 VRRP 备份组（vrid 1，虚拟 IP = 192.168.2.1，R1 priority 120 主、R2 备）；PC1 网关指虚拟 IP。\n\n■ 效果与验证\n效果：R1 故障时 R2 自动接管虚拟 IP 192.168.2.1，PC 网关不中断。\n验证：PC1(192.168.2.2) 持续 ping 192.168.2.1，R1 关机后仍通。",
+      "position_x": -554.4653982385032,
+      "position_y": -44.904867887744786,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:33.0220579+08:00",
   "updated_at": "2026-07-26T12:26:33.0231205+08:00",
   "canvas_scale": 1,

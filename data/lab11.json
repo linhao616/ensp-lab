@@ -1,7 +1,50 @@
 {
   "id": "lab11",
   "name": "lab11 BGP (3×AR)",
+  "description": "",
   "devices": {
+    "pc1": {
+      "id": "pc1",
+      "name": "PC1",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_off",
+      "position_x": 150,
+      "position_y": 120,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.4.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.4.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 1000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "pc1",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.4.1",
+          "interface:Ethernet0:ip": "192.168.4.2",
+          "interface:Ethernet0:mask": "255.255.255.0",
+          "interface:Ethernet0:status": "up"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
     "r1": {
       "id": "r1",
       "name": "R1",
@@ -27,8 +70,8 @@
         },
         "GigabitEthernet0/0/1": {
           "name": "GigabitEthernet0/0/1",
-          "ip_address": "192.168.3.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -55,8 +98,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.5.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -69,8 +112,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -127,8 +170,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.8.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -141,8 +184,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.9.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -155,8 +198,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.10.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -199,8 +242,8 @@
         },
         "GigabitEthernet0/0/1": {
           "name": "GigabitEthernet0/0/1",
-          "ip_address": "192.168.13.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -213,8 +256,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.14.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -227,8 +270,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.15.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -241,8 +284,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.16.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -273,7 +316,8 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
-      "created_at": "0001-01-01T00:00:00Z"
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.2.0/24"
     },
     {
       "id": "link-1",
@@ -286,15 +330,38 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.7.0/24"
+    },
+    {
+      "id": "pc1-r1-link",
+      "source_device": "pc1",
+      "source_port": "Ethernet0",
+      "target_device": "r1",
+      "target_port": "GigabitEthernet0/0/2",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.4.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab11-guide",
+      "text": "lab11 BGP 配置说明\n\n■ 协议原理\nBGP（Border Gateway Protocol）是基于 TCP 179 的路径向量协议，使用 AS（自治系统）号标识不同管理域；通过 UPDATE 报文通告可达路由、属性决定选路，是运营商/多 AS 间的事实标准。\n\n■ 本实验\nR1/R2/R3 配 BGP（各自独立 AS，互建 peer + network 通告网段）；PC1 接 R1（192.168.4.1 网关）。\n\n■ 效果与验证\n效果：BGP 邻居 Established 后互相学习跨 AS 网段，全网路由可达。\n验证：PC1(192.168.4.2) ping R2/R3 通告的网段应通；display bgp peer 看 Established。",
+      "position_x": -540,
+      "position_y": 1040,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:50.6699252+08:00",
   "updated_at": "2026-07-26T12:26:50.8184438+08:00",
   "canvas_scale": 1,
   "canvas_offset_x": 0,
   "canvas_offset_y": 0,
-  "device_count": 3,
-  "link_count": 2
+  "device_count": 4,
+  "link_count": 3
 }

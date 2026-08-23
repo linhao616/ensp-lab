@@ -1,6 +1,7 @@
 {
   "id": "lab07",
   "name": "lab07 DHCP (1×AR2220 + PC)",
+  "description": "",
   "devices": {
     "pc1": {
       "id": "pc1",
@@ -57,8 +58,8 @@
         },
         "GigabitEthernet0/0/1": {
           "name": "GigabitEthernet0/0/1",
-          "ip_address": "192.168.3.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -71,8 +72,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.4.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -85,8 +86,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.5.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -99,8 +100,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -131,10 +132,19 @@
       "bandwidth": 0,
       "delay": 0,
       "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.2.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "anno-lab07-guide",
+      "text": "lab07 DHCP 配置说明\n\n■ 协议原理\nDHCP（Dynamic Host Configuration Protocol）采用 C/S 模式，客户端通过 Discover/Request 报文从服务器动态获取 IP/掩码/网关/DNS 等参数，租约机制管理生命周期。\n\n■ 本实验\nR1 开 DHCP（地址池 192.168.2.0/24，网关 192.168.2.1）；PC1 设为自动获取。\n\n■ 效果与验证\n效果：PC1 上线自动从 R1 拿到 IP，与 R1 同网段互通。\n验证：PC1 ipconfig 见 192.168.2.x；ping R1(192.168.2.1) 通。",
+      "position_x": -86.51574039675634,
+      "position_y": -206.95825426170788,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
-  "annotations": [],
   "created_at": "2026-07-26T12:26:33.7872773+08:00",
   "updated_at": "2026-07-26T12:26:33.7872773+08:00",
   "canvas_scale": 1,

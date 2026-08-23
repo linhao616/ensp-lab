@@ -1,6 +1,7 @@
 {
   "id": "lab08",
   "name": "lab08 ACL+NAT (1×AR 出口 + 内网 PC + 伪公网 Cloud)",
+  "description": "",
   "devices": {
     "cloud1": {
       "id": "cloud1",
@@ -143,8 +144,8 @@
         },
         "GigabitEthernet0/0/2": {
           "name": "GigabitEthernet0/0/2",
-          "ip_address": "192.168.6.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -157,8 +158,8 @@
         },
         "Serial0/0/0": {
           "name": "Serial0/0/0",
-          "ip_address": "192.168.2.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -171,8 +172,8 @@
         },
         "Serial0/0/1": {
           "name": "Serial0/0/1",
-          "ip_address": "192.168.3.1",
-          "subnet_mask": "255.255.255.0",
+          "ip_address": "",
+          "subnet_mask": "",
           "gateway": "",
           "dns": "",
           "mac": "",
@@ -205,7 +206,8 @@
       "status": "",
       "created_at": "0001-01-01T00:00:00Z",
       "target_label_dx": 25,
-      "target_label_dy": 15
+      "target_label_dy": 15,
+      "subnet": "192.168.5.0/24"
     },
     {
       "id": "link-1",
@@ -220,10 +222,19 @@
       "status": "",
       "created_at": "0001-01-01T00:00:00Z",
       "source_label_dx": 21,
-      "source_label_dy": -43
+      "source_label_dy": -43,
+      "subnet": "192.168.4.0/24"
     }
   ],
-  "annotations": [],
+  "annotations": [
+    {
+      "id": "anno-lab08-guide",
+      "text": "lab08 ACL + NAT 配置说明\n\n■ 协议原理\nACL（Access Control List）按规则匹配数据包决定放行/拒绝；NAT（Network Address Translation）将私网 IP 映射为公网 IP 实现共享上网（easy-ip 即接口 IP 作转换后源）。\n\n■ 本实验\nR1 配 ACL 2000 放行内网 192.168.5.0/24 + NAT（nat outbound 2000）出公网模拟口；PC1 网关指 R1。\n\n■ 效果与验证\n效果：PC1(192.168.5.2) 经 R1 NAT 可达模拟公网（Cloud）；ACL 控制谁能出网。\n验证：PC1 ping Cloud 模拟地址应通；ACL deny 相关流量后应不通。",
+      "position_x": -60.57684437282515,
+      "position_y": 27.617229511345293,
+      "created_at": "0001-01-01T00:00:00Z"
+    }
+  ],
   "created_at": "2026-07-26T12:26:34.3564025+08:00",
   "updated_at": "2026-07-26T12:26:34.3564025+08:00",
   "canvas_scale": 1,
