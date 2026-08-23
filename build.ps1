@@ -109,17 +109,29 @@ try {
     }
 
     # ---- 2. 采集版本信息（与 Makefile 同源同兜底）----
-    $gitVersion = Get-GitValue -Arguments @('describe', '--tags', '--always') -Fallback 'dev'
-    $gitCommit  = Get-GitValue -Arguments @('rev-parse', '--short', 'HEAD')   -Fallback 'unknown'
-
-    $gitDirty = 'false'
+    # 仅当「当前目录就是 git 仓库根」时才注入真实 git 信息；
+    # 开发副本/部署副本（无 .git，git 命令会解析到父仓库）一律注入
+    # version=dev / commit=unknown / dirty=false —— 这样运行时 buildinfo
+    # 的陈旧自检（规则 2b cat-file 血缘不匹配）会跳过 git 判定，不再误报 stale。
+    $gitVersion = 'dev'
+    $gitCommit  = 'unknown'
+    $gitDirty  = 'false'
     try {
-        $status = & git status --porcelain 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($status | Out-String))) {
-            $gitDirty = 'true'
+        $toplevel = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($toplevel)) {
+            $tl   = [System.IO.Path]::GetFullPath($toplevel).TrimEnd('\')
+            $repo = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\')
+            if ($tl -eq $repo) {
+                $gitVersion = Get-GitValue -Arguments @('describe', '--tags', '--always') -Fallback 'dev'
+                $gitCommit  = Get-GitValue -Arguments @('rev-parse', '--short', 'HEAD')   -Fallback 'unknown'
+                $status = & git status --porcelain 2>$null
+                if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($status | Out-String))) {
+                    $gitDirty = 'true'
+                }
+            }
         }
     } catch {
-        $gitDirty = 'false'
+        # git 不可用：保持 dev/unknown/false
     }
 
     $buildTime = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')

@@ -112,6 +112,50 @@ function parsePortIndex(name: string): number {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// —— 链路中点网段标签：由两端接口 IP + 掩码计算共同子网（如 192.168.2.0/24）——
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    const v = parseInt(p, 10);
+    if (Number.isNaN(v) || v < 0 || v > 255) return null;
+    n = (n << 8) | v;
+  }
+  return n >>> 0;
+}
+
+function maskToPrefix(mask: string): number {
+  const n = ipv4ToInt(mask);
+  if (n === null) return 24;
+  let cnt = 0;
+  for (let i = 0; i < 32; i++) if ((n >> (31 - i)) & 1) cnt++;
+  return cnt;
+}
+
+function intToIpv4(n: number): string {
+  return `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+}
+
+// 给定一个或多个 (ip, mask) 对，计算共同子网标签；无有效 IP 返回 ''。
+function subnetLabelFromIps(pairs: Array<{ ip: string; mask: string }>): string {
+  const valid = pairs.filter((p) => p.ip && /^\d+\.\d+\.\d+\.\d+$/.test(p.ip));
+  if (valid.length === 0) return '';
+  const nets = valid.map((p) => {
+    const ip = ipv4ToInt(p.ip)!;
+    const prefix = maskToPrefix(p.mask);
+    const maskInt = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return { net: (ip & maskInt) >>> 0, prefix };
+  });
+  // 取第一个有效接口的掩码长度；若各接口不一致，用最短掩码（最大网段）保证同网段可并
+  const prefix = Math.min(...nets.map((x) => x.prefix));
+  const maskInt = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  // 两端 IP 若在同一网段则合并；否则按源端网段显示
+  const net = (nets[0].net & maskInt) >>> 0;
+  return `${intToIpv4(net)}/${prefix}`;
+}
+
+
 function nextAvailablePort(device: Device, links: Link[]): string {
   const ifs = Object.keys(device.interfaces || {});
   if (ifs.length === 0) return '-';
@@ -698,16 +742,36 @@ function drawLinks(ctx: CanvasRenderingContext2D, links: Link[], devices: Device
       dash = [8, 4];
       label = l.vxlan_vni && l.vxlan_vni > 0 ? `VNI ${l.vxlan_vni}` : 'VXLAN';
       showPortLabels = false;
-    } else if (lt === 'access' || lt === 'virtual' || (!isSemantic && l.vlan && l.vlan > 0)) {
+    } else if (lt === 'virtual') {
+      // 虚拟链路（如 VXLAN server↔vm）→ 虚线 + "虚拟接入"
       color = '#888';
       dash = [4, 4];
-      label = l.vlan && l.vlan > 0 ? `VLAN ${l.vlan}` : lt === 'virtual' ? '虚拟接入' : '接入';
+      label = '虚拟接入';
+      showPortLabels = true;
+    } else if (lt === 'access' && l.vlan && l.vlan > 0) {
+      // Access 且有 VLAN 标记 → 虚线 + "VLAN X"
+      color = '#888';
+      dash = [4, 4];
+      label = `VLAN ${l.vlan}`;
+      showPortLabels = true;
+    } else if (!isSemantic && l.vlan && l.vlan > 0) {
+      // 旧版 vlan 字段无 link_type
+      color = '#888';
+      dash = [4, 4];
+      label = `VLAN ${l.vlan}`;
       showPortLabels = true;
     } else {
-      // underlay / business / 默认 → 物理链路（实线，黑色）
+      // underlay / business / 默认 → 物理链路（实线，黑色），中点标注两端共同子网
       color = '#333';
       dash = [];
-      label = '';
+      // 数据驱动优先：链路自带的 subnet 字段（覆盖两端无 IP 的 SW↔SW 链路场景）；
+      // 兜底再走算法从两端 IP 算。
+      const linkSubnet = (l as { subnet?: string }).subnet || '';
+      const computedSubnet = subnetLabelFromIps([
+        { ip: s.interfaces?.[l.source_port]?.ip_address || '', mask: s.interfaces?.[l.source_port]?.subnet_mask || '' },
+        { ip: t.interfaces?.[l.target_port]?.ip_address || '', mask: t.interfaces?.[l.target_port]?.subnet_mask || '' },
+      ]);
+      label = linkSubnet || computedSubnet;
       showPortLabels = true;
     }
 

@@ -111,6 +111,26 @@ var displayParamSpecs = map[string]CommandGrammar{
 			},
 		},
 	},
+	"ospf": {
+		CrAllowed: true,
+		Params: []ParamSpec{
+			{
+				Index:      0,
+				Name:       "sub",
+				Kind:       SlotKeyword,
+				Candidates: []string{"peer", "interface", "brief", "lsdb", "routing", "error"},
+				Help:       "display ospf 二级子命令",
+			},
+			{
+				Index:      1,
+				Name:       "peer-sub",
+				Kind:       SlotKeyword,
+				After:      []string{"peer"},
+				Candidates: []string{"brief"},
+				Help:       "display ospf peer 之后的子选项",
+			},
+		},
+	},
 	"interface": {
 		CrAllowed: true,
 		Params: []ParamSpec{

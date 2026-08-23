@@ -189,11 +189,16 @@ export default function AnnotationLayer(props: AnnotationLayerProps) {
         const rawH = anno.height ?? 0;
         const fixed = rawW > 0 || rawH > 0;
         const liveSize = sizes[anno.id];
-        // 有显式尺寸 → 用保存值作为 minWidth/minHeight（内容超出时自动撑大）；
-        // 否则完全自适应内容。
-        // 正在拖拽调整时 → 用实时尺寸，避免松手后才跳变
+        // 估算最小宽度：按内容最长行 × 16px + 24 内边距，再夹到 [200, 640]；
+        // 否则 .annotation 无显式 width 时内部 word-break:break-word 会把长中文逐字换行（每字一行）。
+        const estW = liveSize?.width ?? (() => {
+          const ls = anno.text.split('\n');
+          const ml = Math.max(...ls.map((l) => Array.from(l).length), 1);
+          return Math.min(Math.max(ml * 16 + 24, 200), 640);
+        })();
+        // 有显式尺寸 → 用保存值；否则用估算宽度 + 拖拽期间用实时值
         const boxW: number | string =
-          fixed ? (rawW > 0 ? rawW : 'auto') : resizingId === anno.id && liveSize ? liveSize.width : 'auto';
+          fixed ? (rawW > 0 ? rawW : 'auto') : resizingId === anno.id && liveSize ? liveSize.width : estW;
         const boxMinH: number | undefined =
           rawH > 0 ? rawH : undefined;
         const fontSize = anno.font_size || 12;

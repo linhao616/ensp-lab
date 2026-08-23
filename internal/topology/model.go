@@ -188,6 +188,8 @@ type Link struct {
 	SourceLabelDY float64 `json:"source_label_dy,omitempty"`
 	TargetLabelDX float64 `json:"target_label_dx,omitempty"`
 	TargetLabelDY float64 `json:"target_label_dy,omitempty"`
+	// 链路中点网段/掩码标签（如 "192.168.2.0/24"），前端画布中点显示，优先于算法从两端 IP 推断
+	Subnet string `json:"subnet,omitempty"`
 }
 
 type TextAnnotation struct {

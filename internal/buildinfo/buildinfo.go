@@ -17,7 +17,9 @@ package buildinfo
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +103,19 @@ func detectStale() {
 		return
 	}
 
+	// 规则 2a2：当前目录不是 git 仓库根（git 命令解析到父仓库，典型为开发副本/部署副本）。
+	// 此时 HEAD/status 都属于「另一个仓库」，任何比对都是误报 → 跳过。
+	topLevel, tlErr := gitOutput("rev-parse", "--show-toplevel")
+	cwd, cwdErr := os.Getwd()
+	if tlErr == nil && cwdErr == nil && topLevel != "" {
+		tl := filepath.Clean(topLevel)
+		wd := filepath.Clean(cwd)
+		if !sameRepoRoot(tl, wd) {
+			StaleReason = "当前目录不是本仓库根（git 解析到父仓库），跳过陈旧自检"
+			return
+		}
+	}
+
 	// 规则 2b：确认注入的 Commit 确实属于当前仓库。
 	// 若二进制被拷到「另一个」git 仓库目录下运行，HEAD 必然不同，但那不代表陈旧，
 	// 直接比对会误报。用 cat-file 验证血缘，血缘对不上就放弃判断。
@@ -119,6 +134,13 @@ func detectStale() {
 	}
 
 	// 规则 4：提交一致，但工作树里还有没提交的改动 → 源码可能已改而未重建。
+	// 仅当 Commit 已注入（来自本仓库）时才做工作树检查；未注入（dev 构建，如
+	// 开发副本目录下 build.ps1 判定仓库根不匹配而 fallback）时无从对照，跳过——
+	// 否则 git status 解析到父仓库会把父仓的脏状态误判为本二进制陈旧。
+	if Commit == defaultCommit {
+		StaleReason = "未注入提交号（dev 构建），跳过工作树检查"
+		return
+	}
 	status, err := gitOutput("status", "--porcelain")
 	if err != nil {
 		StaleReason = "git status 执行失败，跳过工作树检查"
@@ -147,4 +169,14 @@ func gitOutput(args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// sameRepoRoot 判断 git 仓库根 topLevel 与当前工作目录 wd 是否指向同一仓库根。
+// 两者相等即成立；若 wd 是仓库根的子目录也成立（在仓库内子目录运行仍算本仓库）。
+// 不一致时（如开发副本目录下 git 解析到了父仓库）返回 false，调用方跳过 git 自检。
+func sameRepoRoot(topLevel, wd string) bool {
+	if topLevel == wd {
+		return true
+	}
+	return strings.HasPrefix(wd, topLevel+string(os.PathSeparator))
 }

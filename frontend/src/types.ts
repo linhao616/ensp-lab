@@ -86,6 +86,8 @@ export interface Link {
   vxlan_vni: number;
   vxlan_peer_list: string[];
   vlan: number;
+  // 链路中点网段/掩码标签（如 "192.168.2.0/24"），数据驱动优先于算法推断
+  subnet?: string;
   // 端口标签偏移（世界坐标 px），用于拖拽端口名标签
   source_label_dx?: number;
   source_label_dy?: number;
