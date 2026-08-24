@@ -18,7 +18,6 @@ import (
 	"ensp-lab/internal/buildinfo"
 	"ensp-lab/internal/logging"
 	"ensp-lab/internal/storage"
-	"ensp-lab/internal/topology"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -98,10 +97,11 @@ func main() {
 		}
 		logger.Info("Created VXLAN Spine-Leaf demo topology", zap.String("id", vxlanTopo.ID), zap.String("name", vxlanTopo.Name))
 	case len(topos) == 0:
-		if err := store.CreateTopology(topology.NewTopology("default", "Default Topology")); err != nil {
+		// 开箱引导示例：1 交换机 + 2 PC 的 VLAN 入门拓扑（取代空壳 default）。
+		if err := store.CreateTopology(api.CreateDefaultTopology()); err != nil {
 			logger.Fatal("Failed to create default topology", zap.Error(err))
 		}
-		logger.Info("Created default topology", zap.String("id", "default"))
+		logger.Info("Created default guided topology (VLAN intro)", zap.String("id", "default"))
 	default:
 		logger.Info("Loaded existing topologies", zap.Int("count", len(topos)))
 		for _, t := range topos {

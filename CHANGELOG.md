@@ -10,7 +10,14 @@
 
 ### Added
 - **网闸（GAP / 安全隔离网闸）设备**（commit `1698ba3` + `7fb4a4a`）：`gap` 设备类型 + 前端 `[GAP]` 图标 + 连线约束（GAP↔Spine/PC/Server）+ CLI 三件套（`gap` 视图 → `channel`/`policy` 子视图：`mapping tcp A:B <-> C:D`、`permit source X dest Y`、`enable|disable`；`display gap channel|policy|statistics`，统计诚实占位 `-`）+ 补全支持（`displayParamSpecs["gap"]`、视图关键字表）+ 单测 6 用例。仿真语义：未配通道完全隔离（与防火墙本质区别），`mapping`+`enable` → `Up`。
-- **示例拓扑**：`lab13-gap`（网闸摆渡）、`lab14-bigdata`（云大数据中心多安全域 16 设备，commit `9fe514b`）、`lab15-vxlan-dc`（综合数据中心 VLAN+VXLAN+网闸 16 设备，commit `296cd11`）、`gap-test`（开发验证残留，待清理）。
+- **路由策略补齐（P0-2）：`route-policy` + `filter-policy`**（覆盖 VRP 高频排障场景——路由环路/选路控制）：
+  - **`route-policy <NAME> {permit|deny} [node] <N>`**：进入节点子视图（仅 L3 设备），视图内 `if-match`（`ip-prefix`/`acl`/`cost`/`interface`/`tag`）与 `apply`（`cost`/`preference`/`tag`/`ip-next-hop`/`community`/`origin`）子句；配套 `display route-policy [<name>]` 与 `undo route-policy`。
+  - **`filter-policy`** 路由引入过滤：BGP 视图 `filter-policy <acl> {import|export}`、ISIS 视图 `filter-policy <acl> {import|export}`、系统视图 `filter-policy <acl> <protocol> {import|export}`（`ospf`/`rip`/`bgp`/`isis`/`static`/`direct`）；配套 `display filter-policy [<protocol>]`；ISIS `import-route` 扩展捕获 `route-policy` 引用。
+  - **诚实占位**：lite 引擎不做实际选路/过滤计算，`display route-policy` / `display filter-policy` 渲染配置态并在 `display current-configuration` 中汇出，明确标注「不做实际选路过滤」。
+  - 接线遵循三件套约定：新增 `routing_policy_eval.go`（纯函数/键/解析）、`routing_policy_cmd.go`（仅写 DeviceConfig 精确前缀键）、`routing_policy_display.go`（只读渲染）；`parser.go` 四处接线（route-policy/if-match/apply/filter-policy case、quit 链 `ViewRoutePolicy` 分支、`GetPrompt`、`undo`、ISIS `import-route` 扩展、formatProtocolBlocks）、能力矩阵 `l3Devices()`、display 注册表、`displaySubCommands`、补全视图关键字表；受 `TestCompletionNoDrift`/`TestDisplaySubCommandsNoDrift`/`TestCompletionParamNoDrift`/`TestDisplayRegistryDispatchParity` 锁死无回归。
+- **示例拓扑**：`lab13-gap`（网闸摆渡）、`lab14-bigdata`（云大数据中心多安全域 16 设备，commit `9fe514b`）、`lab15-vxlan-dc`（综合数据中心 VLAN+VXLAN+网闸 16 设备，commit `296cd11`）。
+- **`default` 空壳拓扑升级为「VLAN 入门引导示例」（P0-1）**：启动无数据（`data/*.json` 为空）时自动创建的 `default` 拓扑，从空壳改为 1 台 S5700 交换机 + 2 台 PC 的可操作示例——PC1/PC2 预置同网段 `192.168.1.0/24`、拓扑附「VLAN 入门引导」标注（三段式：协议原理 → `vlan batch`/`port link-type access`/`port default vlan` 命令 → `ping` 验证隔离）。取代原先 `topology.NewTopology("default","Default Topology")` 空壳；配套 `api.CreateDefaultTopology()` 与 `TestCreateDefaultTopology` 锁死结构契约。
+- **清理 `gap-test.json` 开发残留（P0-1，分析报告 D2 缺陷）**：删除污染拓扑下拉列表的未跟踪验证文件。
 - **设备库面板新增网闸选项**（commit `9fe514b`）：`getDeviceTypes` API 补 `GAP`（面板由该 API 驱动）。
 - **lab14/lab15 节点布局防缠绕优化**（commit `8bbe92a`）：区域分组 + 从左到右分层，消除倒走连线与长斜线交叉。
 

@@ -774,6 +774,42 @@ display ndp                        # NDP 邻居表：本端地址来自真实 IP
 
 **相关代码**：`internal/cli/link_quality_eval.go`（校验/键）/ `link_quality_cmd.go`（状态写入）/ `link_quality_display.go`（渲染）；引擎模型 `internal/sim/link_quality.go`（`EndToEndLossProb` / `ShouldDrop` / `RoundTripDelayMs`，随机源可注入）；api 同步 `internal/api/link_quality_sync.go`（`syncLinkQualityForInterface` / `findLinkByEndpoint`）。`TestLinkQuality*` / `TestSyncLinkQuality*` / `TestPingAccumulatesLinkDelay` / `TestPingPartialLossDeterministic` / `TestTracePathFirstHopQuality` 锁死。
 
+#### 4.8.7 路由策略（route-policy / filter-policy）（P0-2，2026-08-24）
+
+路由策略用于**控制路由的发布、接收与引入**，是 VRP 高频排障场景（路由环路、选路控制、路由过滤）的核心工具。仅 **L3 设备**（路由器 / 交换机 / L3 交换机 / 防火墙 / AC）支持。
+
+**路由策略节点（route-policy）**：
+
+```
+<L3> system-view
+[L3] route-policy RP-EXPORT permit node 10     # 进入节点子视图 [L3-route-policy-RP-EXPORT-10]
+[L3-route-policy-RP-EXPORT-10] if-match ip-prefix P1     # 匹配条件
+[L3-route-policy-RP-EXPORT-10] apply cost 50             # 设置动作
+[L3-route-policy-RP-EXPORT-10] quit
+[L3] display route-policy [<name>]              # 查看（不传 name 列出全部）
+[L3] undo route-policy <name>                   # 精确前缀清理该策略全部节点
+```
+
+- `if-match` 子句：`ip-prefix <name>` / `acl <num>` / `cost <n>` / `interface <if>` / `tag <n>`。
+- `apply` 子句：`cost <n>` / `preference <n>` / `tag <n>` / `ip-next-hop <ip>` / `community <comm>` / `origin {egp|igp|incomplete}`。
+- 语法守卫：`route-policy <NAME> {permit|deny} [node] <N>` 缺参或 `N` 非数字时回 `usage` 提示；`if-match`/`apply` 仅在 `route-policy` 节点视图内有效（越级回 `Error: ... must be in route-policy view`）。
+
+**路由引入过滤（filter-policy）**：
+
+```
+[L3-bgp] filter-policy 2000 export            # BGP 视图：按 ACL 过滤出方向路由
+[L3-isis-1] filter-policy 2000 import         # ISIS 视图：按 ACL 过滤入方向路由
+[L3] filter-policy 2000 ospf import           # 系统视图：须显式协议域 <ospf|rip|bgp|isis|static|direct>
+[L3] display filter-policy [<protocol>]       # 查看（不传 protocol 列出全部）
+```
+
+- BGP / ISIS 视图隐含协议域；**系统视图必须显式协议域**（OSPF / RIP 等无独立子视图）。
+- ISIS `import-route <proto> route-policy <NAME>` 可引用已建路由策略。
+
+**诚实占位**：lite 引擎**不做实际选路 / 过滤计算**——`display route-policy` / `display filter-policy` 渲染配置态，`display current-configuration` 汇出对应行，并明确标注「不做实际选路过滤」。配置键均为 DeviceConfig 精确前缀（`routing:route-policy:<name>:node:<n>:` / `<proto>:filter-policy:<dir>:kind|value`），单一事实源、随 `save`/`reload` 落盘。
+
+**相关代码**：`internal/cli/routing_policy_eval.go`（纯函数/键/解析）/ `routing_policy_cmd.go`（仅写 DeviceConfig）/ `routing_policy_display.go`（渲染）；`parser.go` 四处接线（route-policy/if-match/apply/filter-policy case、quit 链 `ViewRoutePolicy` 分支、`GetPrompt`、`undo`、ISIS `import-route` 扩展、formatProtocolBlocks）、能力矩阵 `l3Devices()`、display 注册表、`displaySubCommands`、补全视图关键字表。`TestRoutePolicy*` / `TestFilterPolicy*` / `TestImportRouteRoutePolicy` / `TestRoutePolicyCompletionViewAware` / `TestRoutePolicyNotOnL2Switch` 锁死；并受 `TestCompletionNoDrift` / `TestDisplaySubCommandsNoDrift` / `TestCompletionParamNoDrift` / `TestDisplayRegistryDispatchParity` 防回归。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。
@@ -920,7 +956,7 @@ curl -X POST http://localhost:8080/api/diagnostic/abc123/dns \
 
 | 拓扑 ID | 场景 | 设备数 | 涉及技术 |
 |---------|------|--------|----------|
-| `default` | 空白画布（自动创建） | 0 | — |
+| `default` | **VLAN 入门引导示例**（自动创建） | 3 | VLAN、Access、PC 验证 |
 | `lab01` | 两台交换机 VLAN/Trunk | 4 | VLAN、Trunk、Access |
 | `lab02` | VLAN 单交换机 | 4 | VLAN |
 | `lab03` | STP/RSTP 环形（3×S5700） | 6 | STP/RSTP、VLAN |
@@ -937,9 +973,8 @@ curl -X POST http://localhost:8080/api/diagnostic/abc123/dns \
 | `lab14-bigdata` | 云大数据中心多安全域 | 16 | 防火墙、网闸、多域 VLAN |
 | `lab15-vxlan-dc` | 综合数据中心 | 16 | **VLAN+VXLAN+网闸**+出口 |
 | `vxlan-spine-leaf` | VXLAN Spine-Leaf 大二层 | 14 | VXLAN、VNI、Underlay |
-| `gap-test` | 网闸开发验证拓扑 | 3 | （开发残留，待清理） |
 
-> ⚠️ `gap-test.json` 为开发期验证残留（无教学价值），建议后续移入 `tmp/` 或删除（见 2026-08-24 分析报告 §3）。
+> `default` 在 `data/*.json` 为空时由 `api.CreateDefaultTopology()` 自动创建：1 台 S5700 + 2 台 PC，附「VLAN 入门引导」标注（三段式：协议原理 → `vlan batch`/`port link-type access`/`port default vlan` → `ping` 验证隔离），开箱即可上手 VLAN。
 
 ---
 

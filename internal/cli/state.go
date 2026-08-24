@@ -44,6 +44,11 @@ const (
 	ViewGAP        ViewType = "gap"         // 网闸配置视图 [<dev>-gap]
 	ViewGAPChannel ViewType = "gap-channel" // 摆渡通道子视图 [<dev>-gap-channel-<n>]
 	ViewGAPPolicy  ViewType = "gap-policy"  // 摆渡策略子视图 [<dev>-gap-policy-<n>]
+
+	// —— 路由策略（route-policy）节点子视图（P0-2 路由策略补齐）——
+	// 进入命令：系统视图 route-policy <NAME> permit|deny node <N>
+	// 视图内：if-match / apply 子句；配置以 DeviceConfig 单一事实源持久化。
+	ViewRoutePolicy ViewType = "route-policy" // 路由策略节点视图 [<dev>-route-policy-<NAME>-<N>]
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -57,6 +62,10 @@ type Command struct {
 type CLIState struct {
 	CurrentView    ViewType
 	CurrentSub     string
+	// route-policy 子视图上下文指针（仅视图层，配置本身以 DeviceConfig 单一事实源持久化）。
+	// 用独立字段而非 CurrentSub 拼接，避免策略名含连字符时解析错位。
+	RoutePolicyName string
+	RoutePolicyNode int
 	DeviceType     topology.DeviceType
 	DeviceName     string             // 设备名称
 	DeviceID       string             // 设备ID

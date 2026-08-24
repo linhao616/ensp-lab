@@ -54,6 +54,8 @@ var capabilities = capabilityMatrix{
 	"ospf":               l3Devices(),
 	"isis":               l3Devices(),
 	"bgp":                l3Devices(),
+	"route-policy":       l3Devices(), // 路由策略节点视图入口（P0-2，仅 L3 设备）
+	"filter-policy":      l3Devices(), // 路由引入过滤（P0-2，仅 L3 设备）
 	"rip":                routerDevices(),
 	"vrrp":               l3Devices(),
 	"bfd":                l3Devices(),

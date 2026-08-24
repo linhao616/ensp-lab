@@ -119,6 +119,8 @@ func completeView(state *CLIState, tokens []string, prefix string) []string {
 		kw = gapChannelViewCommands
 	case ViewGAPPolicy:
 		kw = gapPolicyViewCommands
+	case ViewRoutePolicy:
+		kw = routePolicyViewCommands
 	default:
 		kw = userViewCommands
 	}
@@ -168,6 +170,8 @@ var systemViewCommands = []string{
 	"startup",
 	// 网闸（GAP）视图入口（parser.go case "gap"，仅 gap 设备能力矩阵放行）。
 	"gap",
+	// 路由策略（P0-2）：route-policy 进入节点视图；filter-policy 系统视图需协议域限定。
+	"route-policy", "filter-policy",
 	"quit", "return", "save", "reboot", "reset",
 }
 
@@ -183,7 +187,7 @@ var aaaViewCommands = []string{
 }
 
 var bgpViewCommands = []string{
-	"peer", "import-route", "undo", "quit", "return",
+	"peer", "import-route", "filter-policy", "undo", "quit", "return",
 }
 
 var aclViewCommands = []string{
@@ -199,7 +203,7 @@ var dhcpPoolViewCommands = []string{
 }
 
 var isisViewCommands = []string{
-	"import-route", "undo", "quit", "return",
+	"import-route", "filter-policy", "undo", "quit", "return",
 }
 
 var mstRegionViewCommands = []string{
@@ -221,4 +225,9 @@ var gapChannelViewCommands = []string{
 
 var gapPolicyViewCommands = []string{
 	"permit", "enable", "disable", "quit", "return",
+}
+
+// 路由策略节点视图关键字表（Token 须与 parser.go route-policy 命令族 case 一致）。
+var routePolicyViewCommands = []string{
+	"if-match", "apply", "undo", "quit", "return", "display",
 }

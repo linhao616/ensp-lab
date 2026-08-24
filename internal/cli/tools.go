@@ -51,8 +51,8 @@ var displaySubCommands = []string{
 	"eth-trunk", "evpn", "gap", "gre", "history-command", "interface", "ip", "ipsec", "ipv6", "isis",
 	"link-aggregation", "link-quality", "lldp", "local-user", "mac-address", "memory",
 	"m-lag", "mlag", "mtu", "nat", "ndp", "netflow", "ntp", "ospf", "ospfv3", "pbr", "port",
-	"port-security", "port-vlan", "qos", "radius", "ripng", "routing-table",
-	"saved-configuration", "snmp", "speed", "ssh", "startup", "status", "stp", "syslog",
+	"port-security", "port-vlan", "qos", "radius", "ripng", "route-policy", "routing-table",
+	"filter-policy", "saved-configuration", "snmp", "speed", "ssh", "startup", "status", "stp", "syslog",
 	"sysname", "temperature", "this", "users", "version", "vlan", "vrf", "vrrp", "vxlan",
 }
 

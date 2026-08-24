@@ -55,6 +55,8 @@ var displayRegistry = map[string]DisplayHandler{
 	"ntp":                    regNtpDisplay,
 	"ospf":                   regOspfDisplay,
 	"ospfv3":                 regOspfv3Display,
+	"route-policy":           regRoutePolicyDisplay,
+	"filter-policy":          regFilterPolicyDisplay,
 	"pbr":                    regPbrDisplay,
 	"port":                   regPortVlanDisplay,
 	"port-security":          regPortSecurityDisplay,

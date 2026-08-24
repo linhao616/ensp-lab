@@ -357,6 +357,12 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		} else if state.CurrentView == ViewGAP {
 			state.CurrentView = ViewSystem
 			state.CurrentSub = ""
+		} else if state.CurrentView == ViewRoutePolicy {
+			// 路由策略节点视图 quit 回系统视图，并清理节点上下文指针（避免残留）。
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
+			state.RoutePolicyName = ""
+			state.RoutePolicyNode = 0
 		} else if state.CurrentView == ViewSystem {
 			state.CurrentView = ViewUser
 		} else {
@@ -2325,7 +2331,24 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			state.ISIS.ImportRoutes = append(state.ISIS.ImportRoutes, proto)
 		}
 		state.DeviceConfig["isis:import-route"] = strings.Join(state.ISIS.ImportRoutes, ",")
+		if len(cmd.Args) >= 3 && strings.ToLower(cmd.Args[1]) == "route-policy" {
+			state.DeviceConfig["isis:import-route:route-policy"] = cmd.Args[2]
+			return fmt.Sprintf("IS-IS import-route %s route-policy %s added", proto, cmd.Args[2])
+		}
 		return fmt.Sprintf("IS-IS import-route %s added", proto)
+
+	case "route-policy":
+		// 路由策略节点视图入口（P0-2 路由策略补齐）。系统视图进入，建立节点上下文指针。
+		return enterRoutePolicyView(state, cmd)
+	case "if-match":
+		// route-policy 节点视图内的匹配条件子句（P0-2）。顶层守卫 ViewRoutePolicy。
+		return execRoutePolicyIfMatch(state, cmd)
+	case "apply":
+		// route-policy 节点视图内的 apply 动作子句（P0-2）。顶层守卫 ViewRoutePolicy。
+		return execRoutePolicyApply(state, cmd)
+	case "filter-policy":
+		// 路由引入过滤（P0-2）：BGP/ISIS 视图内直接限定方向；系统视图需显式协议域。
+		return execFilterPolicy(state, cmd)
 
 	case "quit-cli":
 		// 会话关闭提示（语义等同退出 CLI，前端透传）。
@@ -5261,6 +5284,10 @@ func formatProtocolBlocks(state *CLIState) string {
 	if v, ok := state.DeviceConfig["smtp:enabled"]; ok && v == "true" {
 		b.WriteString(" smtp enable\n")
 	}
+	// 路由策略（P0-2）：列出全部 route-policy 节点（诚实渲染配置态；lite 引擎不做实际选路过滤）。
+	if rpBlock := buildRoutePolicySavedConfig(state); rpBlock != "" {
+		b.WriteString(rpBlock)
+	}
 	b.WriteString("#\n")
 	return b.String()
 }
@@ -5399,6 +5426,10 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 			return fmt.Sprintf("ISIS process %s removed", args[1])
 		}
 		return "ISIS process removed"
+	case "route-policy":
+		// P0-2 路由策略补齐：反向清理某 route-policy 的全部节点键（精确前缀）。
+		msg, _ := undoRoutePolicy(state, args)
+		return msg
 	default:
 		return fmt.Sprintf("Error: undo '%s' is not supported", feature)
 	}
@@ -5439,6 +5470,8 @@ func GetPrompt(state *CLIState, deviceName string) string {
 		return fmt.Sprintf("[%s-aaa-%s]", deviceName, state.CurrentSub)
 	case ViewAAADomain:
 		return fmt.Sprintf("[%s-aaa-domain-%s]", deviceName, state.CurrentSub)
+	case ViewRoutePolicy:
+		return fmt.Sprintf("[%s-route-policy-%s]", deviceName, state.CurrentSub)
 	}
 	return fmt.Sprintf("[%s]", deviceName)
 }
