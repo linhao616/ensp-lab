@@ -49,6 +49,15 @@ const (
 	// 进入命令：系统视图 route-policy <NAME> permit|deny node <N>
 	// 视图内：if-match / apply 子句；配置以 DeviceConfig 单一事实源持久化。
 	ViewRoutePolicy ViewType = "route-policy" // 路由策略节点视图 [<dev>-route-policy-<NAME>-<N>]
+
+	// —— EVPN-BGP 控制面视图三档（P1-1）——
+	// 进入命令：系统视图 evpn vpn-instance <id> → [<dev>-evpn-instance-<id>]
+	// 实例视图内 bridge-domain <bd-id> → [<dev>-bd-<bd-id>]；bgp <as> → l2vpn-family evpn
+	// → [<dev>-bgp-<as>-l2vpn-evpn]。quit 链必须显式列出（越级回 ViewSystem 即错误）：
+	// ViewBD → ViewEVPNInstance → ViewSystem；ViewL2VPNEvpn → ViewBGP。
+	ViewEVPNInstance ViewType = "evpn-instance" // EVPN 实例视图 [<dev>-evpn-instance-<id>]
+	ViewBD           ViewType = "bd"            // Bridge Domain 视图 [<dev>-bd-<bd-id>]
+	ViewL2VPNEvpn    ViewType = "l2vpn-evpn"    // BGP L2VPN EVPN 子视图 [<dev>-bgp-<as>-l2vpn-evpn]
 )
 
 // Command 表示一条已解析的 CLI 命令。
@@ -60,12 +69,15 @@ type Command struct {
 
 // CLIState 保存一台网络设备的全部运行状态（含协议配置、接口、路由、转发表等）。
 type CLIState struct {
-	CurrentView    ViewType
-	CurrentSub     string
+	CurrentView ViewType
+	CurrentSub  string
 	// route-policy 子视图上下文指针（仅视图层，配置本身以 DeviceConfig 单一事实源持久化）。
 	// 用独立字段而非 CurrentSub 拼接，避免策略名含连字符时解析错位。
 	RoutePolicyName string
 	RoutePolicyNode int
+	// EVPN-BGP 控制面视图上下文指针（仅视图层，配置本身以 DeviceConfig 单一事实源持久化）。
+	EVPNInstanceID int // 当前 evpn vpn-instance 视图的实例 ID
+	BridgeDomainID int // 当前 bridge-domain 视图的 BD ID
 	DeviceType     topology.DeviceType
 	DeviceName     string             // 设备名称
 	DeviceID       string             // 设备ID
@@ -96,10 +108,14 @@ type CLIState struct {
 	// 相关只读派生视图一律定义在 aaa_eval.go，并且只从 DeviceConfig 即时派生、不缓存。
 	VXLAN *VXLANConfig
 	BGP   *BGPConfig
-	ISIS  *ISISConfig // IS-IS 配置（P1-F，最小启用 + 真实 network/import-route）
-	BFD   *BFDConfig
-	VRF   map[string]*VRFConfig
-	PBR   map[string][]*PBRRule
+	// EVPN 控制面模型（P1-1）。单一事实源为 DeviceConfig 的 evpn:* 键，本结构体仅在
+	// 会话内镜像以便 display 渲染真实配置态；reload 后由 LoadFromDeviceConfigData 重建。
+	// ⚠️ 架构铁律：本结构体严禁新增 GRE/AAA 内嵌结构（仅扩展非受限特性 EVPN/BGP-EVPN）。
+	EVPN *EVPNConfig
+	ISIS *ISISConfig // IS-IS 配置（P1-F，最小启用 + 真实 network/import-route）
+	BFD  *BFDConfig
+	VRF  map[string]*VRFConfig
+	PBR  map[string][]*PBRRule
 	// 注：GRE 隧道配置已迁移至接口视图，单一事实源为
 	// DeviceConfig["interface:<if>:tunnel-protocol"] 与 "interface:<if>:gre-*"（P2 GRE，save/reload 自动往返）。
 	// ⚠️ 架构铁律：本结构体严禁新增任何 GRE / Tunnel 内嵌结构体或字段（设计 §3.1 / AC12）。
@@ -370,12 +386,52 @@ type BGPConfig struct {
 	ASNumber  int
 	RouterID  string
 	Neighbors map[string]*BGPNeighbor
+	// L2VPN EVPN 地址族（P1-1）。单一事实源为 DeviceConfig 的 bgp:l2vpn-evpn:* 键，
+	// 本字段仅会话内镜像；reload 后由 LoadFromDeviceConfigData 重建。
+	L2VPNEvpn *L2VPNEvpnAF
 }
 
 type BGPNeighbor struct {
 	IPAddress string
 	RemoteAS  int
 	EBGP      bool
+}
+
+// EVPNConfig 描述 EVPN 控制面模型（P1-1）。
+// 实例（evpn vpn-instance <id>）关联若干 Bridge Domain；BD 绑定 VNI/VLAN/三层网关。
+// 配置以 DeviceConfig 的 evpn:* 精确前缀键单一事实源落盘（禁 strings.Contains 子串扫描）。
+type EVPNConfig struct {
+	Instances map[int]*EVPNInstance // evpn vpn-instance <id>
+	BDs       map[int]*BridgeDomain // Bridge Domain（BD↔VNI↔VLAN）
+}
+
+// EVPNInstance 描述一个 EVPN 实例（VPN-Instance），承载 RD/RT 与关联 BD 列表。
+type EVPNInstance struct {
+	ID  int
+	BDs []int    // 关联 BD（有序，便于 display 确定性升序）
+	RD  string   // Route Distinguisher，如 "100:1"
+	RTs []string // Route Target，元素形如 "both:100:1" / "import:100:1" / "export:100:1"
+}
+
+// BridgeDomain 描述 Bridge Domain（BD↔VNI↔VLAN 映射，三层网关在 Vlanif）。
+type BridgeDomain struct {
+	ID     int
+	VNI    int    // 关联 VNI
+	VLANs  []int  // 关联 VLAN（有序）
+	Vlanif string // 三层网关接口名，如 "Vlanif10"
+}
+
+// L2VPNEvpnAF 描述 BGP 的 L2VPN EVPN 地址族（P1-1）。
+type L2VPNEvpnAF struct {
+	Enabled      bool
+	Peers        map[string]*EvpnPeer // peer <ip> enable
+	AdvertiseIRB bool                 // advertise irb
+}
+
+// EvpnPeer 描述 L2VPN EVPN 地址族下的 BGP EVPN 对等体。
+type EvpnPeer struct {
+	IP      string
+	Enabled bool
 }
 
 type BFDSession struct {
@@ -524,6 +580,13 @@ func newCLIStateWithType(dt topology.DeviceType) *CLIState {
 		},
 		BGP: &BGPConfig{
 			Neighbors: make(map[string]*BGPNeighbor),
+			L2VPNEvpn: &L2VPNEvpnAF{
+				Peers: make(map[string]*EvpnPeer),
+			},
+		},
+		EVPN: &EVPNConfig{
+			Instances: make(map[int]*EVPNInstance),
+			BDs:       make(map[int]*BridgeDomain),
 		},
 		ISIS: &ISISConfig{
 			Enabled:     false,

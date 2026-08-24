@@ -363,12 +363,30 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			state.CurrentSub = ""
 			state.RoutePolicyName = ""
 			state.RoutePolicyNode = 0
+		} else if state.CurrentView == ViewBD {
+			// BD 视图 quit 回 EVPN 实例视图（嵌套子视图必须显式列出，避免越级回 ViewSystem）。
+			state.CurrentView = ViewEVPNInstance
+			state.CurrentSub = fmt.Sprintf("evpn-instance-%d", state.EVPNInstanceID)
+			state.BridgeDomainID = 0
+		} else if state.CurrentView == ViewEVPNInstance {
+			// EVPN 实例视图 quit 回系统视图，并清理实例上下文指针。
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
+			state.EVPNInstanceID = 0
+		} else if state.CurrentView == ViewL2VPNEvpn {
+			// L2VPN EVPN 子视图 quit 回 BGP 视图（嵌套子视图必须显式列出）。
+			state.CurrentView = ViewBGP
+			state.CurrentSub = fmt.Sprintf("bgp-%d", state.BGP.ASNumber)
 		} else if state.CurrentView == ViewSystem {
 			state.CurrentView = ViewUser
 		} else {
 			state.CurrentView = ViewSystem
 		}
-		state.CurrentSub = ""
+		// 🔴 条件清理：L2VPN EVPN 子视图 quit 回到 ViewBGP 时需保留 CurrentSub
+		// （"bgp-<as>"，BGP 提示符依赖它）；其余路径一律清空，维持既有行为。
+		if state.CurrentView != ViewBGP {
+			state.CurrentSub = ""
+		}
 		return "Return"
 	case "return":
 		state.CurrentView = ViewUser
@@ -1989,6 +2007,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		}
 		return "Error: invalid SSH config"
 	case "vxlan":
+		// BD 视图内 vxlan vni <vni>（P1-1）：写 evpn:bd:<id>:vni。
+		if state.CurrentView == ViewBD {
+			return execBDVxlanVNI(state, cmd)
+		}
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
 		}
@@ -2050,25 +2072,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		state.DeviceConfig["vxlan:evpn-instance"] = instanceID
 		return fmt.Sprintf("EVPN instance %s created", instanceID)
 	case "route-distinguisher":
-		if state.CurrentView != ViewSystem {
-			return "Error: must be in system view"
-		}
-		if len(cmd.Args) == 0 {
-			return "Error: usage: route-distinguisher <auto|rd-value>"
-		}
-		rdVal := strings.Join(cmd.Args, " ")
-		state.DeviceConfig["vxlan:route-distinguisher"] = rdVal
-		return fmt.Sprintf("Route distinguisher set to %s", rdVal)
+		// 上下文感知（P1-1）：ViewEVPNInstance 写 evpn:instance:<id>:rd；ViewSystem 维持
+		// 既有 vxlan:route-distinguisher 旧模型（display vxlan 消费），零回归。
+		return execRouteDistinguisher(state, cmd)
 	case "vpn-target":
-		if state.CurrentView != ViewSystem {
-			return "Error: must be in system view"
-		}
-		if len(cmd.Args) == 0 {
-			return "Error: usage: vpn-target <auto|rt-value>"
-		}
-		rtVal := strings.Join(cmd.Args, " ")
-		state.DeviceConfig["vxlan:vpn-target"] = rtVal
-		return fmt.Sprintf("VPN target set to %s", rtVal)
+		// 上下文感知（P1-1）：ViewEVPNInstance 写 evpn:instance:<id>:rt（方向前缀）；
+		// ViewSystem 维持既有 vxlan:vpn-target 旧模型（display vxlan 消费），零回归。
+		return execVPNTarget(state, cmd)
 	case "distributed-gateway":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2115,6 +2125,18 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		vniStr := cmd.Args[1]
 		state.DeviceConfig[fmt.Sprintf("vxlan:remote-vtep:%s", remoteIP)] = vniStr
 		return fmt.Sprintf("Remote EVPN VTEP %s added", remoteIP)
+	case "evpn":
+		// EVPN 实例视图入口（P1-1）：系统视图 evpn vpn-instance <id> → ViewEVPNInstance。
+		return enterEVPNInstanceView(state, cmd)
+	case "bridge-domain":
+		// Bridge Domain 关联（P1-1）：EVPN 实例视图内进入 BD 视图；接口视图内绑定三层网关。
+		return enterBDView(state, cmd)
+	case "l2vpn-family":
+		// BGP L2VPN EVPN 子视图入口（P1-1）：bgp 视图 l2vpn-family evpn → ViewL2VPNEvpn。
+		return enterL2VPNEvpnView(state, cmd)
+	case "advertise":
+		// L2VPN EVPN 视图内 advertise irb（P1-1）。
+		return execL2VNAdvertiseIRB(state, cmd)
 	case "bgp":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system view"
@@ -2139,6 +2161,10 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 		state.CurrentSub = fmt.Sprintf("bgp-%d", asNumber)
 		return fmt.Sprintf("Enter BGP view, AS %d", asNumber)
 	case "peer":
+		// L2VPN EVPN 视图内 peer <ip> enable（P1-1）。
+		if state.CurrentView == ViewL2VPNEvpn {
+			return execL2VPNPeerEnable(state, cmd)
+		}
 		if state.CurrentView != ViewBGP || len(cmd.Args) < 2 {
 			return "Error: must be in BGP view, need peer-ip and remote-as"
 		}
@@ -5288,6 +5314,10 @@ func formatProtocolBlocks(state *CLIState) string {
 	if rpBlock := buildRoutePolicySavedConfig(state); rpBlock != "" {
 		b.WriteString(rpBlock)
 	}
+	// EVPN-BGP 控制面（P1-1）：列出实例/RD/RT/BD/VNI 与 BGP L2VPN EVPN 地址族（配置态）。
+	if evpnBlock := buildEVPNControlPlaneSavedConfig(state); evpnBlock != "" {
+		b.WriteString(evpnBlock)
+	}
 	b.WriteString("#\n")
 	return b.String()
 }
@@ -5384,6 +5414,10 @@ func applyUndoSystemFeature(state *CLIState, args []string) string {
 			return fmt.Sprintf("BGP process %s removed", args[1])
 		}
 		return "BGP process removed"
+	case "evpn":
+		// undo evpn vpn-instance <id>（P1-1）：清理 evpn:instance:<id>:* 键。
+		msg, _ := undoEVPNInstance(state, args)
+		return msg
 	case "ipv6":
 		// P2 第九项（T04）：系统视图 undo ipv6 族路由到精确 undo 函数。
 		//   - undo ipv6                          → applyUndoIPv6System（清 ipv6: 精确前缀）
@@ -5472,6 +5506,12 @@ func GetPrompt(state *CLIState, deviceName string) string {
 		return fmt.Sprintf("[%s-aaa-domain-%s]", deviceName, state.CurrentSub)
 	case ViewRoutePolicy:
 		return fmt.Sprintf("[%s-route-policy-%s]", deviceName, state.CurrentSub)
+	case ViewEVPNInstance:
+		return fmt.Sprintf("[%s-evpn-instance-%d]", deviceName, state.EVPNInstanceID)
+	case ViewBD:
+		return fmt.Sprintf("[%s-bd-%d]", deviceName, state.BridgeDomainID)
+	case ViewL2VPNEvpn:
+		return fmt.Sprintf("[%s-%s]", deviceName, state.CurrentSub)
 	}
 	return fmt.Sprintf("[%s]", deviceName)
 }
@@ -5621,6 +5661,11 @@ func (state *CLIState) LoadFromDeviceConfigData(cfg *topology.DeviceConfigData) 
 			}
 		}
 	}
+
+	// 从 ConfigData 恢复 EVPN-BGP 控制面配置（P1-1）。cfg.Interfaces 已包含
+	// evpn:/bgp:l2vpn-evpn: 键，上面循环已写回 state.DeviceConfig；此处重建
+	// state.EVPN 与 state.BGP.L2VPNEvpn 结构化字段，保证 display 在 reload 后一致。
+	loadEVPNFromDeviceConfig(state)
 
 	// 链路聚合逻辑口重建（P2 #5，T04 改动点 11）：
 	// reload 后 state.Interfaces 不含 Eth-Trunk / Bridge-Aggregation 逻辑口，

@@ -102,6 +102,11 @@ var capabilities = capabilityMatrix{
 	"vxlan-traffic-type":  l3SwitchOnly(),
 	"remote-evpn-vtep":    l3SwitchOnly(),
 
+	// EVPN-BGP 控制面（P1-1）：仅三层交换机 / VTEP 支持（L2 设备守卫）。
+	"evpn":          l3SwitchOnly(),
+	"bridge-domain": l3SwitchOnly(),
+	"l2vpn-family":  l3SwitchOnly(),
+
 	// ACL / 安全：路由器、三层交换机、防火墙
 	"acl":            l3Devices(),
 	"rule":           l3Devices(),

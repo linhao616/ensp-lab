@@ -65,6 +65,10 @@ function buildPrompt(device: Device | null, state: CliState): string {
   if (state.view === 'isis') return `[${sysname}-isis] `;
   if (state.view === 'dhcp-pool') return `[${sysname}-dhcp-pool-${state.sub || ''}] `;
   if (state.view === 'mst-region') return `[${sysname}-mst-region] `;
+  // P1-1 EVPN-BGP 控制面三视图：CurrentSub 已含完整后缀（evpn-instance-1 / bd-10 / bgp-<as>-l2vpn-evpn）。
+  if (state.view === 'evpn-instance') return `[${sysname}-${state.sub || 'evpn-instance'}] `;
+  if (state.view === 'bd') return `[${sysname}-${state.sub || 'bd'}] `;
+  if (state.view === 'l2vpn-evpn') return `[${sysname}-${state.sub || 'l2vpn-evpn'}] `;
   return `<${sysname}> `;
 }
 

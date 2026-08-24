@@ -121,6 +121,12 @@ func completeView(state *CLIState, tokens []string, prefix string) []string {
 		kw = gapPolicyViewCommands
 	case ViewRoutePolicy:
 		kw = routePolicyViewCommands
+	case ViewEVPNInstance:
+		kw = evpnInstanceViewCommands
+	case ViewBD:
+		kw = bdViewCommands
+	case ViewL2VPNEvpn:
+		kw = l2vpnEvpnViewCommands
 	default:
 		kw = userViewCommands
 	}
@@ -171,14 +177,15 @@ var systemViewCommands = []string{
 	// 网闸（GAP）视图入口（parser.go case "gap"，仅 gap 设备能力矩阵放行）。
 	"gap",
 	// 路由策略（P0-2）：route-policy 进入节点视图；filter-policy 系统视图需协议域限定。
-	"route-policy", "filter-policy",
+	// EVPN-BGP 控制面（P1-1）：evpn 进入实例视图（l3SwitchOnly 守卫）。
+	"route-policy", "filter-policy", "evpn",
 	"quit", "return", "save", "reboot", "reset",
 }
 
 var interfaceViewCommands = []string{
 	"ip", "ipv6", "shutdown", "undo", "description", "quit", "return",
 	// v0.12 链路质量模拟（仿真扩展命令，对应 parser.go case "delay"/"loss"）。
-	"delay", "loss",
+	"delay", "loss", "bridge-domain",
 }
 
 var aaaViewCommands = []string{
@@ -187,7 +194,7 @@ var aaaViewCommands = []string{
 }
 
 var bgpViewCommands = []string{
-	"peer", "import-route", "filter-policy", "undo", "quit", "return",
+	"peer", "import-route", "filter-policy", "l2vpn-family", "undo", "quit", "return",
 }
 
 var aclViewCommands = []string{
@@ -230,4 +237,19 @@ var gapPolicyViewCommands = []string{
 // 路由策略节点视图关键字表（Token 须与 parser.go route-policy 命令族 case 一致）。
 var routePolicyViewCommands = []string{
 	"if-match", "apply", "undo", "quit", "return", "display",
+}
+
+// EVPN 实例视图关键字表（Token 须与 parser.go evpn 命令族 case 一致）。
+var evpnInstanceViewCommands = []string{
+	"route-distinguisher", "vpn-target", "bridge-domain", "quit", "return", "display",
+}
+
+// Bridge Domain 视图关键字表（Token 须与 parser.go bridge-domain / vxlan 命令族 case 一致）。
+var bdViewCommands = []string{
+	"vxlan", "quit", "return", "display",
+}
+
+// BGP L2VPN EVPN 子视图关键字表（Token 须与 parser.go l2vpn-family / peer / advertise 命令族 case 一致）。
+var l2vpnEvpnViewCommands = []string{
+	"peer", "advertise", "undo", "quit", "return", "display",
 }

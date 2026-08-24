@@ -27,6 +27,8 @@ func TestCompletionNoDrift(t *testing.T) {
 		userViewCommands, systemViewCommands, interfaceViewCommands,
 		aaaViewCommands, bgpViewCommands, aclViewCommands, vtyViewCommands,
 		dhcpPoolViewCommands, isisViewCommands, mstRegionViewCommands, mlagViewCommands,
+		// P1-1 EVPN-BGP 控制面新增视图关键字表（须与 parser.go case 首别名一致）。
+		evpnInstanceViewCommands, bdViewCommands, l2vpnEvpnViewCommands,
 	}
 	for _, tbl := range tables {
 		for _, kw := range tbl {

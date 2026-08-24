@@ -810,6 +810,53 @@ display ndp                        # NDP 邻居表：本端地址来自真实 IP
 
 **相关代码**：`internal/cli/routing_policy_eval.go`（纯函数/键/解析）/ `routing_policy_cmd.go`（仅写 DeviceConfig）/ `routing_policy_display.go`（渲染）；`parser.go` 四处接线（route-policy/if-match/apply/filter-policy case、quit 链 `ViewRoutePolicy` 分支、`GetPrompt`、`undo`、ISIS `import-route` 扩展、formatProtocolBlocks）、能力矩阵 `l3Devices()`、display 注册表、`displaySubCommands`、补全视图关键字表。`TestRoutePolicy*` / `TestFilterPolicy*` / `TestImportRouteRoutePolicy` / `TestRoutePolicyCompletionViewAware` / `TestRoutePolicyNotOnL2Switch` 锁死；并受 `TestCompletionNoDrift` / `TestDisplaySubCommandsNoDrift` / `TestCompletionParamNoDrift` / `TestDisplayRegistryDispatchParity` 防回归。
 
+#### 4.8.8 EVPN-BGP 控制面（evpn vpn-instance / bridge-domain / l2vpn-family evpn）（P1-1，2026-08-24）
+
+EVPN（Ethernet VPN）+ BGP EVPN 地址族是**数据中心 VXLAN 网络的分布式控制面**：EVPN 实例（VPN-Instance）承载 RD/RT 标识，Bridge Domain（BD）把二层域（VLAN/VNI）映射到 VXLAN 隧道，BGP L2VPN EVPN 地址族在对等体间通告 MAC/IP 路由（Type-2/3/5）。仅 **三层交换机 / VTEP**（`l3SwitchOnly`，L2 设备守卫拒绝）支持。lite 引擎**只仿真配置面**——运行态（Type-2/3/5 路由、邻居会话）恒 `-` + 注记，不编造数字。
+
+**EVPN 实例与 Bridge Domain**：
+
+```
+<L3> system-view
+[L3] evpn vpn-instance 1                 # 进入实例视图 [L3-evpn-instance-1]
+[L3-evpn-instance-1] route-distinguisher 100:1     # RD：ASN:NN 风格
+[L3-evpn-instance-1] vpn-target 100:1 both         # RT（import/export/both，缺省 both）
+[L3-evpn-instance-1] bridge-domain 10              # 进入 BD 视图 [L3-bd-10]
+[L3-bd-10] vxlan vni 5010                          # BD↔VNI 映射
+[L3-bd-10] quit
+[L3-evpn-instance-1] quit
+[L3] interface Vlanif10                   # 三层网关接口
+[L3-Vlanif10] bridge-domain 10            # 把 Vlanif10 绑定为 BD 10 的网关（写 evpn:bd:10:vlanif）
+```
+
+**BGP L2VPN EVPN 地址族**：
+
+```
+[L3] bgp 65001
+[L3-bgp] l2vpn-family evpn                # 进入 [L3-bgp-65001-l2vpn-evpn]
+[L3-bgp-65001-l2vpn-evpn] peer 10.0.0.2 enable      # EVPN 对等体
+[L3-bgp-65001-l2vpn-evpn] advertise irb             # 通告 IRB（集成路由桥接）路由
+[L3-bgp-65001-l2vpn-evpn] quit
+[L3-bgp] display bgp evpn                 # 配置态：peer / advertise IRB；运行态路由恒 '-'
+```
+
+**查看（升级自纯占位，现渲染真实配置态）**：
+
+```
+[L3] display evpn                        # 实例 / RD / RT / BD / VNI 汇总
+[L3] display evpn instance 1             # 单实例详情
+[L3] display evpn vni                    # BD↔VNI 映射
+[L3] display evpn routing-table          # 运行态路由恒 '-'（诚实占位）
+```
+
+- **quit 链**：`ViewBD → ViewEVPNInstance → ViewSystem`、`ViewL2VPNEvpn → ViewBGP`（嵌套子视图 quit 显式列出，不越级回系统视图；L2VPN EVPN quit 回 BGP 时保留 `CurrentSub` 维持 `[dev-bgp-<as>]` 提示符）。
+- **undo**：`undo evpn vpn-instance <id>` 精确前缀清理该实例全部 `evpn:instance:<id>:*` 键；`undo bgp` 级联清理 `bgp:l2vpn-evpn:*`。
+- **兼容零回归**：系统视图 `route-distinguisher` / `vpn-target` 维持旧 VXLAN `vxlan:route-distinguisher` / `vxlan:vpn-target` 键（`display vxlan` 消费），上下文感知分派——EVPN 实例视图内写新 `evpn:*` 键，系统视图内维持旧行为。
+- **诚实占位**：运行态字段（EVPN 路由、邻居会话）恒 `-` + `Note: EVPN runtime state ... not simulated` 注记；`display bgp evpn` 的 peer 为真实配置 IP，路由/VNI 运行态列仍 `-`。
+- **持久化**：配置键均为 DeviceConfig 精确前缀（`evpn:instance:<id>:rd|rt|bd`、`evpn:bd:<id>:vni|vlan|vlanif`、`bgp:l2vpn-evpn:enabled|peer:<ip>:enabled|advertise-irb`），单一事实源、随 `save`/`reload` 落盘（`loadEVPNFromDeviceConfig` 重建），`display current-configuration` 汇出 EVPN 控制面配置块。
+
+**相关代码**：`internal/cli/evpn_ctrl_eval.go`（纯函数/键/校验/重建）/ `evpn_ctrl_cmd.go`（视图入口与子命令，仅写 DeviceConfig）/ `evpn_ctrl_display.go`（真实配置态渲染）；`state.go` 新增 `EVPNConfig`/`EVPNInstance`/`BridgeDomain`/`L2VPNEvpnAF`/`EvpnPeer` 与 `ViewEVPNInstance`/`ViewBD`/`ViewL2VPNEvpn`；`parser.go` 四处接线（evpn/bridge-domain/l2vpn-family/advertise case、`route-distinguisher`/`vpn-target`/`peer` 上下文感知分支、quit 链 3 分支、`GetPrompt`、`undo`、`formatProtocolBlocks`、`LoadFromDeviceConfigData`）、能力矩阵 `l3SwitchOnly()`、补全三视图关键字表（纳入 `TestCompletionNoDrift`）、前端 `CliTerminal.tsx buildPrompt` 三视图提示符。`TestEVPNControlPlane*` 9 用例锁死（生命周期/display/quit 链/undo/L2 守卫/reload/旧键零回归/补全）；并受 `TestCompletionNoDrift` / `TestDisplaySubCommandsNoDrift` / `TestCompletionParamNoDrift` / `TestDisplayRegistryDispatchParity` 防回归。浏览器 e2e 实测截图见 `deliverables/p1-1-evpn-bgp-e2e.png`。
+
 ### 4.9 左侧面板（设备库 / 连线种类）
 
 原先画布右上角的右侧「拓扑资源」面板已**移除**，所有信息整合进左侧可拖拽宽度的标签栏（默认 280px，拖右边缘分隔条可在 200–460px 间调整）。
