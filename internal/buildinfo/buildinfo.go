@@ -148,10 +148,12 @@ func detectStale() {
 	}
 	// 忽略 data/ 目录的改动：拓扑 JSON 是运行时数据（用户在 UI 改拓扑即落盘），
 	// 属于「数据变更」而非「源码已变更」，不构成陈旧（否则每次改拓扑都误报 stale）。
-	// porcelain 格式：前 2 位状态码 + 空格 + 路径（第 3 字节起），重命名/未跟踪同理。
+	// porcelain 固定列格式：XY path（X=暂存状态, Y=工作树状态, 第 3 字节是空格,
+	// 路径从第 4 字节开始）。⚠️ 不能用 TrimSpace 处理整行——会剥掉 X 位的前导
+	// 空格导致路径偏移（data/ 变成 ata/ 匹配不上）。
 	relevant := 0
 	for _, line := range strings.Split(status, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue
 		}
