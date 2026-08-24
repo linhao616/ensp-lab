@@ -146,7 +146,21 @@ func detectStale() {
 		StaleReason = "git status 执行失败，跳过工作树检查"
 		return
 	}
-	if strings.TrimSpace(status) != "" {
+	// 忽略 data/ 目录的改动：拓扑 JSON 是运行时数据（用户在 UI 改拓扑即落盘），
+	// 属于「数据变更」而非「源码已变更」，不构成陈旧（否则每次改拓扑都误报 stale）。
+	// porcelain 格式：前 2 位状态码 + 空格 + 路径（第 3 字节起），重命名/未跟踪同理。
+	relevant := 0
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) >= 4 && strings.HasPrefix(line[3:], "data/") {
+			continue
+		}
+		relevant++
+	}
+	if relevant > 0 {
 		Stale = true
 		StaleReason = "工作树存在未提交改动，源码可能已变更"
 		return
