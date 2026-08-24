@@ -371,8 +371,8 @@
       "delay": 0,
       "status": "",
       "created_at": "0001-01-01T00:00:00Z",
-      "target_label_dx": 92,
-      "target_label_dy": 9.999999999999993,
+      "source_label_dx": 29.90584153409715,
+      "source_label_dy": 19.9372276893981,
       "subnet": "192.168.10.0/24"
     },
     {
@@ -408,8 +408,8 @@
     {
       "id": "anno-lab02-guide",
       "text": "lab02 Eth-Trunk 配置说明\n\n■ 协议原理\nEth-Trunk（链路聚合）将多根物理链路捆绑为一根逻辑链路，实现负载分担与链路冗余；任一成员链路故障时流量自动重分配到其他成员。\n\n■ 本实验\nSW1/SW2 之间两根线捆成 Eth-Trunk 1（trunk 模式），每 SW 各接 1 PC（PC1 同网段、SW1 的 G0/0/3 接 PC1，SW2 的 G0/0/3 接 PC2）。\n\n■ 效果与验证\n效果：两线同时转发，断掉一根剩余带宽减半但不中断；SW↔PC 同网段通信。\n验证：PC1 连续 ping PC2，拔一根成员线观察不丢包。",
-      "position_x": -540,
-      "position_y": 1040,
+      "position_x": -145.0778463860807,
+      "position_y": 58.65914385556681,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],

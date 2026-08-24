@@ -12,7 +12,8 @@ export type DeviceType =
   | 'server'
   | 'cloud'
   | 'hub'
-  | 'vtep';
+  | 'vtep'
+  | 'gap';
 
 export type DeviceStatus = 'power_off' | 'running' | 'configuring';
 
@@ -227,6 +228,7 @@ export const DEVICE_META: Record<DeviceType, DeviceMeta> = {
   cloud: { color: '#6c757d', bg: '#f8f9fa', label: '云', shape: 'cloud', radius: 40, ports: 4, icon: '[CLD]' },
   hub: { color: '#ffc107', bg: '#fff3cd', label: '集线器', shape: 'circle', radius: 35, ports: 8, icon: '[HUB]' },
   vtep: { color: '#e91e63', bg: '#f8e8f0', label: 'VTEP', shape: 'hex', radius: 38, ports: 8, icon: '[VTEP]' },
+  gap: { color: '#795548', bg: '#e8e0dc', label: '网闸', shape: 'rect', radius: 38, ports: 4, icon: '[GAP]' },
 };
 
 export interface LinkMeta {

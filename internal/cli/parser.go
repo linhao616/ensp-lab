@@ -268,6 +268,48 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 	case "system-view", "sys":
 		state.CurrentView = ViewSystem
 		return "Enter system view"
+	case "gap":
+		// 网闸配置视图入口（仅 GAP 设备；capabilities.go "gap": gapDevices() 已先行拦截）。
+		if state.CurrentView != ViewSystem {
+			return "Error: must be in system view"
+		}
+		if consumed, out := execGAPSystem(state, cmd); consumed {
+			return out
+		}
+		return "Error: gap command is only supported on GAP devices"
+	case "channel":
+		// [dev-gap] 视图：进入摆渡通道子视图。
+		if state.CurrentView == ViewGAP {
+			return enterGAPChannel(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
+	case "policy":
+		// [dev-gap] 视图：进入摆渡策略子视图（与 acl 等其他视图的 policy 互不干扰）。
+		if state.CurrentView == ViewGAP {
+			return enterGAPPolicy(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
+	case "mapping":
+		if state.CurrentView == ViewGAPChannel {
+			return execGAPChannelView(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
+	case "permit":
+		if state.CurrentView == ViewGAPPolicy {
+			return execGAPPolicyView(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
+	case "enable":
+		// 多语义：STP/OSPF 等原有 enable 不受影响；仅在网闸通道/策略子视图内消费。
+		if state.CurrentView == ViewGAPChannel || state.CurrentView == ViewGAPPolicy {
+			return execGAPToggle(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
+	case "disable":
+		if state.CurrentView == ViewGAPChannel || state.CurrentView == ViewGAPPolicy {
+			return execGAPToggle(state, cmd)
+		}
+		return "Error: Unrecognized command found at '^' position."
 	case "user-interface":
 		if state.CurrentView != ViewSystem {
 			return "Error: must be in system-view"
@@ -306,6 +348,13 @@ func ExecuteCommandOn(state *CLIState, cmd *Command, dt topology.DeviceType) str
 			state.CurrentView = ViewAAA
 			state.CurrentSub = ""
 		} else if state.CurrentView == ViewAAA {
+			state.CurrentView = ViewSystem
+			state.CurrentSub = ""
+		} else if state.CurrentView == ViewGAPChannel || state.CurrentView == ViewGAPPolicy {
+			// 网闸通道/策略子视图 quit 回 [dev-gap]（同 AAA 嵌套规则，必须显式列出）。
+			state.CurrentView = ViewGAP
+			state.CurrentSub = ""
+		} else if state.CurrentView == ViewGAP {
 			state.CurrentView = ViewSystem
 			state.CurrentSub = ""
 		} else if state.CurrentView == ViewSystem {

@@ -113,6 +113,12 @@ func completeView(state *CLIState, tokens []string, prefix string) []string {
 		kw = mstRegionViewCommands
 	case ViewMLAG:
 		kw = mlagViewCommands
+	case ViewGAP:
+		kw = gapViewCommands
+	case ViewGAPChannel:
+		kw = gapChannelViewCommands
+	case ViewGAPPolicy:
+		kw = gapPolicyViewCommands
 	default:
 		kw = userViewCommands
 	}
@@ -160,6 +166,8 @@ var systemViewCommands = []string{
 	// port-group/group-member/info-center 在 parser.go 无对应 case（执行会落到默认错误
 	// 分支），属漂移，已移除以免 Tab 补全暗示不存在的命令（诚实占位原则）。
 	"startup",
+	// 网闸（GAP）视图入口（parser.go case "gap"，仅 gap 设备能力矩阵放行）。
+	"gap",
 	"quit", "return", "save", "reboot", "reset",
 }
 
@@ -200,4 +208,17 @@ var mstRegionViewCommands = []string{
 
 var mlagViewCommands = []string{
 	"undo", "quit", "return",
+}
+
+// —— 网闸（GAP）视图关键字表（Token 须与 parser.go gap 命令族 case 一致）——
+var gapViewCommands = []string{
+	"channel", "policy", "display", "quit", "return",
+}
+
+var gapChannelViewCommands = []string{
+	"mapping", "enable", "disable", "quit", "return",
+}
+
+var gapPolicyViewCommands = []string{
+	"permit", "enable", "disable", "quit", "return",
 }

@@ -23,6 +23,7 @@ const (
 	DeviceCloud    DeviceType = "cloud"
 	DeviceHub      DeviceType = "hub"
 	DeviceVTEP     DeviceType = "vtep"
+	DeviceGAP      DeviceType = "gap" // 安全隔离网闸（内外网物理隔离 + 协议摆渡）
 )
 
 type DeviceStatus string
@@ -70,6 +71,8 @@ func deviceRole(t DeviceType) string {
 		return "Server"
 	case DevicePC, DeviceClient:
 		return "PC"
+	case DeviceGAP:
+		return "GAP"
 	default:
 		return "Unknown"
 	}
@@ -83,6 +86,9 @@ var linkRuleMatrix = map[string]LinkType{
 	"Leaf-Server":  LinkTypeAccess,   // 接入链路
 	"PC-Server":    LinkTypeVirtual,  // 虚拟接入（覆盖 Server-VM/Server-PC）
 	"Spine-Spine":  LinkTypeUnderlay, // 物理链路
+	"GAP-Spine":    LinkTypeUnderlay, // 网闸内外网口连路由器/交换机（物理链路）
+	"GAP-PC":       LinkTypeAccess,   // 网闸连终端（接入）
+	"GAP-Server":   LinkTypeAccess,   // 网闸连服务器（接入）
 }
 
 // 禁止的角色组合。

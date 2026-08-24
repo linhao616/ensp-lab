@@ -219,6 +219,8 @@
       "delay": 0,
       "status": "",
       "created_at": "0001-01-01T00:00:00Z",
+      "target_label_dx": 41.34810675933602,
+      "target_label_dy": 31.01108006950189,
       "subnet": "192.168.2.0/24"
     },
     {
@@ -254,8 +256,8 @@
     {
       "id": "anno-lab06-guide",
       "text": "lab06 VRRP 配置说明\n\n■ 协议原理\nVRRP（Virtual Router Redundancy Protocol）通过多台路由器共享一个虚拟 IP/MAC，对外表现为\"虚拟网关\"；Master 故障时 Backup 在数秒内接管，终端无感知。\n\n■ 本实验\nR1/R2 同 LAN 口配 VRRP 备份组（vrid 1，虚拟 IP = 192.168.2.1，R1 priority 120 主、R2 备）；PC1 网关指虚拟 IP。\n\n■ 效果与验证\n效果：R1 故障时 R2 自动接管虚拟 IP 192.168.2.1，PC 网关不中断。\n验证：PC1(192.168.2.2) 持续 ping 192.168.2.1，R1 关机后仍通。",
-      "position_x": -554.4653982385032,
-      "position_y": -44.904867887744786,
+      "position_x": -916.0007807100474,
+      "position_y": -169.56676751614089,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],

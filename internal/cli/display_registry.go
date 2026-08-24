@@ -33,6 +33,7 @@ var displayRegistry = map[string]DisplayHandler{
 	"dot1x":                  regDot1xDisplay,
 	"eth-trunk":              regEthTrunkDisplay,
 	"evpn":                   regEvpnDisplay,
+	"gap":                    regGapDisplay,
 	"gre":                    regGreDisplay,
 	"history-command":        regHistoryCommandDisplay,
 	"interface":              regInterfaceDisplay,

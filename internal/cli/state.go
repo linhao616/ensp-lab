@@ -39,6 +39,11 @@ const (
 	ViewAAA       ViewType = "aaa"        // AAA 视图 [<dev>-aaa]
 	ViewAAAAuthen ViewType = "aaa-authen" // AAA 方案子视图 [<dev>-aaa-authen-<name>] 等
 	ViewAAADomain ViewType = "aaa-domain" // AAA 域子视图 [<dev>-aaa-domain-<name>]
+
+	// —— 网闸（GAP）视图三档（安全隔离网闸：内外网物理隔离 + 协议摆渡）——
+	ViewGAP        ViewType = "gap"         // 网闸配置视图 [<dev>-gap]
+	ViewGAPChannel ViewType = "gap-channel" // 摆渡通道子视图 [<dev>-gap-channel-<n>]
+	ViewGAPPolicy  ViewType = "gap-policy"  // 摆渡策略子视图 [<dev>-gap-policy-<n>]
 )
 
 // Command 表示一条已解析的 CLI 命令。

@@ -23,6 +23,7 @@ type capabilityMatrix map[string]map[topology.DeviceType]bool
 var capabilities = capabilityMatrix{
 	// 通用：所有设备均可用
 	"system-view": allDevices(),
+	"gap":         gapDevices(), // 网闸配置视图（安全隔离网闸，仅 gap 设备）
 	"sys":         allDevices(),
 	"quit":        allDevices(),
 	"q":           allDevices(),
@@ -49,7 +50,7 @@ var capabilities = capabilityMatrix{
 	"ssh":            l3Devices(),
 
 	// L3 / 路由类：路由器、三层交换机、防火墙
-	"ip":                 hostsAndL3(),
+	"ip":                 ipDevices(),
 	"ospf":               l3Devices(),
 	"isis":               l3Devices(),
 	"bgp":                l3Devices(),
@@ -167,7 +168,22 @@ func allDevices() map[topology.DeviceType]bool {
 		topology.DeviceCloud:    true,
 		topology.DeviceHub:      true,
 		topology.DeviceVTEP:     true,
+		topology.DeviceGAP:      true,
 	}
+}
+
+// gapDevices 仅网闸（安全隔离网闸）。
+func gapDevices() map[topology.DeviceType]bool {
+	return map[topology.DeviceType]bool{
+		topology.DeviceGAP: true,
+	}
+}
+
+// ipDevices 可配置接口 IP 的设备：路由/三层/防火墙/VTEP + 终端 + 网闸。
+func ipDevices() map[topology.DeviceType]bool {
+	m := hostsAndL3()
+	m[topology.DeviceGAP] = true
+	return m
 }
 
 // l3Devices 路由类设备：路由器、三层交换机、防火墙。

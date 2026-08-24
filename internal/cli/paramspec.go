@@ -144,6 +144,18 @@ var displayParamSpecs = map[string]CommandGrammar{
 			},
 		},
 	},
+	"gap": {
+		CrAllowed: true,
+		Params: []ParamSpec{
+			{
+				Index:      0,
+				Name:       "sub",
+				Kind:       SlotKeyword,
+				Candidates: []string{"channel", "policy", "statistics"},
+				Help:       "display gap 二级子命令",
+			},
+		},
+	},
 }
 
 // —— 配置视图命令参数语法（system / aaa 等视图首 token 之后的参数）——
