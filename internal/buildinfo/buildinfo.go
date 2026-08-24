@@ -141,7 +141,9 @@ func detectStale() {
 		StaleReason = "未注入提交号（dev 构建），跳过工作树检查"
 		return
 	}
-	status, err := gitOutput("status", "--porcelain")
+	// 用保真输出（gitOutput 的 TrimSpace 会剥掉 porcelain 第 1 字节的前导空格，
+	// 导致路径列偏移，data/ 匹配不上）。
+	status, err := gitOutputRaw("status", "--porcelain")
 	if err != nil {
 		StaleReason = "git status 执行失败，跳过工作树检查"
 		return
@@ -185,6 +187,22 @@ func gitOutput(args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitOutputRaw 执行一条 git 子命令并返回输出，**仅去除尾部换行，保留前导空格
+// 与固定列格式**（porcelain 的 XY path 第 3 字节定位依赖它；TrimSpace 会破坏）。
+// 其他语义与 gitOutput 一致（超时保护、stderr 丢弃、失败返回 error）。
+func gitOutputRaw(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stderr = nil
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
 // sameRepoRoot 判断 git 仓库根 topLevel 与当前工作目录 wd 是否指向同一仓库根。
