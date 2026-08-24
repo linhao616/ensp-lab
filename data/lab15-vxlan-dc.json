@@ -1,0 +1,1229 @@
+{
+  "id": "lab15-vxlan-dc",
+  "name": "lab15 综合数据中心 (出口+Spine-Leaf VXLAN+网闸隔离)",
+  "description": "VLAN+VXLAN 大二层 + 安全域网闸隔离综合实验",
+  "devices": {
+    "border": {
+      "id": "border",
+      "name": "Border",
+      "type": "l3_switch",
+      "model": "S6730",
+      "status": "power_on",
+      "position_x": 480,
+      "position_y": 130,
+      "interfaces": {
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "10.0.1.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to FW"
+        },
+        "GigabitEthernet0/0/1": {
+          "name": "GigabitEthernet0/0/1",
+          "ip_address": "10.0.2.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Spine"
+        },
+        "GigabitEthernet0/0/2": {
+          "name": "GigabitEthernet0/0/2",
+          "ip_address": "192.168.20.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to GAP 核心侧"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Border",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ip": "10.0.1.2",
+          "interface:GigabitEthernet0/0/0:mask": "255.255.255.0",
+          "interface:GigabitEthernet0/0/1:ip": "10.0.2.1",
+          "interface:GigabitEthernet0/0/1:mask": "255.255.255.0",
+          "interface:GigabitEthernet0/0/2:ip": "192.168.20.1",
+          "interface:GigabitEthernet0/0/2:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "fw": {
+      "id": "fw",
+      "name": "FW",
+      "type": "firewall",
+      "model": "USG",
+      "status": "power_on",
+      "position_x": 340,
+      "position_y": 130,
+      "interfaces": {
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "10.0.0.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to R出口"
+        },
+        "GigabitEthernet0/0/1": {
+          "name": "GigabitEthernet0/0/1",
+          "ip_address": "10.0.1.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Border"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "FW",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ip": "10.0.0.2",
+          "interface:GigabitEthernet0/0/0:mask": "255.255.255.0",
+          "interface:GigabitEthernet0/0/1:ip": "10.0.1.1",
+          "interface:GigabitEthernet0/0/1:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "gap": {
+      "id": "gap",
+      "name": "GAP",
+      "type": "gap",
+      "model": "GAP-2000",
+      "status": "power_on",
+      "position_x": 700,
+      "position_y": 300,
+      "interfaces": {
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "192.168.20.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "inside 核心/生产侧"
+        },
+        "GigabitEthernet0/0/1": {
+          "name": "GigabitEthernet0/0/1",
+          "ip_address": "192.168.30.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "outside 大数据侧"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "GAP",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ip": "192.168.20.1",
+          "interface:GigabitEthernet0/0/0:mask": "255.255.255.0",
+          "interface:GigabitEthernet0/0/1:ip": "192.168.30.1",
+          "interface:GigabitEthernet0/0/1:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "isp": {
+      "id": "isp",
+      "name": "ISP",
+      "type": "cloud",
+      "model": "Cloud",
+      "status": "power_on",
+      "position_x": 60,
+      "position_y": 130,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "203.0.113.2",
+          "subnet_mask": "255.255.255.252",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "ISP",
+        "interfaces": {
+          "interface:Ethernet0:ip": "203.0.113.2",
+          "interface:Ethernet0:mask": "255.255.255.252"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "leaf-1": {
+      "id": "leaf-1",
+      "name": "Leaf-办公",
+      "type": "vtep",
+      "model": "CE6850",
+      "status": "power_on",
+      "position_x": 280,
+      "position_y": 480,
+      "interfaces": {
+        "10GE1/0/1": {
+          "name": "10GE1/0/1",
+          "ip_address": "10.0.3.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Spine"
+        },
+        "10GE3/0/1": {
+          "name": "10GE3/0/1",
+          "ip_address": "10.0.5.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Spine2"
+        },
+        "10GE5/0/1": {
+          "name": "10GE5/0/1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 10,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "接入 VLAN10"
+        },
+        "LoopBack0": {
+          "name": "LoopBack0",
+          "ip_address": "1.1.1.1",
+          "subnet_mask": "255.255.255.255",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VTEP 隧道源"
+        },
+        "Vlanif10": {
+          "name": "Vlanif10",
+          "ip_address": "192.168.10.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 10,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VLAN10 网关"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Leaf-办公",
+        "interfaces": {
+          "interface:LoopBack0:ip": "1.1.1.1",
+          "interface:LoopBack0:mask": "255.255.255.255",
+          "interface:Vlanif10:ip": "192.168.10.1",
+          "interface:Vlanif10:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "leaf-2": {
+      "id": "leaf-2",
+      "name": "Leaf-生产",
+      "type": "vtep",
+      "model": "CE6850",
+      "status": "power_on",
+      "position_x": 480,
+      "position_y": 480,
+      "interfaces": {
+        "10GE1/0/1": {
+          "name": "10GE1/0/1",
+          "ip_address": "10.0.4.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Spine"
+        },
+        "10GE3/0/1": {
+          "name": "10GE3/0/1",
+          "ip_address": "10.0.5.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Spine2"
+        },
+        "10GE5/0/1": {
+          "name": "10GE5/0/1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "接入 VLAN20"
+        },
+        "LoopBack0": {
+          "name": "LoopBack0",
+          "ip_address": "1.1.1.2",
+          "subnet_mask": "255.255.255.255",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VTEP 隧道源"
+        },
+        "Vlanif20": {
+          "name": "Vlanif20",
+          "ip_address": "192.168.20.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 20,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VLAN20 网关"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Leaf-生产",
+        "interfaces": {
+          "interface:LoopBack0:ip": "1.1.1.2",
+          "interface:LoopBack0:mask": "255.255.255.255",
+          "interface:Vlanif20:ip": "192.168.20.2",
+          "interface:Vlanif20:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "leaf-3": {
+      "id": "leaf-3",
+      "name": "Leaf-大数据",
+      "type": "vtep",
+      "model": "CE6850",
+      "status": "power_on",
+      "position_x": 900,
+      "position_y": 480,
+      "interfaces": {
+        "10GE5/0/1": {
+          "name": "10GE5/0/1",
+          "ip_address": "",
+          "subnet_mask": "",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 30,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "接入 VLAN30"
+        },
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "192.168.30.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to GAP 大数据侧"
+        },
+        "LoopBack0": {
+          "name": "LoopBack0",
+          "ip_address": "1.1.1.3",
+          "subnet_mask": "255.255.255.255",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VTEP 隧道源"
+        },
+        "Vlanif30": {
+          "name": "Vlanif30",
+          "ip_address": "192.168.30.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 30,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "VLAN30 网关"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Leaf-大数据",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ip": "192.168.30.1",
+          "interface:GigabitEthernet0/0/0:mask": "255.255.255.0",
+          "interface:LoopBack0:ip": "1.1.1.3",
+          "interface:LoopBack0:mask": "255.255.255.255",
+          "interface:Vlanif30:ip": "192.168.30.2",
+          "interface:Vlanif30:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "pc-o1": {
+      "id": "pc-o1",
+      "name": "办公PC",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_on",
+      "position_x": 160,
+      "position_y": 480,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.10.10",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.10.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "办公PC",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.10.1",
+          "interface:Ethernet0:ip": "192.168.10.10",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "pc-o2": {
+      "id": "pc-o2",
+      "name": "办公PC2",
+      "type": "pc",
+      "model": "PC",
+      "status": "power_on",
+      "position_x": 220,
+      "position_y": 480,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.10.11",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.10.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "办公PC2",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.10.1",
+          "interface:Ethernet0:ip": "192.168.10.11",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "r-border": {
+      "id": "r-border",
+      "name": "R出口",
+      "type": "router",
+      "model": "AR2220",
+      "status": "power_on",
+      "position_x": 200,
+      "position_y": 130,
+      "interfaces": {
+        "GigabitEthernet0/0/0": {
+          "name": "GigabitEthernet0/0/0",
+          "ip_address": "203.0.113.1",
+          "subnet_mask": "255.255.255.252",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to ISP"
+        },
+        "GigabitEthernet0/0/1": {
+          "name": "GigabitEthernet0/0/1",
+          "ip_address": "10.0.0.1",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to FW"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "R出口",
+        "interfaces": {
+          "interface:GigabitEthernet0/0/0:ip": "203.0.113.1",
+          "interface:GigabitEthernet0/0/0:mask": "255.255.255.252",
+          "interface:GigabitEthernet0/0/1:ip": "10.0.0.1",
+          "interface:GigabitEthernet0/0/1:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "spine-1": {
+      "id": "spine-1",
+      "name": "Spine1",
+      "type": "switch",
+      "model": "S12700",
+      "status": "power_on",
+      "position_x": 480,
+      "position_y": 220,
+      "interfaces": {
+        "10GE1/0/1": {
+          "name": "10GE1/0/1",
+          "ip_address": "10.0.2.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Border"
+        },
+        "10GE3/0/1": {
+          "name": "10GE3/0/1",
+          "ip_address": "10.0.3.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Leaf-1"
+        },
+        "10GE3/0/2": {
+          "name": "10GE3/0/2",
+          "ip_address": "10.0.4.2",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Leaf-2"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Spine1",
+        "interfaces": {
+          "interface:10GE1/0/1:ip": "10.0.2.2",
+          "interface:10GE1/0/1:mask": "255.255.255.0",
+          "interface:10GE3/0/1:ip": "10.0.3.2",
+          "interface:10GE3/0/1:mask": "255.255.255.0",
+          "interface:10GE3/0/2:ip": "10.0.4.2",
+          "interface:10GE3/0/2:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "spine-2": {
+      "id": "spine-2",
+      "name": "Spine2",
+      "type": "switch",
+      "model": "S12700",
+      "status": "power_on",
+      "position_x": 480,
+      "position_y": 350,
+      "interfaces": {
+        "10GE1/0/1": {
+          "name": "10GE1/0/1",
+          "ip_address": "10.0.2.3",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Border"
+        },
+        "10GE3/0/1": {
+          "name": "10GE3/0/1",
+          "ip_address": "10.0.3.3",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Leaf-1"
+        },
+        "10GE3/0/2": {
+          "name": "10GE3/0/2",
+          "ip_address": "10.0.4.3",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": "to Leaf-2"
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "Spine2",
+        "interfaces": {
+          "interface:10GE1/0/1:ip": "10.0.2.3",
+          "interface:10GE1/0/1:mask": "255.255.255.0",
+          "interface:10GE3/0/1:ip": "10.0.3.3",
+          "interface:10GE3/0/1:mask": "255.255.255.0",
+          "interface:10GE3/0/2:ip": "10.0.4.3",
+          "interface:10GE3/0/2:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "srv-bd1": {
+      "id": "srv-bd1",
+      "name": "大数据SRV1",
+      "type": "server",
+      "model": "Server",
+      "status": "power_on",
+      "position_x": 1000,
+      "position_y": 480,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.30.10",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "大数据SRV1",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.30.1",
+          "interface:Ethernet0:ip": "192.168.30.10",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "srv-bd2": {
+      "id": "srv-bd2",
+      "name": "大数据SRV2",
+      "type": "server",
+      "model": "Server",
+      "status": "power_on",
+      "position_x": 1080,
+      "position_y": 480,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.30.11",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.30.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "大数据SRV2",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.30.1",
+          "interface:Ethernet0:ip": "192.168.30.11",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "srv-p1": {
+      "id": "srv-p1",
+      "name": "生产SRV1",
+      "type": "server",
+      "model": "Server",
+      "status": "power_on",
+      "position_x": 160,
+      "position_y": 560,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.20.10",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "生产SRV1",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.20.1",
+          "interface:Ethernet0:ip": "192.168.20.10",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    },
+    "srv-p2": {
+      "id": "srv-p2",
+      "name": "生产SRV2",
+      "type": "server",
+      "model": "Server",
+      "status": "power_on",
+      "position_x": 220,
+      "position_y": 560,
+      "interfaces": {
+        "Ethernet0": {
+          "name": "Ethernet0",
+          "ip_address": "192.168.20.11",
+          "subnet_mask": "255.255.255.0",
+          "gateway": "192.168.20.1",
+          "dns": "",
+          "mac": "",
+          "status": "up",
+          "vlan": 0,
+          "port_type": "ethernet",
+          "bandwidth": 10000,
+          "delay": 0,
+          "description": ""
+        }
+      },
+      "config": "",
+      "config_data": {
+        "device_name": "生产SRV2",
+        "interfaces": {
+          "interface:Ethernet0:gateway": "192.168.20.1",
+          "interface:Ethernet0:ip": "192.168.20.11",
+          "interface:Ethernet0:mask": "255.255.255.0"
+        },
+        "default_gateway": "",
+        "saved": false,
+        "saved_config": "",
+        "save_time": ""
+      },
+      "vrp_version": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "updated_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  "links": [
+    {
+      "id": "isp-Ethernet0-r-border-GigabitEthernet0/0/0",
+      "source_device": "isp",
+      "source_port": "Ethernet0",
+      "target_device": "r-border",
+      "target_port": "GigabitEthernet0/0/0",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "203.0.113.0/30"
+    },
+    {
+      "id": "r-border-GigabitEthernet0/0/1-fw-GigabitEthernet0/0/0",
+      "source_device": "r-border",
+      "source_port": "GigabitEthernet0/0/1",
+      "target_device": "fw",
+      "target_port": "GigabitEthernet0/0/0",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.0.0/24"
+    },
+    {
+      "id": "border-GigabitEthernet0/0/1-spine-1-10GE1/0/1",
+      "source_device": "border",
+      "source_port": "GigabitEthernet0/0/1",
+      "target_device": "spine-1",
+      "target_port": "10GE1/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.2.0/24"
+    },
+    {
+      "id": "border-GigabitEthernet0/0/1-spine-2-10GE1/0/1",
+      "source_device": "border",
+      "source_port": "GigabitEthernet0/0/1",
+      "target_device": "spine-2",
+      "target_port": "10GE1/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.2.0/24"
+    },
+    {
+      "id": "fw-GigabitEthernet0/0/1-border-GigabitEthernet0/0/0",
+      "source_device": "fw",
+      "source_port": "GigabitEthernet0/0/1",
+      "target_device": "border",
+      "target_port": "GigabitEthernet0/0/0",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.1.0/24"
+    },
+    {
+      "id": "spine-1-10GE3/0/1-leaf-1-10GE1/0/1",
+      "source_device": "spine-1",
+      "source_port": "10GE3/0/1",
+      "target_device": "leaf-1",
+      "target_port": "10GE1/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.3.0/24"
+    },
+    {
+      "id": "spine-2-10GE3/0/1-leaf-1-10GE3/0/1",
+      "source_device": "spine-2",
+      "source_port": "10GE3/0/1",
+      "target_device": "leaf-1",
+      "target_port": "10GE3/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.5.0/24"
+    },
+    {
+      "id": "spine-1-10GE3/0/2-leaf-2-10GE1/0/1",
+      "source_device": "spine-1",
+      "source_port": "10GE3/0/2",
+      "target_device": "leaf-2",
+      "target_port": "10GE1/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.4.0/24"
+    },
+    {
+      "id": "spine-2-10GE3/0/2-leaf-2-10GE3/0/1",
+      "source_device": "spine-2",
+      "source_port": "10GE3/0/2",
+      "target_device": "leaf-2",
+      "target_port": "10GE3/0/1",
+      "link_type": "underlay",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "10.0.5.0/24"
+    },
+    {
+      "id": "leaf-1---leaf-2--",
+      "source_device": "leaf-1",
+      "source_port": "-",
+      "target_device": "leaf-2",
+      "target_port": "-",
+      "link_type": "vxlan",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "vxlan_vni": 5010
+    },
+    {
+      "id": "pc-o1-Ethernet0-leaf-1-10GE5/0/1",
+      "source_device": "pc-o1",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-1",
+      "target_port": "10GE5/0/1",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.10.0/24"
+    },
+    {
+      "id": "pc-o2-Ethernet0-leaf-1-10GE5/0/2",
+      "source_device": "pc-o2",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-1",
+      "target_port": "10GE5/0/2",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.10.0/24"
+    },
+    {
+      "id": "srv-p1-Ethernet0-leaf-2-10GE5/0/1",
+      "source_device": "srv-p1",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-2",
+      "target_port": "10GE5/0/1",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
+    },
+    {
+      "id": "srv-p2-Ethernet0-leaf-2-10GE5/0/2",
+      "source_device": "srv-p2",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-2",
+      "target_port": "10GE5/0/2",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
+    },
+    {
+      "id": "border-GigabitEthernet0/0/2-gap-GigabitEthernet0/0/0",
+      "source_device": "border",
+      "source_port": "GigabitEthernet0/0/2",
+      "target_device": "gap",
+      "target_port": "GigabitEthernet0/0/0",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.20.0/24"
+    },
+    {
+      "id": "gap-GigabitEthernet0/0/1-leaf-3-GigabitEthernet0/0/0",
+      "source_device": "gap",
+      "source_port": "GigabitEthernet0/0/1",
+      "target_device": "leaf-3",
+      "target_port": "GigabitEthernet0/0/0",
+      "link_type": "business",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.30.0/24"
+    },
+    {
+      "id": "srv-bd1-Ethernet0-leaf-3-10GE5/0/1",
+      "source_device": "srv-bd1",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-3",
+      "target_port": "10GE5/0/1",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.30.0/24"
+    },
+    {
+      "id": "srv-bd2-Ethernet0-leaf-3-10GE5/0/2",
+      "source_device": "srv-bd2",
+      "source_port": "Ethernet0",
+      "target_device": "leaf-3",
+      "target_port": "10GE5/0/2",
+      "link_type": "access",
+      "cable_type": "copper",
+      "bandwidth": 0,
+      "delay": 0,
+      "status": "",
+      "created_at": "0001-01-01T00:00:00Z",
+      "subnet": "192.168.30.0/24"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "lab15-vxlan-dc-anno",
+      "text": "lab15 综合数据中心多协议实验\n\n■ 协议与技术\n① VLAN：Leaf 接入端口划 VLAN 10(办公)/20(生产)/30(大数据)，Vlanif 作网关；② VXLAN：Leaf-办公/Leaf-生产 作 VTEP（LoopBack0 隧道源 + Nve VNI 5010），经 Spine Underlay(OSPF) 建立大二层隧道，同 VLAN 跨 Leaf 互通；③ 网闸：核心(Border) 与大数据域(Leaf-大数据) 之间物理隔离+摆渡，未配通道不通。\n\n■ 安全域\n互联网出口区 → 核心区(VXLAN 域) → 大数据区（隔离）。\n\n■ 效果与验证\n效果：办公PC/生产SRV 经 VXLAN 大二层跨 Leaf 互通；大数据域默认隔离仅网闸通道放行。\n验证：display vxlan tunnel 看隧道 Up；GAP 上 display gap channel 看摆渡通道；跨域 ping 按通道通/不通。",
+      "position_x": 40,
+      "position_y": 40,
+      "created_at": "0001-01-01T00:00:00Z"
+    }
+  ],
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "0001-01-01T00:00:00Z",
+  "canvas_scale": 0,
+  "canvas_offset_x": 0,
+  "canvas_offset_y": 0,
+  "device_count": 16,
+  "link_count": 18
+}
