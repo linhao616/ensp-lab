@@ -1214,8 +1214,8 @@
     {
       "id": "lab15-vxlan-dc-anno",
       "text": "lab15 综合数据中心多协议实验\n\n■ 协议与技术\n① VLAN：Leaf 接入端口划 VLAN 10(办公)/20(生产)/30(大数据)，Vlanif 作网关；② VXLAN：Leaf-办公/Leaf-生产 作 VTEP（LoopBack0 隧道源 + Nve VNI 5010），经 Spine Underlay(OSPF) 建立大二层隧道，同 VLAN 跨 Leaf 互通；③ 网闸：核心(Border) 与大数据域(Leaf-大数据) 之间物理隔离+摆渡，未配通道不通。\n\n■ 安全域\n互联网出口区 → 核心区(VXLAN 域) → 大数据区（隔离）。\n\n■ 效果与验证\n效果：办公PC/生产SRV 经 VXLAN 大二层跨 Leaf 互通；大数据域默认隔离仅网闸通道放行。\n验证：display vxlan tunnel 看隧道 Up；GAP 上 display gap channel 看摆渡通道；跨域 ping 按通道通/不通。",
-      "position_x": 40,
-      "position_y": 40,
+      "position_x": 310.1392930510469,
+      "position_y": -44.837133354874226,
       "created_at": "0001-01-01T00:00:00Z"
     }
   ],
