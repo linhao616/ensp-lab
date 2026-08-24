@@ -6,7 +6,23 @@
 
 ## [Unreleased]
 
-> 记录 v0.12.1 之后的增量。
+> 记录 v0.12.1 之后的增量（2026-08-23 ~ 08-24）。
+
+### Added
+- **网闸（GAP / 安全隔离网闸）设备**（commit `1698ba3` + `7fb4a4a`）：`gap` 设备类型 + 前端 `[GAP]` 图标 + 连线约束（GAP↔Spine/PC/Server）+ CLI 三件套（`gap` 视图 → `channel`/`policy` 子视图：`mapping tcp A:B <-> C:D`、`permit source X dest Y`、`enable|disable`；`display gap channel|policy|statistics`，统计诚实占位 `-`）+ 补全支持（`displayParamSpecs["gap"]`、视图关键字表）+ 单测 6 用例。仿真语义：未配通道完全隔离（与防火墙本质区别），`mapping`+`enable` → `Up`。
+- **示例拓扑**：`lab13-gap`（网闸摆渡）、`lab14-bigdata`（云大数据中心多安全域 16 设备，commit `9fe514b`）、`lab15-vxlan-dc`（综合数据中心 VLAN+VXLAN+网闸 16 设备，commit `296cd11`）、`gap-test`（开发验证残留，待清理）。
+- **设备库面板新增网闸选项**（commit `9fe514b`）：`getDeviceTypes` API 补 `GAP`（面板由该 API 驱动）。
+- **lab14/lab15 节点布局防缠绕优化**（commit `8bbe92a`）：区域分组 + 从左到右分层，消除倒走连线与长斜线交叉。
+
+### Fixed
+- **stale 误报（开发副本构建）**（commit `7d891b2` + `522532b` + `1d920e8` + `6b78eb9`）：无 `.git` 目录的开发副本（ensp-lab 目录）构建后 `/version` 误报 `stale=true`。根因：git 命令解析到父仓库（`D:/Projects/Go`）→ 注入父仓 commit + dirty。修复：`build.ps1` 仅当仓库根匹配时注入 git 信息；`buildinfo` 规则 4 在 Commit 未注入（dev 构建）时跳过工作树检查；`sameRepoRoot` 归属判断。
+- **stale 误报（data/ 数据改动）**（commit `e853909` + `ee45a1a` + `6b78eb9`）：用户在 UI 改拓扑后 autosave 落盘 `data/*.json`，git status 变脏 → 误报 stale。修复：规则 4 忽略 `data/` 目录改动（数据变更≠源码变更）；新增 `gitOutputRaw` 保留 porcelain 前导空格（`gitOutput` 的 TrimSpace 破坏固定列导致路径偏移）。
+- **依赖树损坏修复**：`node_modules` 损坏导致 `tsc` 找不到 / `picomatch` 缺失 → 删 `node_modules`+`package-lock.json` 重装，lockfile 更新入库（commit `1d920e8`）。
+
+### Changed
+- **目录收口**：`ensp-lab-main` 重建为独立 git 仓库（原 worktree 链接随 ensp-lab/.git 移除失效），并重命名为 `ensp-lab` 为唯一工作区；src 下冗余目录清理（bak/backup/v090 删除，回收站可恢复）。
+- **拓扑数据首次入库**（commit `522532b`）：`data/*.json`（13 拓扑）从 gitignore 豁免强制加入版本管理，配合 stale 规则 4 的 data/ 忽略不再污染 `/version`。
+- 前端依赖：`vite` ^5.4.10 → **^6.4.3**（dev server CVE 修复），`esbuild` overrides ^0.25.0；`npm audit` 0 vulnerabilities（仅 devDeps）。
 
 ### Dependencies
 

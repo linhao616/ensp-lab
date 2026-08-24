@@ -877,6 +877,72 @@ curl -X POST http://localhost:8080/api/diagnostic/abc123/dns \
 
 ---
 
+### 4.11 网闸（GAP / 安全隔离网闸）
+
+> 新增于 v0.13.0-dev（2026-08-24，commit `1698ba3`）。网闸是**内外网物理隔离 + 协议摆渡**设备，与防火墙（包过滤/状态检测）本质不同：未配摆渡通道时两侧完全不通（隔离是本分），配通后才按白名单转发。
+
+**设备类型**：`gap`（前端设备库显示 `[GAP]`，棕色矩形，4 口）。连线约束：GAP ↔ 路由器/交换机/PC/服务器均允许（`GAP-Spine`=underlay、`GAP-PC/GAP-Server`=access）。
+
+**CLI 视图与命令**（VRP 风格，`internal/cli/gap_cmd.go`）：
+
+```
+[GAP1] system-view
+[GAP1] gap                        # 进入网闸配置视图 → [GAP1-gap]
+[GAP1-gap] channel 1              # 进入摆渡通道子视图 → [GAP1-gap-channel-1]
+[GAP1-gap-channel-1] mapping tcp 192.168.1.10 8080 <-> 203.0.113.10 8080
+[GAP1-gap-channel-1] enable
+[GAP1-gap-channel-1] quit         # 回 [GAP1-gap]
+[GAP1-gap] policy 1               # 进入摆渡策略子视图 → [GAP1-gap-policy-1]
+[GAP1-gap-policy-1] permit source 192.168.1.0/24 dest 203.0.113.0/24
+[GAP1-gap-policy-1] enable
+[GAP1-gap-policy-1] quit
+[GAP1-gap] quit                   # 回系统视图
+```
+
+**display 命令**（`internal/cli/gap_display.go`，只读渲染）：
+
+| 命令 | 输出 |
+|------|------|
+| `display gap channel` | 通道列表：编号 / 状态（Up=已配且 enable，Config=已配未启用）/ mapping |
+| `display gap channel <n>` | 单通道详情（Mapping / Enabled / Status） |
+| `display gap policy [n]` | 策略列表 / 详情（Rule / Enabled） |
+| `display gap statistics` | 摆渡统计（**诚实占位**，仿真不计数，恒 `-`） |
+
+**仿真语义**：通道状态由 `GAPChannelStatus`（`gap_eval.go`）纯函数计算——`mapping` 已配置且 `enable=true` → `Up`；仅 mapping → `Config`；未配置 → 不存在。跨网闸流量按通道状态通/不通（教学核心：隔离是本分）。
+
+**配套示例拓扑**：`lab13-gap`（网闸内外网摆渡）、`lab14-bigdata`（云大数据中心多安全域）、`lab15-vxlan-dc`（综合数据中心：VLAN+VXLAN+网闸+出口）。
+
+---
+
+### 4.12 示例拓扑清单
+
+> 随产品预置的 `data/*.json` 示例，服务启动时自动加载（`cmd/server/main.go`）。除 `default`（空拓扑，data 目录为空时自动创建）外，均为实验教学用例：
+
+| 拓扑 ID | 场景 | 设备数 | 涉及技术 |
+|---------|------|--------|----------|
+| `default` | 空白画布（自动创建） | 0 | — |
+| `lab01` | 两台交换机 VLAN/Trunk | 4 | VLAN、Trunk、Access |
+| `lab02` | VLAN 单交换机 | 4 | VLAN |
+| `lab03` | STP/RSTP 环形（3×S5700） | 6 | STP/RSTP、VLAN |
+| `lab04` | OSPF 综合（3×AR2220） | 4 | OSPF、环回 |
+| `lab05` | OSPF 单区 | 5 | OSPF |
+| `lab06` | VRRP 双机热备 | 3 | VRRP |
+| `lab07` | DHCP（单设备+PC） | 2 | DHCP |
+| `lab08` | 公网/云接入 | 3 | NAT、默认路由 |
+| `lab09` | DHCP 中继+三层交换 | 7 | DHCP 中继、VLAN |
+| `lab10` | 静态路由多网段 | 5 | 静态路由 |
+| `lab11` | BGP 基础 | 4 | BGP |
+| `lab12` | IPSec VPN（2 站点+ISP） | 5 | IPSec、NAT |
+| `lab13-gap` | 网闸内外网隔离+摆渡 | 5 | **网闸（GAP）** |
+| `lab14-bigdata` | 云大数据中心多安全域 | 16 | 防火墙、网闸、多域 VLAN |
+| `lab15-vxlan-dc` | 综合数据中心 | 16 | **VLAN+VXLAN+网闸**+出口 |
+| `vxlan-spine-leaf` | VXLAN Spine-Leaf 大二层 | 14 | VXLAN、VNI、Underlay |
+| `gap-test` | 网闸开发验证拓扑 | 3 | （开发残留，待清理） |
+
+> ⚠️ `gap-test.json` 为开发期验证残留（无教学价值），建议后续移入 `tmp/` 或删除（见 2026-08-24 分析报告 §3）。
+
+---
+
 ## 五、API 参考手册
 
 ### 5.1 基础信息
