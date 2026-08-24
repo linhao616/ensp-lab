@@ -114,20 +114,13 @@ func execGAPToggle(state *CLIState, cmd *Command) string {
 	}
 }
 
-// execGAPChannelView 处理通道视图命令（mapping / enable / quit）。
+// execGAPChannelView 处理通道视图命令（mapping / enable / disable）。
+// quit/return 由 parser.go 主 quit 链统一处理（回显 "Return"，视图回退链见 quit case）。
 func execGAPChannelView(state *CLIState, cmd *Command) string {
 	n := state.CurrentSub
 	switch cmd.Command {
 	case "mapping":
 		return gapChannelMapping(state, n, cmd)
-	case "quit":
-		state.CurrentView = ViewGAP
-		state.CurrentSub = ""
-		return fmt.Sprintf("[%s-gap]", state.DeviceName)
-	case "return":
-		state.CurrentView = ViewUser
-		state.CurrentSub = ""
-		return "<" + state.DeviceName + ">"
 	default:
 		return fmt.Sprintf("Error: Unrecognized command at '^' position.")
 	}
@@ -149,20 +142,13 @@ func gapChannelMapping(state *CLIState, n string, cmd *Command) string {
 	return fmt.Sprintf("Info: Mapping configured: tcp %s:%s <-> %s:%s", srcIP, srcPort, dstIP, dstPort)
 }
 
-// execGAPPolicyView 处理策略视图命令（permit / enable / quit）。
+// execGAPPolicyView 处理策略视图命令（permit / enable / disable）。
+// quit/return 由 parser.go 主 quit 链统一处理。
 func execGAPPolicyView(state *CLIState, cmd *Command) string {
 	n := state.CurrentSub
 	switch cmd.Command {
 	case "permit":
 		return gapPolicyPermit(state, n, cmd)
-	case "quit":
-		state.CurrentView = ViewGAP
-		state.CurrentSub = ""
-		return fmt.Sprintf("[%s-gap]", state.DeviceName)
-	case "return":
-		state.CurrentView = ViewUser
-		state.CurrentSub = ""
-		return "<" + state.DeviceName + ">"
 	default:
 		return fmt.Sprintf("Error: Unrecognized command at '^' position.")
 	}

@@ -48,7 +48,7 @@ func parseNum(s string) (int, error) {
 var displaySubCommands = []string{
 	"aaa", "acl", "arp", "bfd", "bgp", "clock", "cpu-usage", "current-configuration",
 	"description", "device", "dhcp", "diagnostic-information", "domain", "dot1x", "duplex",
-	"eth-trunk", "evpn", "gre", "history-command", "interface", "ip", "ipsec", "ipv6", "isis",
+	"eth-trunk", "evpn", "gap", "gre", "history-command", "interface", "ip", "ipsec", "ipv6", "isis",
 	"link-aggregation", "link-quality", "lldp", "local-user", "mac-address", "memory",
 	"m-lag", "mlag", "mtu", "nat", "ndp", "netflow", "ntp", "ospf", "ospfv3", "pbr", "port",
 	"port-security", "port-vlan", "qos", "radius", "ripng", "routing-table",

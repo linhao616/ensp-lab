@@ -51,23 +51,23 @@ func TestGAPViewHierarchy(t *testing.T) {
 	if out := gapVExec(st, "channel 1"); !strings.Contains(out, "[GAP1-gap-channel-1]") {
 		t.Fatalf("channel entry: %q", out)
 	}
-	// 通道子视图 quit 回 [gap]
-	if out := gapVExec(st, "quit"); !strings.Contains(out, "[GAP1-gap]") {
-		t.Fatalf("channel quit: %q", out)
+	// 通道子视图 quit 回 [gap] 视图（回显统一 "Return"，断言视图状态）
+	gapVExec(st, "quit")
+	if st.CurrentView != ViewGAP {
+		t.Fatalf("after channel quit, view=%s want gap", st.CurrentView)
 	}
 	if out := gapVExec(st, "policy 1"); !strings.Contains(out, "[GAP1-gap-policy-1]") {
 		t.Fatalf("policy entry: %q", out)
 	}
 	// 策略子视图 quit 回 [gap]
-	if out := gapVExec(st, "quit"); !strings.Contains(out, "[GAP1-gap]") {
-		t.Fatalf("policy quit: %q", out)
+	gapVExec(st, "quit")
+	if st.CurrentView != ViewGAP {
+		t.Fatalf("after policy quit, view=%s want gap", st.CurrentView)
 	}
-	// gap 视图 quit 回 [system]
-	if out := gapVExec(st, "quit"); !strings.Contains(out, "Return") {
-		t.Fatalf("gap quit: %q", out)
-	}
+	// gap 视图 quit 回 system
+	gapVExec(st, "quit")
 	if st.CurrentView != ViewSystem {
-		t.Errorf("after quit, view=%s want system", st.CurrentView)
+		t.Errorf("after gap quit, view=%s want system", st.CurrentView)
 	}
 }
 
@@ -138,8 +138,8 @@ func TestGAPDeviceGuard(t *testing.T) {
 		st.DeviceConfig = make(map[string]string)
 	}
 	st.DeviceName = "R1"
-	out := gapVExec(st, "system-view")
-	gapVExec(st, "gap")
+	gapVExec(st, "system-view")
+	out := gapVExec(st, "gap")
 	if strings.Contains(out, "[R1-gap]") {
 		t.Errorf("router must not enter gap view, got %q", out)
 	}
