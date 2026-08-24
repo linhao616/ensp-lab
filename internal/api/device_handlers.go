@@ -182,6 +182,7 @@ func (r *Router) getDeviceTypes(c *gin.Context) {
 		{string(topology.DeviceCloud), "Cloud"},
 		{string(topology.DeviceHub), "Hub"},
 		{string(topology.DeviceVTEP), "VTEP"},
+		{string(topology.DeviceGAP), "GAP"},
 	}
 	c.JSON(http.StatusOK, types)
 }
